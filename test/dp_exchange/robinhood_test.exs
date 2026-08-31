@@ -179,12 +179,26 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.get_symbols() == {:refused, :missing_credentials}
     end
 
-    test "answers with credentials, and the price is the ask" do
+    test "answers with credentials, and the price is a traded price" do
+      # This asserted `price == ask` until 2026-08-31, mirroring a fallback in the real
+      # adapter that Phase 1 removed. A fake that reproduces a defect makes the defect
+      # untestable — the suite agrees with itself and both are wrong.
       assert {:ok, quote_struct} = Fake.get_price("BTC-USD", credentials: @credentials)
 
-      assert Decimal.equal?(quote_struct.price, quote_struct.ask)
-      assert Decimal.lt?(quote_struct.bid, quote_struct.ask)
+      assert quote_struct.price
       assert quote_struct.volume == nil
+      refute Map.has_key?(quote_struct, :ask)
+    end
+
+    test "the book comes back from the fake's get_top_of_book/2, straddling the price" do
+      assert {:ok, quote_struct} = Fake.get_price("BTC-USD", credentials: @credentials)
+      assert {:ok, top} = Fake.get_top_of_book("BTC-USD", credentials: @credentials)
+
+      assert Decimal.lt?(top.bid, top.ask)
+      # The traded price sits inside the spread and equals neither side, so a test that
+      # passes only when they coincide fails here.
+      assert Decimal.lt?(top.bid, quote_struct.price)
+      assert Decimal.lt?(quote_struct.price, top.ask)
     end
 
     test "coverage reports :internal_poll, never :stream" do
@@ -244,7 +258,47 @@ defmodule DpExchange.RobinhoodTest do
     end
   end
 
+  # Argument shapes for the declared-unsupported sweep. A lookup rather than a case, so a
+  # callback added to the facade adds a row instead of a branch.
+  @wide_facade_args %{
+    {:withdraw, 5} => ["BTC", "bitcoin", :one, "addr", []],
+    {:estimate_withdrawal_fee, 4} => ["BTC", "bitcoin", :one, []],
+    {:quote_conversion, 4} => ["BTC", "USD", :one, []],
+    {:get_deposit_address, 3} => ["BTC", "bitcoin", []],
+    {:create_watchlist, 3} => ["name", [], []],
+    {:get_financials, 3} => ["BTC-USD", :balance_sheet, []],
+    {:rename_account, 3} => ["id", "name", []],
+    {:stake, 3} => ["BTC", :one, []],
+    {:unstake, 3} => ["BTC", :one, []],
+    {:get_funding, 2} => ["BTC-USD", []],
+    {:get_contract_stats, 2} => ["BTC-USD", []],
+    {:get_option_chain, 2} => ["BTC-USD", []],
+    {:get_option_expirations, 2} => ["BTC-USD", []],
+    {:get_option_greeks, 2} => ["id", []],
+    {:get_watchlist, 2} => ["id", []],
+    {:update_watchlist, 2} => ["id", []],
+    {:delete_watchlist, 2} => ["id", []],
+    {:get_filings, 2} => ["id", []],
+    {:get_screener, 2} => ["id", []],
+    {:commit_conversion, 2} => ["id", []],
+    {:get_conversion, 2} => ["id", []],
+    {:get_top_of_book, 2} => ["BTC-USD", []]
+  }
+
   defp unsupported_args(name, arity) do
+    case Map.fetch(@wide_facade_args, {name, arity}) do
+      {:ok, args} ->
+        Enum.map(args, fn
+          :one -> Decimal.new("1")
+          other -> other
+        end)
+
+      :error ->
+        legacy_args(name, arity)
+    end
+  end
+
+  defp legacy_args(name, arity) do
     case {name, arity} do
       {:quantization, 1} -> ["BTC-USD"]
       {:get_historical_prices, 4} -> ["BTC-USD", "1d", [], []]

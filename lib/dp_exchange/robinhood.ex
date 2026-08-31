@@ -65,6 +65,47 @@ defmodule DpExchange.Robinhood do
   # package got — and the two are worth telling apart, so the account and trading endpoints
   # below are listed separately.
   @venue_does_not_serve [
+    # Core 0.1.16 widened the facade. **These are the venue's absence, not this package's
+    # backlog**: Robinhood Crypto's entire documented surface is nine endpoints — quotes,
+    # estimated price, accounts, holdings, trading pairs and four order operations. It
+    # lists no options, runs no staking, has no perpetuals, exposes no conversion, no
+    # deposit or withdrawal, no watchlists and no issuer data.
+    #
+    # Verified against `docs/reference/robinhood/endpoint-inventory.md`, which enumerates
+    # both v1 and the parallel v2 from the vendor's own documentation.
+    {:get_positions, 1},
+    {:get_funding, 2},
+    {:get_contract_stats, 2},
+    {:get_staking_rates, 1},
+    {:get_staking_balances, 1},
+    {:get_staking_rewards, 1},
+    {:get_staking_history, 1},
+    {:stake, 3},
+    {:unstake, 3},
+    {:quote_conversion, 4},
+    {:commit_conversion, 2},
+    {:get_conversion, 2},
+    {:list_portfolios, 1},
+    {:get_deposit_address, 3},
+    {:list_approved_addresses, 1},
+    {:estimate_withdrawal_fee, 4},
+    {:withdraw, 5},
+    {:get_option_chain, 2},
+    {:get_option_expirations, 2},
+    {:get_option_greeks, 2},
+    {:list_watchlists, 1},
+    {:get_watchlist, 2},
+    {:create_watchlist, 3},
+    {:update_watchlist, 2},
+    {:delete_watchlist, 2},
+    {:get_financials, 3},
+    {:get_corporate_events, 1},
+    {:get_filings, 2},
+    {:get_news, 1},
+    {:get_screener, 2},
+    {:create_account, 1},
+    {:rename_account, 3},
+    {:get_roles, 1},
     # Neither exists on this venue. `preview_order/3` has no endpoint at all;
     # `replace_order/4` means a caller cancels and re-places, which is NOT equivalent —
     # it opens a window in which no order is live.
@@ -182,6 +223,10 @@ defmodule DpExchange.Robinhood do
   @impl true
   def get_price(symbol, opts \\ []),
     do: Rest.get_price(symbol, credentials(opts), with_limiter(opts))
+
+  @impl true
+  def get_top_of_book(symbol, opts \\ []),
+    do: Rest.get_top_of_book(symbol, credentials(opts), with_limiter(opts))
 
   @impl true
   def get_symbols(opts \\ []), do: Rest.get_symbols(credentials(opts), with_limiter(opts))
@@ -313,4 +358,114 @@ defmodule DpExchange.Robinhood do
   defp with_limiter(opts) do
     Keyword.put_new(opts, :limiter, DpExchange.Robinhood.Supervisor.limiter_name(opts))
   end
+
+  # --- Declared but not yet implemented -----------------------------------
+  #
+  # Core 0.1.16 widened the facade to the surface the venues actually publish. These answer
+  # `{:error, :not_supported}` and are declared `:unsupported` in `capabilities/0`, so a
+  # consumer routing on the declaration is told the truth.
+  #
+  # **`:unsupported` here is a statement about this package, not about the venue.** That
+  # distinction is the one Phase 1 had to correct after a package spent a year asserting a
+  # venue had no streaming API when it had fifteen services. Where the venue genuinely does
+  # not offer something, the comment beside it says so.
+
+  @impl true
+  def get_positions(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_funding(_symbol, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_contract_stats(_symbol, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_staking_rates(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_staking_balances(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_staking_rewards(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_staking_history(_opts), do: Venue.not_supported()
+
+  @impl true
+  def stake(_asset, _amount, _opts), do: Venue.not_supported()
+
+  @impl true
+  def unstake(_asset, _amount, _opts), do: Venue.not_supported()
+
+  @impl true
+  def quote_conversion(_from, _to, _amount, _opts), do: Venue.not_supported()
+
+  @impl true
+  def commit_conversion(_id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_conversion(_id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_portfolios(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_deposit_address(_asset, _network, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_approved_addresses(_opts), do: Venue.not_supported()
+
+  @impl true
+  def estimate_withdrawal_fee(_asset, _network, _amount, _opts), do: Venue.not_supported()
+
+  @impl true
+  def withdraw(_asset, _network, _amount, _address, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_option_chain(_underlying, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_option_expirations(_underlying, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_option_greeks(_symbol, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_watchlists(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_watchlist(_id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def create_watchlist(_name, _symbols, _opts), do: Venue.not_supported()
+
+  @impl true
+  def update_watchlist(_id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def delete_watchlist(_id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_financials(_symbol, _kind, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_corporate_events(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_filings(_symbol, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_news(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_screener(_name, _opts), do: Venue.not_supported()
+
+  @impl true
+  def create_account(_opts), do: Venue.not_supported()
+
+  @impl true
+  def rename_account(_id, _name, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_roles(_opts), do: Venue.not_supported()
 end

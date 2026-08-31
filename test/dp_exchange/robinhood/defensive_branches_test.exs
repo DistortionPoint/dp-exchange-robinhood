@@ -52,15 +52,17 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
   end
 
   describe "empty strings are absent fields, not values" do
-    test "an empty price with no ask is an unreadable quote" do
+    test "an empty traded price is an unreadable quote" do
       body = %{"results" => [%{"price" => "", "timestamp" => "2026-08-28T17:00:01Z"}]}
 
-      assert {:error, :unexpected_response_shape} =
+      assert {:error, :no_trade_price_in_response} =
                Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
     end
 
     test "an empty timestamp fails closed" do
-      body = %{"results" => [%{"ask_inclusive_of_buy_spread" => "1", "timestamp" => ""}]}
+      body = %{
+        "results" => [%{"price" => "1", "ask_inclusive_of_buy_spread" => "1", "timestamp" => ""}]
+      }
 
       assert {:error, :missing_venue_timestamp} =
                Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
@@ -71,6 +73,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       body = %{
         "results" => [
           %{
+            "price" => "1",
             "ask_inclusive_of_buy_spread" => "1",
             "bid_inclusive_of_sell_spread" => "",
             "timestamp" => "2026-08-28T17:00:01Z"
@@ -78,10 +81,15 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
         ]
       }
 
-      assert {:ok, quote_struct} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
 
-      assert quote_struct.bid == nil
+      # The assertion moved to TopOfBook with the field. Same rule: zero is a price, and a
+      # venue that did not quote a bid has not quoted a bid of nothing.
+      assert top.bid == nil
     end
   end
 
@@ -90,6 +98,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       body = %{
         "results" => [
           %{
+            "price" => 1,
             "ask_inclusive_of_buy_spread" => 1,
             "bid_inclusive_of_sell_spread" => 0.5,
             "timestamp" => "2026-08-28T17:00:01Z"
@@ -97,11 +106,14 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
         ]
       }
 
-      assert {:ok, quote_struct} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
 
-      assert Decimal.equal?(quote_struct.ask, Decimal.new(1))
-      assert Decimal.equal?(quote_struct.bid, Decimal.from_float(0.5))
+      assert Decimal.equal?(top.ask, Decimal.new(1))
+      assert Decimal.equal?(top.bid, Decimal.from_float(0.5))
     end
 
     test "a 502 is an error naming the status" do
@@ -123,7 +135,9 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
     test "a seconds epoch as a string is read" do
       body = %{
-        "results" => [%{"ask_inclusive_of_buy_spread" => "1", "timestamp" => "1787936147"}]
+        "results" => [
+          %{"price" => "1", "ask_inclusive_of_buy_spread" => "1", "timestamp" => "1787936147"}
+        ]
       }
 
       assert {:ok, quote_struct} =
@@ -135,7 +149,11 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
     test "a timestamp of an unexpected type is an error, not a guess" do
       body = %{
         "results" => [
-          %{"ask_inclusive_of_buy_spread" => "1", "timestamp" => %{"nested" => true}}
+          %{
+            "price" => "1",
+            "ask_inclusive_of_buy_spread" => "1",
+            "timestamp" => %{"nested" => true}
+          }
         ]
       }
 
@@ -151,6 +169,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       body = %{
         "results" => [
           %{
+            "price" => "77845.00",
             "ask_inclusive_of_buy_spread" => "77850.00",
             "bid_inclusive_of_sell_spread" => "77840.00",
             "timestamp" => "2026-08-28T17:00:01Z"

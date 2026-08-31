@@ -30,7 +30,7 @@ defmodule DpExchange.Robinhood.Rest do
   """
 
   alias DpExchange.Core.HttpClient
-  alias DpExchange.Core.Types.Quote
+  alias DpExchange.Core.Types.{Quote, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
   @base_url "https://trading.robinhood.com"
@@ -60,8 +60,6 @@ defmodule DpExchange.Robinhood.Rest do
        %Quote{
          symbol: SymbolFormat.to_canonical_symbol(native),
          price: decimal(price),
-         bid: decimal(row["bid_inclusive_of_sell_spread"]),
-         ask: decimal(row["ask_inclusive_of_buy_spread"]),
          # The quote carries no volume, and there is no candle endpoint to source one
          # from. `nil`, never `0`.
          volume: nil,
@@ -72,16 +70,62 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   @doc """
+  Best bid and ask for `symbol` — the top of the book, not a traded price.
+
+  Reads the same `best_bid_ask` payload as `get_price/3`. **The venue's spread-inclusive
+  fields are what it publishes** — `bid_inclusive_of_sell_spread` and
+  `ask_inclusive_of_buy_spread` are the prices a caller would actually transact at, and are
+  carried as sent rather than adjusted back to a raw book.
+
+  This is the split that the `get_price/3` fix in Phase 1 made possible: the quote keeps
+  only what traded, and the book comes back here.
+  """
+  @spec get_top_of_book(String.t(), map(), keyword()) ::
+          {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
+  def get_top_of_book(symbol, credentials, opts) do
+    native = SymbolFormat.to_exchange_symbol(symbol)
+    path = "/api/v1/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
+
+    with {:ok, body} <- get(path, credentials, opts),
+         {:ok, row} <- first_result(body) do
+      {:ok,
+       %TopOfBook{
+         symbol: SymbolFormat.to_canonical_symbol(native),
+         bid: decimal(row["bid_inclusive_of_sell_spread"]),
+         ask: decimal(row["ask_inclusive_of_buy_spread"]),
+         bid_size: nil,
+         ask_size: nil,
+         venue_time: top_of_book_time(row),
+         observed_at: DateTime.utc_now(),
+         provider: :robinhood
+       }}
+    end
+  end
+
+  defp top_of_book_time(row) do
+    case venue_time(row) do
+      {:ok, at} -> at
+      _no_venue_time -> nil
+    end
+  end
+
+  @doc """
   Every tradable pair, canonical.
 
-  The endpoint paginates, so this walks it. Measured by the prior adapter on 2026-08-05:
-  86 symbols, every one quoted in USD — **as seen by that credential**. Listings can differ
-  by account tier, so a consumer holding a different key may see a different catalogue.
+  Calls **`/api/v2/crypto/trading/trading_pairs/`** (D5). The endpoint paginates, so this
+  walks it. v2's response shape is identical for this purpose — `results` rows carrying
+  `symbol`, and a `next` cursor — which is why this half of the v2 migration was safe to
+  make and the quote half was not; see `get_price/3`.
+
+  Measured by the prior adapter on 2026-08-05 against v1: 86 symbols, every one quoted in
+  USD — **as seen by that credential**. Listings can differ by account tier, so a consumer
+  holding a different key may see a different catalogue, and the figure has not been
+  retaken against v2.
   """
   @spec get_symbols(map(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()} | {:refused, term()}
   def get_symbols(credentials, opts) do
-    walk("/api/v1/crypto/trading/trading_pairs/", credentials, opts, [], [])
+    walk("/api/v2/crypto/trading/trading_pairs/", credentials, opts, [], [])
   end
 
   # `seen` is a loop guard, and it is not defensive decoration.
@@ -166,10 +210,23 @@ defmodule DpExchange.Robinhood.Rest do
 
   # The ask when the venue sends no explicit price — see the module doc. Neither present
   # is an unreadable quote rather than one with a nil price.
+  # A bid or an ask is **not** a trade price.
+  #
+  # This used to read `row["price"] || row["ask_inclusive_of_buy_spread"]`, falling back to
+  # the ask when the venue sent no price. That is the §0 substitution in its purest form:
+  # the ask is a real number the venue really sent, so nothing looks wrong, and the meaning
+  # is wrong. An ask is a resting order — what someone is *willing* to sell at. A price is
+  # what something *traded* at. They coincide only when that order fills.
+  #
+  # A consumer computing a position value, a P&L or a stop from an ask believes it is using
+  # a trade price. In a wide or thin book those are different numbers, and the error is
+  # largest exactly when the market is least liquid — when it matters most.
+  #
+  # So there is no fallback. No price, no quote.
   defp quoted_price(row) do
-    case row["price"] || row["ask_inclusive_of_buy_spread"] do
-      nil -> {:error, :unexpected_response_shape}
-      "" -> {:error, :unexpected_response_shape}
+    case row["price"] do
+      nil -> {:error, :no_trade_price_in_response}
+      "" -> {:error, :no_trade_price_in_response}
       price -> {:ok, price}
     end
   end

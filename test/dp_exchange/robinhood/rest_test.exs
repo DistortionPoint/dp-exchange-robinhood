@@ -34,6 +34,9 @@ defmodule DpExchange.Robinhood.RestTest do
       Map.merge(
         %{
           "symbol" => "BTC-USD",
+          # A traded price, deliberately inside the spread and equal to neither side: if a
+          # test can pass with price == ask, it is not testing what it claims to.
+          "price" => "77845.00",
           "bid_inclusive_of_sell_spread" => "77840.00",
           "ask_inclusive_of_buy_spread" => "77850.00",
           "timestamp" => "2026-08-28T17:00:01Z"
@@ -75,7 +78,7 @@ defmodule DpExchange.Robinhood.RestTest do
   end
 
   describe "get_price/3" do
-    test "returns a Quote with bid, ask and Decimal numerics" do
+    test "returns a Quote with Decimal numerics" do
       assert {:ok, %Types.Quote{} = quote_struct} =
                Rest.get_price("BTC-USD", @credentials,
                  plug: responding(quote_body()),
@@ -83,24 +86,40 @@ defmodule DpExchange.Robinhood.RestTest do
                )
 
       assert quote_struct.symbol == "BTC-USD"
-      assert Decimal.equal?(quote_struct.bid, Decimal.new("77840.00"))
-      assert Decimal.equal?(quote_struct.ask, Decimal.new("77850.00"))
       assert quote_struct.provider == :robinhood
     end
 
-    test "the price is the ASK when the venue sends no separate price" do
-      # A real quoted number and the one a buyer pays — but not a mid, so a series built
-      # from it sits a spread above a mid-based series from another venue.
-      assert {:ok, quote_struct} =
-               Rest.get_price("BTC-USD", @credentials,
+    test "the book comes back from get_top_of_book/3, not on the Quote" do
+      # The venue publishes spread-inclusive prices — what a caller would transact at — and
+      # they are carried as sent. `Core.Types.Quote` has no bid or ask to put them on.
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(quote_body()),
                  retry_attempts: 0
                )
 
-      assert Decimal.equal?(quote_struct.price, quote_struct.ask)
+      assert Decimal.equal?(top.bid, Decimal.new("77840.00"))
+      assert Decimal.equal?(top.ask, Decimal.new("77850.00"))
+      assert top.observed_at
+      refute Map.has_key?(top, :price)
     end
 
-    test "an explicit price wins over the ask" do
+    test "an ask is never used as the price" do
+      # This test used to assert the opposite — that `price` falls back to the ask when the
+      # venue sends no separate price — and it passed, which is how the substitution
+      # survived review. An ask is a resting order: what a seller is *willing* to take. A
+      # price is what actually traded. They coincide only when that order fills.
+      #
+      # A consumer computing a position value or a stop from an ask believes it has a trade
+      # price, and the gap between them is widest exactly when the book is thin.
+      body =
+        quote_body() |> put_in(["results"], [Map.delete(hd(quote_body()["results"]), "price")])
+
+      assert {:error, :no_trade_price_in_response} =
+               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+    end
+
+    test "an explicit price is used as given" do
       body = quote_body(%{"price" => "77845.00"})
 
       assert {:ok, quote_struct} =
@@ -120,7 +139,9 @@ defmodule DpExchange.Robinhood.RestTest do
     end
 
     test "a quote with no venue timestamp FAILS rather than substituting now" do
-      body = quote_body() |> put_in(["results"], [%{"ask_inclusive_of_buy_spread" => "1"}])
+      body =
+        quote_body()
+        |> put_in(["results"], [%{"price" => "1", "ask_inclusive_of_buy_spread" => "1"}])
 
       assert {:error, :missing_venue_timestamp} =
                Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
@@ -139,10 +160,10 @@ defmodule DpExchange.Robinhood.RestTest do
                Rest.get_price("BTC-USD", @credentials, plug: responding(%{}), retry_attempts: 0)
     end
 
-    test "a row with neither price nor ask is unreadable" do
+    test "a row with no traded price is unreadable" do
       body = %{"results" => [%{"timestamp" => "2026-08-28T17:00:01Z"}]}
 
-      assert {:error, :unexpected_response_shape} =
+      assert {:error, :no_trade_price_in_response} =
                Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
     end
 

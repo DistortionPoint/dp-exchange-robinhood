@@ -47,17 +47,40 @@ defmodule DpExchange.Robinhood.Fake do
     with :ok <- authenticated(opts) do
       case Map.fetch(@price, symbol) do
         {:ok, price} ->
-          ask = price |> Decimal.new() |> Decimal.add(Decimal.new("0.01"))
-
           {:ok,
            %Types.Quote{
              symbol: symbol,
-             # The ask, as the real adapter uses when the venue sends no separate price.
-             price: ask,
-             bid: Decimal.new(price),
-             ask: ask,
+             # A traded price, and only that. This used to be the ask, with a comment
+             # citing "what the real adapter uses when the venue sends no separate price" —
+             # a fallback removed in Phase 1 because an ask is a resting order and a price
+             # is an execution. A fake that reproduces a defect makes the defect untestable.
+             price: Decimal.new(price),
              volume: nil,
              timestamp: @at,
+             provider: :robinhood
+           }}
+
+        :error ->
+          {:refused, :not_listed}
+      end
+    end
+  end
+
+  @impl true
+  def get_top_of_book(symbol, opts \\ []) do
+    with :ok <- authenticated(opts) do
+      case Map.fetch(@price, symbol) do
+        {:ok, price} ->
+          {:ok,
+           %Types.TopOfBook{
+             symbol: symbol,
+             # A spread straddling the traded price, equal to neither side.
+             bid: Decimal.sub(Decimal.new(price), Decimal.new("0.01")),
+             ask: Decimal.add(Decimal.new(price), Decimal.new("0.01")),
+             bid_size: nil,
+             ask_size: nil,
+             venue_time: @at,
+             observed_at: @at,
              provider: :robinhood
            }}
 
@@ -159,4 +182,118 @@ defmodule DpExchange.Robinhood.Fake do
       _absent -> {:refused, :missing_credentials}
     end
   end
+
+  # --- Declared but not yet implemented -----------------------------------
+  #
+  # Core 0.1.16 widened the facade to the surface the venues actually publish. These answer
+  # `{:error, :not_supported}` and are declared `:unsupported` in `capabilities/0`, so a
+  # consumer routing on the declaration is told the truth.
+  #
+  # **`:unsupported` here is a statement about this package, not about the venue.** That
+  # distinction is the one Phase 1 had to correct after a package spent a year asserting a
+  # venue had no streaming API when it had fifteen services. Where the venue genuinely does
+  # not offer something, the comment beside it says so.
+
+  @impl true
+  def get_positions(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_funding(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_contract_stats(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_staking_rates(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_staking_balances(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_staking_rewards(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_staking_history(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def stake(_asset, _amount, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def unstake(_asset, _amount, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def quote_conversion(_from, _to, _amount, _opts \\ []),
+    do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def commit_conversion(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_conversion(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def list_portfolios(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_deposit_address(_asset, _network, _opts \\ []),
+    do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def list_approved_addresses(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def estimate_withdrawal_fee(_asset, _network, _amount, _opts \\ []),
+    do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def withdraw(_asset, _network, _amount, _address, _opts \\ []),
+    do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_option_chain(_underlying, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_option_expirations(_underlying, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_option_greeks(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def list_watchlists(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_watchlist(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def create_watchlist(_name, _symbols, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def update_watchlist(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def delete_watchlist(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_financials(_symbol, _kind, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_corporate_events(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_filings(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_news(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_screener(_name, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def create_account(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def rename_account(_id, _name, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  @impl true
+  def get_roles(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 end

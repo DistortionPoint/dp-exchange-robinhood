@@ -19,7 +19,34 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+- **An ask is no longer used as a trade price.** `get_price/3` read
+  `price || ask_inclusive_of_buy_spread`, so a response carrying no traded price produced a
+  quote whose `price` was the **ask** — a resting order, not an execution. Every value was
+  real, so nothing looked wrong; only the meaning was. A response with no traded price now
+  returns `{:error, :no_trade_price_in_response}`.
+
+  **This is a behaviour change for any consumer that was receiving those quotes**: where a
+  quote previously arrived carrying an ask, an error now arrives instead. That is the
+  intended direction — a stop or a position value computed from an ask is wrong by the width
+  of the spread, and worst exactly when the book is thin.
+
+  The test suite had asserted the old behaviour as intended, including a test named *"the
+  price is the ASK when the venue sends no separate price"*. It now asserts the opposite, and
+  fixtures carry a traded price deliberately inside the spread and equal to neither side.
+
+### Changed
+- `get_symbols/1` calls **`/api/v2/crypto/trading/trading_pairs/`**. v2's response is the
+  same `results` + `next` shape, so this is a path change only.
+- `get_price/3` **stays on v1** deliberately. v2's `best_bid_ask` documents its response as
+  `{"results": [{"symbol", "bid", "ask"}]}` — top of book and nothing more. It carries no
+  traded price and no timestamp, both of which `Core.Types.Quote` enforces. Representing
+  top-of-book is a contract question for Core, not a path swap, and v1 remains documented and
+  current in the meantime.
+
 ### Added
+- First release. Quotes and the catalogue behind `DpExchange.Core.Venue`, with a feed.
+  108 tests including Core's 28 conformance assertions, passing first run.
 - First release. Quotes and the catalogue behind `DpExchange.Core.Venue`, with a feed.
   108 tests including Core's 28 conformance assertions, passing first run.
 - **Ed25519 request signing**, verified by checking that a signature this package produces
