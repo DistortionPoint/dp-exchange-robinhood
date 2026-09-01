@@ -61,6 +61,14 @@ what was run against the live venue, and when.
   current in the meantime.
 
 ### Added
+
+- **`get_trades/2`, `get_auction_imbalance/2` and `get_volume_profile/3` are declared
+  unsupported.** Read from the venue's v2 reference, 2026-09-01: the crypto surface is best
+  bid/ask, estimated price, accounts, holdings, orders and trading pairs — no tape. A crypto
+  book trades continuously, so there is no opening or closing auction to have an imbalance
+  in, and the venue publishes no volume-at-price split. Not "unimplemented": there is
+  nothing to implement.
+
 - First release. Quotes and the catalogue behind `DpExchange.Core.Venue`, with a feed.
   108 tests including Core's 28 conformance assertions, passing first run.
 - First release. Quotes and the catalogue behind `DpExchange.Core.Venue`, with a feed.

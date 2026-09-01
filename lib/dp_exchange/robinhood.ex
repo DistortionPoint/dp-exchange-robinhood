@@ -126,6 +126,17 @@ defmodule DpExchange.Robinhood do
     {:cancel_all_orders, 2},
     {:close_position, 3},
     {:get_historical_prices, 4},
+    # **No public tape on this venue.** The v2 crypto surface is best bid/ask, estimated
+    # price, accounts, holdings, orders and trading pairs — read from its reference,
+    # 2026-09-01. There is no trades endpoint, and `get_trade_history/2` answers a
+    # different question: the credential's own fills, not everyone's executions.
+    {:get_trades, 2},
+    # **This venue runs no auctions and publishes no footprints.** A crypto book trades
+    # continuously — there is no opening or closing auction to have an imbalance in — and
+    # the venue publishes no volume-at-price split. Not "unimplemented": there is nothing
+    # to implement.
+    {:get_auction_imbalance, 2},
+    {:get_volume_profile, 3},
     {:get_order_book, 2},
     {:get_market_overview, 1}
   ]
@@ -250,6 +261,15 @@ defmodule DpExchange.Robinhood do
 
   @impl true
   def get_order_book(_symbol, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_trades(_symbol, _opts \\ []), do: Venue.not_supported()
+
+  @impl true
+  def get_auction_imbalance(_symbol, _opts \\ []), do: Venue.not_supported()
+
+  @impl true
+  def get_volume_profile(_symbol, _timeframe, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def get_market_overview(_opts), do: Venue.not_supported()
