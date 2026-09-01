@@ -1,15 +1,18 @@
 # Robinhood Crypto Trading API — endpoint inventory
 
 **Source**: `docs.robinhood.com/crypto/trading/`, enumerated 2026-08-31 from the
-documentation's own page bundle, which carries the endpoint list. **Primary vendor
-documentation only.**
+documentation's own page bundle, which carries the endpoint list. Re-checked 2026-09-01;
+the operation count is unchanged. **Primary vendor documentation only.**
 
 ## Counts
 
 | | operations | in this package |
 |---|---|---|
-| **v1** | **9** | **2** |
-| **v2** | 9 (parallel set) | 0 |
+| **v1** | **9** | **9** |
+| **v2** | 9 (parallel set) | **9 — v2 is what this package calls** |
+
+**Every documented operation on this venue is implemented.** As of 2026-09-01 there is no
+endpoint in the vendor's corpus that this package does not call.
 
 ## Endpoints
 
@@ -17,41 +20,45 @@ documentation only.**
 
 ```
 ✓ GET    /api/v1/crypto/marketdata/best_bid_ask/
-  GET    /api/v1/crypto/marketdata/estimated_price/
-  GET    /api/v1/crypto/trading/accounts/
-  GET    /api/v1/crypto/trading/holdings/
-  GET    /api/v1/crypto/trading/orders/
-  POST   /api/v1/crypto/trading/orders/
-  GET    /api/v1/crypto/trading/orders/{order_id}/
-  POST   /api/v1/crypto/trading/orders/{order_id}/cancel/
+✓ GET    /api/v1/crypto/marketdata/estimated_price/
+✓ GET    /api/v1/crypto/trading/accounts/
+✓ GET    /api/v1/crypto/trading/holdings/
+✓ GET    /api/v1/crypto/trading/orders/
+✓ POST   /api/v1/crypto/trading/orders/
+✓ GET    /api/v1/crypto/trading/orders/{order_id}/
+✓ POST   /api/v1/crypto/trading/orders/{order_id}/cancel/
 ✓ GET    /api/v1/crypto/trading/trading_pairs/
 ```
 
-### v2 — a complete parallel surface
+### v2 — a complete parallel surface, and the one this package calls
 
 ```
-  GET    /api/v2/crypto/marketdata/best_bid_ask/
-  GET    /api/v2/crypto/trading/estimated_price/     ← moved from marketdata to trading
-  GET    /api/v2/crypto/trading/accounts/
-  GET    /api/v2/crypto/trading/holdings/
-  GET    /api/v2/crypto/trading/orders/
-  POST   /api/v2/crypto/trading/orders/              ← adds fee-tier orders
-  GET    /api/v2/crypto/trading/orders/{order_id}/
-  POST   /api/v2/crypto/trading/orders/{order_id}/cancel/
-  GET    /api/v2/crypto/trading/trading_pairs/
+✓ GET    /api/v2/crypto/marketdata/best_bid_ask/
+✓ GET    /api/v2/crypto/trading/estimated_price/     ← moved from marketdata to trading
+✓ GET    /api/v2/crypto/trading/accounts/
+✓ GET    /api/v2/crypto/trading/holdings/
+✓ GET    /api/v2/crypto/trading/orders/
+✓ POST   /api/v2/crypto/trading/orders/              ← adds fee-tier orders
+✓ GET    /api/v2/crypto/trading/orders/{order_id}/
+✓ POST   /api/v2/crypto/trading/orders/{order_id}/cancel/
+✓ GET    /api/v2/crypto/trading/trading_pairs/
 ```
 
 ## Notes
 
-**The whole account, holdings and order surface is missing.** `place_order/3` is declared
-`:unsupported` on a venue that supports it, so **this package cannot trade a venue that
-can be traded** — the sharpest single consequence of the coverage gap anywhere in the
-family.
+**This inventory recorded the gap that has now been closed.** It read, until 2026-09-01:
+"the whole account, holdings and order surface is missing… this package cannot trade a
+venue that can be traded." All nine operations now ship, on v2.
 
 **v1 and v2 are not a migration, they are two live surfaces.** The vendor states that all
 read-only actions work on both, and that only v2 supports fee-tier order placement.
-`estimated_price` moves from `marketdata` to `trading` between them. Implementing v1, v2
-or both is a decision, not a skip.
+`estimated_price` moves from `marketdata` to `trading` between them — a package pointed at
+the old path gets a 404 that reads like an outage. **This package calls v2**, which is a
+decision and not a default: it is the surface that carries fee tiers.
+
+**v2 requires an `account_number` that v1 did not.** It is a query parameter on balances,
+orders, order-read and placement; `cancel_order` is the exception and takes none. A call
+without one is a v1 habit, and this package refuses it locally rather than sending it.
 
 **Every endpoint on this venue requires a credential** — there is no public surface, which
 is why `credential_benefit` is `:required` and why no tier-2 test exists here.

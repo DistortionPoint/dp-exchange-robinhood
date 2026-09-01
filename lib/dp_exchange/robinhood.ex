@@ -157,17 +157,35 @@ defmodule DpExchange.Robinhood do
     {:get_auction_imbalance, 2},
     {:get_volume_profile, 3},
     {:get_order_book, 2},
-    {:get_market_overview, 1}
-  ]
-
-  # Not ported yet. The venue serves these; this package does not implement them.
-  @not_ported [
-    {:list_instruments, 1},
+    # **Four absences that read like a backlog and are not.** Each was declared "not
+    # ported" until 2026-09-01, which told a host the wrong thing — that implementing it
+    # here would change the answer. None of the nine documented operations is a fee
+    # schedule, a transfer ledger, a fills feed, or a rate-limit report. The venue's
+    # limits are published as prose in its documentation, not served as an endpoint;
+    # fee tiers reach a caller on the v2 order it places, not from a schedule; and fills
+    # are visible only through the orders the credential itself placed.
     {:get_fees, 2},
     {:get_transfers, 2},
     {:get_trade_history, 2},
     {:get_rate_limit_status, 2},
+    {:get_market_overview, 1}
+  ]
+
+  # Not ported yet. **The venue serves these**; this package does not implement them.
+  #
+  # Four callbacks that used to sit here have moved into `@venue_does_not_serve` above.
+  # They were mislabelled, and the mislabel pointed the wrong way: "not ported" tells a
+  # host the answer might change with work here, when the venue has no such endpoint and
+  # the answer will not change at all. `get_fees/2`, `get_transfers/2`,
+  # `get_trade_history/2` and `get_rate_limit_status/2` are absences of the venue —
+  # Robinhood Crypto's documented surface is nine operations and none of them is a fee
+  # schedule, a transfer ledger, a fills feed or a limit report.
+  @not_ported [
+    # `trading_pairs` carries the instrument metadata; this package reads only the symbols.
+    {:list_instruments, 1},
+    # Any signed endpoint answers it; nothing here calls one for the purpose.
     {:test_connection, 2},
+    # `trading_pairs` publishes min/max order size and increments per pair.
     {:quantization, 1}
   ]
 

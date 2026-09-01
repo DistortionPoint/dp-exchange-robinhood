@@ -19,6 +19,30 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Every negative this package makes is audited** —
+  `docs/reference/robinhood/negative-claims.md`, fifteen claims with the source and date
+  behind each. Robinhood publishes five documentation pages in total and all five were read,
+  which is what makes these negatives stronger than most: the corpus is small enough to
+  exhaust.
+
+  Fourteen hold. **One was wrong, and it is the interesting one**: `get_fees/2`,
+  `get_transfers/2`, `get_trade_history/2` and `get_rate_limit_status/2` sat in the
+  "not ported" list — the one that means *the venue serves this and we have not got to it.*
+  The venue serves none of them. That mislabel points the opposite way to a false
+  `:unsupported`: it invents work that cannot be done, and quietly implies an endpoint the
+  vendor does not publish. They now sit in `venue_does_not_serve/0`.
+
+- **`docs/reference/robinhood/endpoint-inventory.md` marks every operation implemented.**
+  It had recorded the family's sharpest coverage gap — "this package cannot trade a venue
+  that can be traded" — and that gap is closed: all nine documented operations ship, on v2.
+
+- **`usage-rules.md` covers the v2 surface**: the account number v1 did not need, the three
+  prices and which one accounts for size, the order-config key named after the order type,
+  `client_order_id` as an idempotency key, why a cancellation returns an open order, and why
+  `hold` is `nil`.
+
 ### Changed
 
 - **Core dependency moves to `~> 0.1.36`**, and `place_orders/3` is declared **absent with
