@@ -21,6 +21,13 @@ what was run against the live venue, and when.
 
 ### Changed
 
+- **Core dependency moves to `~> 0.1.36`**, and `place_orders/3` is declared **absent with
+  the reason**: this venue places one order per request. A batch is one request the venue
+  accepts or rejects as a unit, and a caller placing several here calls `place_order/3`
+  several times and reconciles the outcomes itself.
+
+### Changed
+
 - **`convert/4` and `get_trade_volume/2` (Core 0.1.22) are declared unsupported.** The venue
   publishes neither a one-step conversion nor the two-step quote/commit pair, and no
   account-volume report. Summing fills here would be this package's arithmetic rather than

@@ -65,6 +65,8 @@ defmodule DpExchange.Robinhood do
   # package got — and the two are worth telling apart, so the account and trading endpoints
   # below are listed separately.
   @venue_does_not_serve [
+    # Robinhood's v2 order surface is four endpoints and none takes a list.
+    {:place_orders, 3},
     # **A crypto brokerage with no funding API.** The vendor's crypto trading documentation
     # publishes nine endpoints and none of them is a payment method, a transfer, an
     # allowlist, a network list or a transaction ledger — money reaches the account through
@@ -323,6 +325,15 @@ defmodule DpExchange.Robinhood do
   @impl true
   def place_order(credentials, request, opts),
     do: Rest.place_order(credentials, request, with_limiter(opts))
+
+  @doc """
+  **Not supported.** Robinhood places one order per request.
+
+  Its v2 order surface is four endpoints and none of them takes a list. A caller placing
+  several calls `place_order/3` several times, and each carries its own `client_order_id`.
+  """
+  @impl true
+  def place_orders(_credentials, _requests, _opts), do: Venue.not_supported()
 
   @doc """
   An execution estimate for a given size.

@@ -165,6 +165,9 @@ defmodule DpExchange.Robinhood.Fake do
     end
   end
 
+  @impl true
+  def place_orders(_credentials, _requests, _opts), do: Venue.not_supported()
+
   # Both refused, matching the real venue. A fake that answered where the real one
   # refuses lets a consumer's suite go green against behaviour that cannot happen.
   @impl true
