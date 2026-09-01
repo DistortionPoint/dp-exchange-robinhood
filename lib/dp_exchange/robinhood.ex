@@ -111,6 +111,13 @@ defmodule DpExchange.Robinhood do
     # it opens a window in which no order is live.
     {:preview_order, 3},
     {:replace_order, 4},
+    # **None of the three exists on this venue — read from its v2 reference, 2026-09-01.**
+    # The crypto order surface is four calls: list, place, get, and cancel-one. There is no
+    # preview, no amend, no bulk cancel, and no position-closing endpoint. Absence here is
+    # measured, not assumed: the enumeration is in `docs/reference/robinhood/`.
+    {:preview_replace, 4},
+    {:cancel_all_orders, 2},
+    {:close_position, 3},
     {:get_historical_prices, 4},
     {:get_order_book, 2},
     {:get_market_overview, 1}
@@ -273,6 +280,15 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def replace_order(_credentials, _id, _request, _opts \\ []), do: Venue.not_supported()
+
+  @impl true
+  def preview_replace(_credentials, _id, _changes, _opts \\ []), do: Venue.not_supported()
+
+  @impl true
+  def close_position(_credentials, _symbol, _opts \\ []), do: Venue.not_supported()
+
+  @impl true
+  def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def cancel_order(_credentials, _id, _opts), do: Venue.not_supported()

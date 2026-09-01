@@ -19,6 +19,16 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- **Core 0.1.21's three new callbacks are declared, and none of them exists here.** Read
+  from the venue's v2 reference, 2026-09-01: the crypto order surface is four calls —
+  list, place, get, and cancel-one. There is no preview, no amend, no bulk cancel and no
+  position-closing endpoint. `preview_replace/4`, `cancel_all_orders/2` and
+  `close_position/3` return `not_supported`, and the enumeration behind that is in
+  `docs/reference/robinhood/`.
+
+
 ### Fixed
 - **An ask is no longer used as a trade price.** `get_price/3` read
   `price || ask_inclusive_of_buy_spread`, so a response carrying no traded price produced a

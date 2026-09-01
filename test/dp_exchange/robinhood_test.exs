@@ -320,7 +320,8 @@ defmodule DpExchange.RobinhoodTest do
       {:get_historical_prices, 4} -> ["BTC-USD", "1d", [], []]
       {:get_order_book, 2} -> ["BTC-USD", []]
       {:place_order, 3} -> [@credentials, %{}, []]
-      {:replace_order, 4} -> [@credentials, "id", %{}, []]
+      # Every other arity-4 callback takes credentials, an id, a change map and opts.
+      {_name, 4} -> [@credentials, "id", %{}, []]
       {_name, 3} -> [@credentials, "id", []]
       {_name, 2} -> [@credentials, []]
       {_name, 1} -> [[]]
