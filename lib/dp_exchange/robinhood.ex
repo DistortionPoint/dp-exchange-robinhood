@@ -82,6 +82,13 @@ defmodule DpExchange.Robinhood do
     {:get_staking_history, 1},
     {:stake, 3},
     {:unstake, 3},
+    # **No one-step convert and no account volume report.** `convert/4` is the form where
+    # the venue executes without holding a rate; this venue publishes neither that nor the
+    # two-step quote/commit pair. `get_trade_volume/2` likewise — the venue reports fills,
+    # and summing them here would be this package's arithmetic rather than the venue's
+    # ledger, which is the number its fee tiers actually come from.
+    {:convert, 4},
+    {:get_trade_volume, 2},
     {:quote_conversion, 4},
     {:commit_conversion, 2},
     {:get_conversion, 2},
@@ -421,6 +428,12 @@ defmodule DpExchange.Robinhood do
 
   @impl true
   def get_conversion(_id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def convert(_from, _to, _amount, _opts \\ []), do: Venue.not_supported()
+
+  @impl true
+  def get_trade_volume(_credentials, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def list_portfolios(_opts), do: Venue.not_supported()

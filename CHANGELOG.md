@@ -21,6 +21,12 @@ what was run against the live venue, and when.
 
 ### Changed
 
+- **`convert/4` and `get_trade_volume/2` (Core 0.1.22) are declared unsupported.** The venue
+  publishes neither a one-step conversion nor the two-step quote/commit pair, and no
+  account-volume report. Summing fills here would be this package's arithmetic rather than
+  the venue's ledger, which is the number its fee tiers actually come from.
+
+
 - **Core 0.1.21's three new callbacks are declared, and none of them exists here.** Read
   from the venue's v2 reference, 2026-09-01: the crypto order surface is four calls —
   list, place, get, and cancel-one. There is no preview, no amend, no bulk cancel and no
