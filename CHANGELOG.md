@@ -62,6 +62,63 @@ what was run against the live venue, and when.
 
 ### Added
 
+- **The whole v2 surface** — accounts, holdings, estimated price, the four order calls, and
+  the market-data pair migrated from v1.
+
+  **This package could not trade a venue that can be traded.** `place_order/3` was declared
+  `:unsupported` on a broker whose documentation publishes it — the sharpest single
+  consequence of the coverage gap anywhere in this family, and it is closed.
+
+  **`account_number` is a required query parameter in v2** on holdings, on the order list,
+  on one order and on placing one, where v1 took none and answered for the credential's own
+  account. A call without it is not a smaller answer, it is a rejection, so each refuses
+  with `{:error, {:account_number_required, :robinhood}}` before a request is made —
+  `get_accounts/2` is where the number comes from.
+
+  **`estimated_price` moved from `marketdata` to `trading` between the versions**, and a
+  package pointed at the old path gets a 404 that reads like an outage. It is the third
+  price on this venue and the only one that accounts for size: not `get_price/2`'s last
+  trade and not `get_top_of_book/2`'s top of book. Several quantities can go in one request,
+  which is how a caller sees the slope rather than three points taken at three times.
+
+  **`client_order_id` is generated when the caller does not supply one, and it is an
+  idempotency key.** Re-sending the same one returns the original order rather than placing
+  a second, so a retry of a request whose response was never seen should pass the same id —
+  which is why `opts[:client_order_id]` exists.
+
+  **An order's configuration goes under a key named after its own type** —
+  `market_order_config`, `limit_order_config` and so on — and this package builds that key
+  from the type rather than taking it from the caller: a config under the wrong key is
+  silently ignored and the order is placed with none. A limit without a price, or a
+  stop-limit without a stop, is refused **by field name** before the request.
+
+  **`cancel_order/3` returns an order whose status is `:open`.** The venue acknowledges the
+  request and reports no outcome, and telling a caller the order is gone invites a second
+  order for the same exposure. `get_order/3` says whether the cancel took.
+
+  **Holdings keep the total and the tradable amount apart** — the difference is a balance
+  sitting in an open order — and `hold` is `nil` because the venue publishes no such figure.
+  Subtracting would state a number it never did.
+
+  A state this package does not recognise maps to `nil`, never the nearest: a caller
+  branching on `:filled` must not be handed it for a word that merely looked close.
+
+### Changed
+
+- **`best_bid_ask` and `trading_pairs` moved to v2**, which is what D5 makes the surface.
+  Both functions already existed and both were on v1, which is why their coverage boxes
+  stayed open. A test now asserts that no `/api/v1/` path remains in the code: a path is the
+  one thing in an HTTP call that cannot be verified by reading the response, and the v1 paths
+  still work.
+
+- **Core dependency moves to `~> 0.1.35`**, and twelve further callbacks are declared absent
+  with the reason. **This is a crypto brokerage with no funding API**: the vendor's crypto
+  trading documentation publishes nine endpoints and none of them is a payment method, a
+  transfer, an allowlist, a network list or a transaction ledger — money reaches the account
+  through the Robinhood application, which needs a person. Checked against all five of the
+  vendor's documentation pages on 2026-09-01.
+
+
 - **`get_trades/2`, `get_auction_imbalance/2` and `get_volume_profile/3` are declared
   unsupported.** Read from the venue's v2 reference, 2026-09-01: the crypto surface is best
   bid/ask, estimated price, accounts, holdings, orders and trading pairs — no tape. A crypto

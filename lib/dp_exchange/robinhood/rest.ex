@@ -30,7 +30,7 @@ defmodule DpExchange.Robinhood.Rest do
   """
 
   alias DpExchange.Core.HttpClient
-  alias DpExchange.Core.Types.{Quote, TopOfBook}
+  alias DpExchange.Core.Types.{Balance, Order, Quote, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
   @base_url "https://trading.robinhood.com"
@@ -50,7 +50,7 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, Quote.t()} | {:error, term()} | {:refused, term()}
   def get_price(symbol, credentials, opts) do
     native = SymbolFormat.to_exchange_symbol(symbol)
-    path = "/api/v1/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
+    path = "/api/v2/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- first_result(body),
@@ -84,7 +84,7 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
   def get_top_of_book(symbol, credentials, opts) do
     native = SymbolFormat.to_exchange_symbol(symbol)
-    path = "/api/v1/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
+    path = "/api/v2/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- first_result(body) do
@@ -171,6 +171,421 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   defp next_path(_no_more), do: nil
+
+  # --- accounts, holdings and trading (v2) --------------------------------
+
+  @doc """
+  The crypto trading account — `GET /api/v2/crypto/trading/accounts/`.
+
+  **The account number this returns is a parameter on almost everything else.** v2 takes
+  `account_number` as a query parameter on holdings, on the order list, on one order, and on
+  placing one — where v1 took none. A caller that skipped this call has nothing to address
+  those with.
+
+  Returned as the venue's own map.
+  """
+  @spec get_accounts(map(), keyword()) ::
+          {:ok, [map()]} | {:error, term()} | {:refused, term()}
+  def get_accounts(credentials, opts) do
+    with {:ok, body} <- get("/api/v2/crypto/trading/accounts/", credentials, opts) do
+      {:ok, body |> account_rows() |> List.wrap()}
+    end
+  end
+
+  defp account_rows(%{"results" => rows}) when is_list(rows), do: rows
+  defp account_rows(%{} = row), do: [row]
+  defp account_rows(_other), do: []
+
+  @doc """
+  Crypto holdings — `GET /api/v2/crypto/trading/holdings/`.
+
+  `opts[:account_number]` is **required by v2** and refused here when missing rather than
+  sent: v1 took none and answered for the credential's own account, so a call without one
+  is a v1 habit that v2 will not honour.
+
+  **Three quantities, kept apart.** The venue publishes `total_quantity`,
+  `quantity_available_for_trading` and — where it holds any — an amount that is neither: a
+  balance in an open order is real and is not tradable. `Types.Balance` carries the total
+  and the available separately for that reason, and the difference is what is on hold.
+
+  `opts[:asset_codes]` narrows to particular assets; without it the venue returns all of
+  them.
+  """
+  @spec get_balances(map(), keyword()) ::
+          {:ok, [Balance.t()]} | {:error, term()} | {:refused, term()}
+  def get_balances(credentials, opts) do
+    with {:ok, account} <- required_account(opts) do
+      query =
+        [{"account_number", account}] ++
+          Enum.map(List.wrap(Keyword.get(opts, :asset_codes, [])), &{"asset_code", &1})
+
+      path = "/api/v2/crypto/trading/holdings/" <> query_string(query)
+      asked_at = DateTime.utc_now()
+
+      with {:ok, body} <- get(path, credentials, opts) do
+        {:ok, body |> account_rows() |> Enum.map(&to_balance(&1, asked_at))}
+      end
+    end
+  end
+
+  defp to_balance(row, asked_at) do
+    total = decimal(row["total_quantity"])
+    available = decimal(row["quantity_available_for_trading"])
+
+    %Balance{
+      currency: row["asset_code"],
+      balance: total,
+      available_balance: available,
+      # The venue publishes no hold figure. Subtracting would produce a number it never
+      # stated, and one that is wrong the moment either side is missing.
+      hold: nil,
+      timestamp: asked_at,
+      provider: :robinhood
+    }
+  end
+
+  @doc """
+  An execution estimate — `GET /api/v2/crypto/trading/estimated_price/`.
+
+  **This endpoint moved between versions**: v1 served it under `marketdata`, v2 under
+  `trading`. A package pointed at the v1 path gets a 404 that reads like an outage.
+
+  **Not a quote and not a fill.** It is what the venue estimates a given quantity would
+  execute at *now*, which is a different number from `get_price/3`'s last trade and from
+  `get_top_of_book/3`'s top of book — the third price on this venue, and the only one that
+  accounts for size.
+
+  `side` is the venue's own `bid`, `ask` or `both`. Several quantities can be asked at once:
+  the venue takes them comma-separated, and asking for `0.1,1,10` in one request is how a
+  caller sees the slope rather than three points taken at three times.
+  """
+  @spec get_estimated_price(
+          String.t(),
+          String.t(),
+          String.t() | [String.t()],
+          map(),
+          keyword()
+        ) ::
+          {:ok, map()} | {:error, term()} | {:refused, term()}
+  def get_estimated_price(symbol, side, quantity, credentials, opts) do
+    query = [
+      {"symbol", SymbolFormat.to_exchange_symbol(symbol)},
+      {"side", to_string(side)},
+      {"quantity", quantity_param(quantity)}
+    ]
+
+    path = "/api/v2/crypto/trading/estimated_price/" <> query_string(query)
+
+    with {:ok, body} <- get(path, credentials, opts), do: {:ok, body}
+  end
+
+  defp quantity_param(list) when is_list(list),
+    do: list |> Enum.map(&decimal_string/1) |> Enum.join(",")
+
+  defp quantity_param(value), do: decimal_string(value)
+
+  # Full notation, never scientific: `1.0e-4` is not a quantity this venue reads.
+  defp decimal_string(%Decimal{} = value), do: Decimal.to_string(value, :normal)
+  defp decimal_string(value), do: to_string(value)
+
+  @doc """
+  Orders on one account — `GET /api/v2/crypto/trading/orders/`.
+
+  `opts[:account_number]` is required by v2. `opts[:created_at_start]` and the venue's other
+  filters are passed through under its own names, and none is defaulted — a start date
+  chosen here would return a real list of orders over a window the caller did not ask about.
+
+  This does **not** page. The venue returns a cursor and `get_symbols/2` walks one for the
+  catalogue; an order list is a different case — a caller filtering by date wants the page
+  it asked for, and following the cursor silently would fetch a history it did not.
+  `opts[:cursor]` continues where the caller decides to.
+  """
+  @spec get_orders(map(), keyword()) ::
+          {:ok, [Order.t()]} | {:error, term()} | {:refused, term()}
+  def get_orders(credentials, opts) do
+    with {:ok, account} <- required_account(opts) do
+      query =
+        [{"account_number", account}]
+        |> put_query("created_at_start", Keyword.get(opts, :created_at_start))
+        |> put_query("created_at_end", Keyword.get(opts, :created_at_end))
+        |> put_query("symbol", order_symbol(Keyword.get(opts, :symbol)))
+        |> put_query("state", Keyword.get(opts, :state))
+        |> put_query("cursor", Keyword.get(opts, :cursor))
+
+      path = "/api/v2/crypto/trading/orders/" <> query_string(query)
+
+      with {:ok, body} <- get(path, credentials, opts) do
+        {:ok, body |> account_rows() |> Enum.map(&to_order/1)}
+      end
+    end
+  end
+
+  @doc """
+  One order — `GET /api/v2/crypto/trading/orders/{order_id}/`.
+
+  `opts[:account_number]` is required by v2.
+  """
+  @spec get_order(map(), String.t(), keyword()) ::
+          {:ok, Order.t()} | {:error, term()} | {:refused, term()}
+  def get_order(credentials, order_id, opts) when is_binary(order_id) do
+    with {:ok, account} <- required_account(opts) do
+      path =
+        "/api/v2/crypto/trading/orders/" <>
+          URI.encode(order_id) <> "/" <> query_string([{"account_number", account}])
+
+      with {:ok, body} <- get(path, credentials, opts), do: {:ok, to_order(body)}
+    end
+  end
+
+  @doc """
+  Places an order — `POST /api/v2/crypto/trading/orders/`. **This moves funds.**
+
+  **`client_order_id` is generated here when the caller does not supply one, and it is an
+  idempotency key.** Re-sending the same one returns the original order instead of placing a
+  second; a caller retrying a request whose response it never saw should pass the *same* id
+  rather than let a new one be made, which is why the option exists.
+
+  **The order's configuration goes under a key named after its own type** — `market` takes
+  `market_order_config`, `limit` takes `limit_order_config`, and so on. This package builds
+  that key from the type rather than taking it from the caller: a config under the wrong key
+  is silently ignored by the venue and the order is placed with none.
+
+  `symbol`, `side`, `order_type` and a quantity are required. The quantity goes in as
+  `asset_quantity` — the venue's own field — and a limit order also needs `limit_price`.
+  """
+  @spec place_order(map(), map(), keyword()) ::
+          {:ok, Order.t()} | {:error, term()} | {:refused, term()}
+  def place_order(credentials, request, opts) do
+    with {:ok, account} <- required_account(opts),
+         {:ok, body} <- order_body(request, opts) do
+      path = "/api/v2/crypto/trading/orders/" <> query_string([{"account_number", account}])
+
+      with {:ok, response} <- post(path, body, credentials, opts), do: {:ok, to_order(response)}
+    end
+  end
+
+  @doc """
+  Cancels an order — `POST /api/v2/crypto/trading/orders/{order_id}/cancel/`.
+
+  **A POST, not a DELETE**, and it takes no account number where every other order call
+  does.
+
+  **The venue acknowledges the request and does not report an outcome**, so the `Order`
+  returned carries `status: :open` — the order is still live until the venue says otherwise,
+  and telling a caller it is gone invites a second order for the same exposure. Everything
+  the venue did not state is `nil`. `get_order/3` is what says whether the cancel took.
+  """
+  @spec cancel_order(map(), String.t(), keyword()) ::
+          {:ok, Order.t()} | {:error, term()} | {:refused, term()}
+  def cancel_order(credentials, order_id, opts) when is_binary(order_id) do
+    path = "/api/v2/crypto/trading/orders/" <> URI.encode(order_id) <> "/cancel/"
+
+    with {:ok, _body} <- post(path, %{}, credentials, opts) do
+      {:ok,
+       %Order{
+         id: order_id,
+         symbol: nil,
+         side: nil,
+         order_type: nil,
+         quantity: nil,
+         # Accepted, not cancelled. The venue reports no outcome here.
+         status: :open,
+         provider: :robinhood
+       }}
+    end
+  end
+
+  defp required_account(opts) do
+    case Keyword.get(opts, :account_number) do
+      account when is_binary(account) -> {:ok, account}
+      _missing -> {:error, {:account_number_required, :robinhood}}
+    end
+  end
+
+  defp order_symbol(nil), do: nil
+  defp order_symbol(symbol), do: SymbolFormat.to_exchange_symbol(symbol)
+
+  defp order_body(request, opts) do
+    with {:ok, symbol} <- order_field(request, :symbol),
+         {:ok, side} <- order_field(request, :side),
+         {:ok, type} <- order_field(request, :order_type),
+         {:ok, config} <- order_config(type, request) do
+      {:ok,
+       %{
+         "client_order_id" => Keyword.get(opts, :client_order_id, generate_client_order_id()),
+         "side" => to_string(side),
+         "type" => to_string(type),
+         "symbol" => SymbolFormat.to_exchange_symbol(symbol),
+         "#{type}_order_config" => config
+       }}
+    end
+  end
+
+  defp order_field(request, key) do
+    case Map.get(request, key) do
+      nil -> {:error, {:missing_field, key}}
+      value -> {:ok, value}
+    end
+  end
+
+  # The venue's four order types, and what each config must carry. A limit without a price
+  # is an order the venue rejects; refusing here says which field rather than relaying a
+  # message about a config key.
+  defp order_config(type, request) when type in [:market, "market"] do
+    with {:ok, quantity} <- order_field(request, :quantity) do
+      {:ok, %{"asset_quantity" => decimal_string(quantity)}}
+    end
+  end
+
+  defp order_config(type, request) when type in [:limit, "limit"] do
+    with {:ok, quantity} <- order_field(request, :quantity),
+         {:ok, price} <- order_field(request, :price) do
+      {:ok,
+       %{"asset_quantity" => decimal_string(quantity), "limit_price" => decimal_string(price)}}
+    end
+  end
+
+  defp order_config(type, request) when type in [:stop_loss, "stop_loss"] do
+    with {:ok, quantity} <- order_field(request, :quantity),
+         {:ok, stop} <- order_field(request, :stop_price) do
+      {:ok, %{"asset_quantity" => decimal_string(quantity), "stop_price" => decimal_string(stop)}}
+    end
+  end
+
+  defp order_config(type, request) when type in [:stop_limit, "stop_limit"] do
+    with {:ok, quantity} <- order_field(request, :quantity),
+         {:ok, price} <- order_field(request, :price),
+         {:ok, stop} <- order_field(request, :stop_price) do
+      {:ok,
+       %{
+         "asset_quantity" => decimal_string(quantity),
+         "limit_price" => decimal_string(price),
+         "stop_price" => decimal_string(stop)
+       }}
+    end
+  end
+
+  defp order_config(type, _request), do: {:error, {:unsupported_order_type, type}}
+
+  # A v4 UUID from the VM's own CSPRNG. The venue treats `client_order_id` as an idempotency
+  # key, so a collision would return someone else's order — worth generating correctly, and
+  # not worth a dependency for sixteen bytes.
+  defp generate_client_order_id do
+    <<a::32, b::16, _version::4, c::12, _variant::2, d::62>> = :crypto.strong_rand_bytes(16)
+
+    :io_lib.format("~8.16.0b-~4.16.0b-4~3.16.0b-a~3.16.0b-~12.16.0b", [
+      a,
+      b,
+      c,
+      Bitwise.bsr(d, 50),
+      Bitwise.band(d, 0xFFFFFFFFFFFF)
+    ])
+    |> to_string()
+  end
+
+  defp to_order(row) when is_map(row) do
+    %Order{
+      id: row["id"],
+      symbol: order_canonical(row["symbol"]),
+      side: order_side(row["side"]),
+      order_type: order_kind(row["type"]),
+      # The venue publishes no time-in-force on a crypto order. `nil` says so.
+      time_in_force: nil,
+      quantity: decimal(row["filled_asset_quantity"] || configured_quantity(row)),
+      filled_quantity: decimal(row["filled_asset_quantity"]),
+      average_price: decimal(row["average_price"]),
+      status: order_status(row["state"]),
+      fee: nil,
+      fee_currency: nil,
+      created_at: order_time(row["created_at"]),
+      provider: :robinhood
+    }
+  end
+
+  defp to_order(_row) do
+    %Order{
+      id: nil,
+      symbol: nil,
+      side: nil,
+      order_type: nil,
+      quantity: nil,
+      status: nil,
+      provider: :robinhood
+    }
+  end
+
+  defp configured_quantity(row) do
+    row
+    |> Enum.find_value(fn
+      {"" <> key, %{"asset_quantity" => quantity}} ->
+        if String.ends_with?(key, "_order_config"), do: quantity
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp order_canonical(nil), do: nil
+  defp order_canonical(symbol), do: SymbolFormat.to_canonical_symbol(symbol)
+
+  defp order_side("buy"), do: :buy
+  defp order_side("sell"), do: :sell
+  defp order_side(_other), do: nil
+
+  defp order_kind("market"), do: :market
+  defp order_kind("limit"), do: :limit
+  defp order_kind("stop_loss"), do: :stop
+  defp order_kind("stop_limit"), do: :stop_limit
+  defp order_kind(_other), do: nil
+
+  # The venue's own states. `open` is a live order and `canceled` is a dead one; a state
+  # this package does not know is `nil` rather than the nearest, because a caller branching
+  # on `:filled` must never be handed it for a word that merely looked close.
+  defp order_status("open"), do: :open
+  defp order_status("partially_filled"), do: :partially_filled
+  defp order_status("filled"), do: :filled
+  defp order_status("canceled"), do: :cancelled
+  defp order_status("failed"), do: :rejected
+  defp order_status(_other), do: nil
+
+  defp order_time(nil), do: nil
+
+  defp order_time(value) do
+    case parse_time(value) do
+      {:ok, at} -> at
+      _other -> nil
+    end
+  end
+
+  defp put_query(query, _name, nil), do: query
+  defp put_query(query, name, value), do: query ++ [{name, to_string(value)}]
+
+  # No clause for an empty list: every caller of this passes at least the account number,
+  # which v2 requires. Dialyzer proved the empty case unreachable, and a clause for a shape
+  # that never arrives reads as though it had been tested.
+  defp query_string(pairs), do: "?" <> URI.encode_query(pairs)
+
+  defp post(path, body, credentials, opts) do
+    encoded = Jason.encode!(body)
+
+    with {:ok, headers} <- Auth.headers("POST", path, encoded, credentials, opts) do
+      url = base_url(opts) <> path
+
+      case HttpClient.request(:post, url, headers, encoded, request_opts(opts)) do
+        {:ok, %{status: status, body: response}} when status in 200..299 ->
+          {:ok, decode(response)}
+
+        {:ok, %{status: status, body: response}} when status in [400, 401, 403, 404] ->
+          {:refused, refusal(status, response)}
+
+        {:ok, %{status: status, body: response}} ->
+          {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(response)}"}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
 
   # --- request ------------------------------------------------------------
 

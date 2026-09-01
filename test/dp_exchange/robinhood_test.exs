@@ -248,14 +248,26 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.get_order_book("BTC-USD", []) == {:error, :not_supported}
       assert Fake.get_market_overview([]) == {:error, :not_supported}
       assert Fake.list_instruments([]) == {:error, :not_supported}
-      assert Fake.get_balances(@credentials, []) == {:error, :not_supported}
-      assert Fake.get_accounts(@credentials, []) == {:error, :not_supported}
-      assert Fake.get_fees(@credentials, []) == {:error, :not_supported}
-      assert Fake.get_transfers(@credentials, []) == {:error, :not_supported}
-      assert Fake.place_order(@credentials, %{}, []) == {:error, :not_supported}
-      assert Fake.cancel_order(@credentials, "id", []) == {:error, :not_supported}
-      assert Fake.get_order(@credentials, "id", []) == {:error, :not_supported}
-      assert Fake.get_orders(@credentials, []) == {:error, :not_supported}
+      # The account, order and holdings surface landed on 2026-09-01. What refuses now is a
+      # v2 call without the account number v2 requires, which is a different assertion and
+      # a better one: it is the shape of the mistake a v1 habit produces.
+      assert Fake.get_balances(@credentials, []) ==
+               {:error, {:account_number_required, :robinhood}}
+
+      assert {:ok, [_account]} = Fake.get_accounts(@credentials, [])
+
+      assert Fake.place_order(@credentials, %{}, []) ==
+               {:error, {:account_number_required, :robinhood}}
+
+      # `:open`, not `:cancelled`: the venue acknowledges the request and reports no outcome.
+      assert {:ok, %{status: :open}} = Fake.cancel_order(@credentials, "id", [])
+
+      assert Fake.get_order(@credentials, "id", []) ==
+               {:error, {:account_number_required, :robinhood}}
+
+      assert Fake.get_orders(@credentials, []) ==
+               {:error, {:account_number_required, :robinhood}}
+
       assert Fake.get_trade_history(@credentials, []) == {:error, :not_supported}
       assert Fake.test_connection(@credentials, []) == {:error, :not_supported}
       assert Fake.get_rate_limit_status(@credentials, []) == {:error, :not_supported}

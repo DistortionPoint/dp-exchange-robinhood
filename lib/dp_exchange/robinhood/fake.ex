@@ -113,15 +113,58 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def list_instruments(_opts), do: Venue.not_supported()
   @impl true
-  def get_balances(_credentials, _opts), do: Venue.not_supported()
+  def get_balances(_credentials, opts) do
+    with {:ok, _account} <- fake_account(opts) do
+      # Total above available: the difference is a balance sitting in an open order, which
+      # is the case a consumer reading only one of them gets wrong. `hold` stays nil, as in
+      # the package — the venue publishes no such figure.
+      {:ok,
+       [
+         %Types.Balance{
+           currency: "BTC",
+           balance: Decimal.new("1.5"),
+           available_balance: Decimal.new("1.0"),
+           hold: nil,
+           timestamp: DateTime.utc_now(),
+           provider: :robinhood
+         }
+       ]}
+    end
+  end
+
   @impl true
-  def get_accounts(_credentials, _opts), do: Venue.not_supported()
+  def get_accounts(_credentials, _opts),
+    do: {:ok, [%{"account_number" => "RH-1", "status" => "active", "buying_power" => "1000.00"}]}
+
   @impl true
   def get_fees(_credentials, _opts), do: Venue.not_supported()
   @impl true
   def get_transfers(_credentials, _opts), do: Venue.not_supported()
+
   @impl true
-  def place_order(_credentials, _request, _opts), do: Venue.not_supported()
+  def place_order(_credentials, request, opts) do
+    with {:ok, _account} <- fake_account(opts) do
+      # `open`, not `filled`: an accepted order is not an executed one, and a fake that
+      # filled every order would let a consumer ship code that never handles a resting one.
+      {:ok,
+       %Types.Order{
+         id: "rh-order-1",
+         symbol: Map.get(request, :symbol),
+         side: Map.get(request, :side),
+         order_type: Map.get(request, :order_type),
+         time_in_force: nil,
+         quantity: Map.get(request, :quantity),
+         filled_quantity: Decimal.new("0"),
+         average_price: nil,
+         status: :open,
+         fee: nil,
+         fee_currency: nil,
+         created_at: DateTime.utc_now(),
+         provider: :robinhood
+       }}
+    end
+  end
+
   # Both refused, matching the real venue. A fake that answered where the real one
   # refuses lets a consumer's suite go green against behaviour that cannot happen.
   @impl true
@@ -140,11 +183,93 @@ defmodule DpExchange.Robinhood.Fake do
   def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
   @impl true
-  def cancel_order(_credentials, _id, _opts), do: Venue.not_supported()
+  def cancel_order(_credentials, id, _opts) do
+    # `:open`, not `:cancelled` — the venue acknowledges the request and reports no
+    # outcome, and a fake that said cancelled would let a consumer stop watching an order
+    # that is still live.
+    {:ok,
+     %Types.Order{
+       id: id,
+       symbol: nil,
+       side: nil,
+       order_type: nil,
+       quantity: nil,
+       status: :open,
+       provider: :robinhood
+     }}
+  end
+
   @impl true
-  def get_order(_credentials, _id, _opts), do: Venue.not_supported()
+  def get_order(_credentials, id, opts) do
+    with {:ok, _account} <- fake_account(opts) do
+      {:ok,
+       %Types.Order{
+         id: id,
+         symbol: "BTC-USD",
+         side: :buy,
+         order_type: :limit,
+         time_in_force: nil,
+         quantity: Decimal.new("0.5"),
+         filled_quantity: Decimal.new("0.25"),
+         average_price: Decimal.new("60000"),
+         status: :partially_filled,
+         fee: nil,
+         fee_currency: nil,
+         created_at: nil,
+         provider: :robinhood
+       }}
+    end
+  end
+
   @impl true
-  def get_orders(_credentials, _opts), do: Venue.not_supported()
+  def get_orders(_credentials, opts) do
+    with {:ok, _account} <- fake_account(opts), do: {:ok, []}
+  end
+
+  # v2 takes the account number where v1 took none. A fake that answered without it would
+  # let a v1 habit pass here and fail against the venue.
+  defp fake_account(opts) do
+    case Keyword.get(opts, :account_number) do
+      account when is_binary(account) -> {:ok, account}
+      _missing -> {:error, {:account_number_required, :robinhood}}
+    end
+  end
+
+  @impl true
+  def get_transactions(_credentials, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_payment_methods(_credentials, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_payment_method(_credentials, _id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def add_payment_method(_details, _opts), do: Venue.not_supported()
+
+  @impl true
+  def transfer_internal(_asset, _amount, _opts, _request_opts), do: Venue.not_supported()
+
+  @impl true
+  def request_approved_address(_asset, _network, _address, _opts), do: Venue.not_supported()
+
+  @impl true
+  def remove_approved_address(_network, _address, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_networks(_asset, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_fee_promos(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_fx_rate(_pair, _at, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_notional_balances(_credentials, _currency, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_custody_fees(_credentials, _opts), do: Venue.not_supported()
   @impl true
   def get_trade_history(_credentials, _opts), do: Venue.not_supported()
   @impl true

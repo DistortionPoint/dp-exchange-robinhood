@@ -22,7 +22,7 @@ defmodule DpExchange.Robinhood.Auth do
   Four details in that line are easy to get wrong, and each produces the same unhelpful
   401:
 
-  - **`path` includes the query string.** `/api/v1/crypto/marketdata/best_bid_ask/?symbol=BTC-USD`,
+  - **`path` includes the query string.** `/api/v2/crypto/marketdata/best_bid_ask/?symbol=BTC-USD`,
     not the path alone. A signature over the bare path fails on every request that filters.
   - **`method` is uppercase.**
   - **`body` is the empty string for a GET**, not omitted — the concatenation still has a

@@ -65,6 +65,23 @@ defmodule DpExchange.Robinhood do
   # package got — and the two are worth telling apart, so the account and trading endpoints
   # below are listed separately.
   @venue_does_not_serve [
+    # **A crypto brokerage with no funding API.** The vendor's crypto trading documentation
+    # publishes nine endpoints and none of them is a payment method, a transfer, an
+    # allowlist, a network list or a transaction ledger — money reaches the account through
+    # the Robinhood application, which needs a person. Checked against all five of the
+    # vendor's documentation pages on 2026-09-01.
+    {:get_transactions, 2},
+    {:list_payment_methods, 2},
+    {:get_payment_method, 3},
+    {:add_payment_method, 2},
+    {:transfer_internal, 4},
+    {:request_approved_address, 4},
+    {:remove_approved_address, 3},
+    {:list_networks, 2},
+    {:list_fee_promos, 1},
+    {:get_fx_rate, 3},
+    {:get_notional_balances, 3},
+    {:list_custody_fees, 2},
     # Core 0.1.16 widened the facade. **These are the venue's absence, not this package's
     # backlog**: Robinhood Crypto's entire documented surface is nine endpoints — quotes,
     # estimated price, accounts, holdings, trading pairs and four order operations. It
@@ -144,14 +161,8 @@ defmodule DpExchange.Robinhood do
   # Not ported yet. The venue serves these; this package does not implement them.
   @not_ported [
     {:list_instruments, 1},
-    {:get_balances, 2},
-    {:get_accounts, 2},
     {:get_fees, 2},
     {:get_transfers, 2},
-    {:place_order, 3},
-    {:cancel_order, 3},
-    {:get_order, 3},
-    {:get_orders, 2},
     {:get_trade_history, 2},
     {:get_rate_limit_status, 2},
     {:test_connection, 2},
@@ -279,16 +290,57 @@ defmodule DpExchange.Robinhood do
 
   # --- account and trading -----------------------------------------------
 
+  @doc """
+  Crypto holdings for one account.
+
+  See `DpExchange.Robinhood.Rest.get_balances/2`. `opts[:account_number]` is **required by
+  v2** where v1 took none, and `hold` is `nil` because the venue publishes no such figure —
+  subtracting would produce a number it never stated.
+  """
   @impl true
-  def get_balances(_credentials, _opts), do: Venue.not_supported()
+  def get_balances(credentials, opts), do: Rest.get_balances(credentials, with_limiter(opts))
+
+  @doc """
+  The crypto trading account — and the account number every other v2 call takes.
+
+  See `DpExchange.Robinhood.Rest.get_accounts/2`.
+  """
   @impl true
-  def get_accounts(_credentials, _opts), do: Venue.not_supported()
+  def get_accounts(credentials, opts), do: Rest.get_accounts(credentials, with_limiter(opts))
+
   @impl true
   def get_fees(_credentials, _opts), do: Venue.not_supported()
   @impl true
   def get_transfers(_credentials, _opts), do: Venue.not_supported()
+
+  @doc """
+  Places an order. **This moves funds.**
+
+  See `DpExchange.Robinhood.Rest.place_order/3`. `opts[:account_number]` is required;
+  `client_order_id` is generated when the caller does not supply one **and is an idempotency
+  key**, so a retry of a request whose response was never seen should pass the same one.
+  """
   @impl true
-  def place_order(_credentials, _request, _opts), do: Venue.not_supported()
+  def place_order(credentials, request, opts),
+    do: Rest.place_order(credentials, request, with_limiter(opts))
+
+  @doc """
+  An execution estimate for a given size.
+
+  Venue-specific: the third price on this venue, and the only one that accounts for size.
+  See `DpExchange.Robinhood.Rest.get_estimated_price/5` — **the endpoint moved from
+  `marketdata` to `trading` between v1 and v2.**
+  """
+  @spec get_estimated_price(
+          String.t(),
+          String.t(),
+          String.t() | [String.t()],
+          map(),
+          keyword()
+        ) ::
+          {:ok, map()} | {:error, term()} | {:refused, term()}
+  def get_estimated_price(symbol, side, quantity, credentials, opts \\ []),
+    do: Rest.get_estimated_price(symbol, side, quantity, credentials, with_limiter(opts))
 
   @doc """
   **Not supported.** This venue publishes no order-preview endpoint.
@@ -317,14 +369,76 @@ defmodule DpExchange.Robinhood do
   @impl true
   def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Cancels an order. **A POST, not a DELETE**, and it takes no account number.
+
+  See `DpExchange.Robinhood.Rest.cancel_order/3` — cancellation is a request the venue
+  accepts, not an outcome; read the order back before treating it as gone.
+  """
   @impl true
-  def cancel_order(_credentials, _id, _opts), do: Venue.not_supported()
+  def cancel_order(credentials, id, opts),
+    do: Rest.cancel_order(credentials, id, with_limiter(opts))
+
+  @doc """
+  One order. `opts[:account_number]` is required by v2.
+
+  See `DpExchange.Robinhood.Rest.get_order/3`.
+  """
   @impl true
-  def get_order(_credentials, _id, _opts), do: Venue.not_supported()
+  def get_order(credentials, id, opts), do: Rest.get_order(credentials, id, with_limiter(opts))
+
+  @doc """
+  Orders on one account. `opts[:account_number]` is required by v2.
+
+  See `DpExchange.Robinhood.Rest.get_orders/2` — this does not follow the venue's cursor,
+  because a caller filtering by date wants the page it asked for.
+  """
   @impl true
-  def get_orders(_credentials, _opts), do: Venue.not_supported()
+  def get_orders(credentials, opts), do: Rest.get_orders(credentials, with_limiter(opts))
+
   @impl true
   def get_trade_history(_credentials, _opts), do: Venue.not_supported()
+
+  # **A crypto brokerage with no funding API.** Robinhood's crypto trading documentation
+  # publishes nine endpoints and none of them is a payment method, a transfer, an allowlist
+  # or a network list — money reaches the account through the Robinhood application, which
+  # needs a person. Checked against the vendor's own five documentation pages on 2026-09-01.
+
+  @impl true
+  def get_transactions(_credentials, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_payment_methods(_credentials, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_payment_method(_credentials, _id, _opts), do: Venue.not_supported()
+
+  @impl true
+  def add_payment_method(_details, _opts), do: Venue.not_supported()
+
+  @impl true
+  def transfer_internal(_asset, _amount, _opts, _request_opts), do: Venue.not_supported()
+
+  @impl true
+  def request_approved_address(_asset, _network, _address, _opts), do: Venue.not_supported()
+
+  @impl true
+  def remove_approved_address(_network, _address, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_networks(_asset, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_fee_promos(_opts), do: Venue.not_supported()
+
+  @impl true
+  def get_fx_rate(_pair, _at, _opts), do: Venue.not_supported()
+
+  @impl true
+  def get_notional_balances(_credentials, _currency, _opts), do: Venue.not_supported()
+
+  @impl true
+  def list_custody_fees(_credentials, _opts), do: Venue.not_supported()
 
   # --- streaming, which here is a poll ------------------------------------
 
