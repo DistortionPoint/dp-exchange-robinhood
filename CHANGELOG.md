@@ -19,6 +19,21 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Decimal.new/1` raised on a non-numeric price string — the same defect class filed
+  against `dp_exchange_webull` as DpCryptoManagement's issue #3.** Auditing every copy of
+  the raising pattern in this package found it here too, in `rest.ex`'s `decimal/1`. Fixed
+  with `Decimal.parse/1`, requiring the whole string be consumed — the idiom already
+  established elsewhere in this family (`chain_strike/1`, `ws_decode.ex`).
+
+  The lenient fix alone would have introduced a second, quieter defect: a malformed
+  required field silently becoming `nil` instead of raising, which `@enforce_keys` does
+  not catch. `get_price/3` now refuses the quote instead
+  (`{:error, {:invalid_decimal, :price, value}}`), rather than delivering a `Quote` with a
+  fabricated-looking `nil` in the field this venue's own usage-rules call the whole point
+  of the endpoint.
+
 ### Documentation
 
 - **Every negative this package makes is audited** —

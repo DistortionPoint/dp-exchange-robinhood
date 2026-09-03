@@ -54,12 +54,13 @@ defmodule DpExchange.Robinhood.Rest do
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- first_result(body),
-         {:ok, price} <- quoted_price(row),
+         {:ok, raw_price} <- quoted_price(row),
+         {:ok, price} <- required_decimal(raw_price, :price),
          {:ok, timestamp} <- venue_time(row) do
       {:ok,
        %Quote{
          symbol: SymbolFormat.to_canonical_symbol(native),
-         price: decimal(price),
+         price: price,
          # The quote carries no volume, and there is no candle endpoint to source one
          # from. `nil`, never `0`.
          volume: nil,
@@ -695,7 +696,29 @@ defmodule DpExchange.Robinhood.Rest do
   defp decimal(nil), do: nil
   defp decimal(""), do: nil
   defp decimal(%Decimal{} = value), do: value
-  defp decimal(value) when is_binary(value), do: Decimal.new(value)
   defp decimal(value) when is_integer(value), do: Decimal.new(value)
   defp decimal(value) when is_float(value), do: Decimal.from_float(value)
+
+  # `Decimal.new/1` raises on a string that is not a number. `Decimal.parse/1`, requiring
+  # the whole string be consumed (`{d, ""}`), is the family's established idiom for this.
+  defp decimal(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {parsed, ""} -> parsed
+      _unparsable -> nil
+    end
+  end
+
+  defp decimal(_other), do: nil
+
+  # A garbage or missing value in a field this contract requires must not become a `nil`
+  # carried into `@enforce_keys` — a struct's field list does not check that a value is
+  # non-nil, only that the key was given. Refuse the record instead.
+  defp required_decimal(nil, field), do: {:error, {:missing_required_field, field}}
+
+  defp required_decimal(value, field) do
+    case decimal(value) do
+      nil -> {:error, {:invalid_decimal, field, value}}
+      parsed -> {:ok, parsed}
+    end
+  end
 end
