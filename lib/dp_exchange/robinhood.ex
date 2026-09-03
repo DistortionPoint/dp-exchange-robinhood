@@ -184,9 +184,7 @@ defmodule DpExchange.Robinhood do
     # `trading_pairs` carries the instrument metadata; this package reads only the symbols.
     {:list_instruments, 1},
     # Any signed endpoint answers it; nothing here calls one for the purpose.
-    {:test_connection, 2},
-    # `trading_pairs` publishes min/max order size and increments per pair.
-    {:quantization, 1}
+    {:test_connection, 2}
   ]
 
   @unsupported @venue_does_not_serve ++ @not_ported
@@ -523,8 +521,16 @@ defmodule DpExchange.Robinhood do
   @impl true
   def market_status(_opts), do: {:ok, :open}
 
+  @doc """
+  Rounds a price and quantity to what the venue will actually accept.
+
+  See `DpExchange.Robinhood.Rest.quantization/3` — in particular why `min_quantity` is
+  `nil` rather than a guess: the venue's own schema for this endpoint names no per-unit
+  minimum, despite a different page's prose naming one that does not exist on it.
+  """
   @impl true
-  def quantization(_symbol), do: Venue.not_supported()
+  def quantization(symbol, opts \\ []),
+    do: Rest.quantization(symbol, credentials(opts), with_limiter(opts))
 
   @doc "The quote currencies this venue settles in."
   @spec quotes() :: [String.t()]

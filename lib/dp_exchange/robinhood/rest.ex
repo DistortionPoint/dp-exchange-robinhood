@@ -138,6 +138,40 @@ defmodule DpExchange.Robinhood.Rest do
   #
   # There is no safe number of pages to allow, so the bound is on *repetition* rather than
   # on count: a page already visited ends the walk with what was collected, and says so.
+  @doc """
+  Rounds a price and quantity to what the venue will actually accept, from the same
+  `trading_pairs` endpoint `get_symbols/1` already calls.
+
+  `get_symbols/1` extracts only `symbol` from each row and discards the rest —
+  `asset_increment`, `quote_increment`, `max_order_size` and `min_order_amount` are real
+  fields on `V2TradingPair` (Robinhood's own OpenAPI schema, `docs.robinhood.com`), not
+  invented here. `min_order_size` is absent from the schema itself despite being named in
+  the *prose* beside `estimated_price` ("quantity must be between `min_order_size` and
+  `max_order_size` as defined in our Get Crypto Trading Pairs endpoint") — the vendor's
+  own documentation names a field its own schema does not define. Carried as `nil` rather
+  than guessed at from `min_order_amount`, which is a cash minimum, not a unit minimum.
+  """
+  @spec quantization(String.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()} | {:refused, term()}
+  def quantization(symbol, credentials, opts) do
+    native = SymbolFormat.to_exchange_symbol(symbol)
+    path = "/api/v2/crypto/trading/trading_pairs/?symbol=" <> URI.encode(native)
+
+    with {:ok, body} <- get(path, credentials, opts),
+         {:ok, row} <- first_result(body) do
+      {:ok,
+       %{
+         price_increment: decimal(row["quote_increment"]),
+         quantity_increment: decimal(row["asset_increment"]),
+         # The schema names no unit minimum — see the moduledoc above.
+         min_quantity: nil,
+         max_quantity: decimal(row["max_order_size"]),
+         min_quote_size: decimal(row["min_order_amount"]),
+         status: row["status"]
+       }}
+    end
+  end
+
   defp walk(path, credentials, opts, acc, seen) do
     if path in seen do
       {:error, {:pagination_loop, path}}

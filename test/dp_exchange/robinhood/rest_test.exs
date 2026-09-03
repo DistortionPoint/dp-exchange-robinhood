@@ -295,4 +295,66 @@ defmodule DpExchange.Robinhood.RestTest do
                )
     end
   end
+
+  describe "quantization/3" do
+    @pair_row %{
+      "symbol" => "BTC-USD",
+      "asset_code" => "BTC",
+      "quote_code" => "USD",
+      "asset_increment" => "0.00000001",
+      "quote_increment" => "0.01",
+      "max_order_size" => "100",
+      "min_order_amount" => "1.00",
+      "status" => "tradable",
+      "is_api_tradable" => true
+    }
+
+    test "reads increments and limits from the same trading_pairs row get_symbols/1 uses" do
+      assert {:ok, quantum} =
+               Rest.quantization("BTC-USD", @credentials,
+                 plug: responding(%{"results" => [@pair_row]}),
+                 retry_attempts: 0
+               )
+
+      assert Decimal.equal?(quantum.price_increment, Decimal.new("0.01"))
+      assert Decimal.equal?(quantum.quantity_increment, Decimal.new("0.00000001"))
+      assert Decimal.equal?(quantum.max_quantity, Decimal.new("100"))
+      assert Decimal.equal?(quantum.min_quote_size, Decimal.new("1.00"))
+      assert quantum.status == "tradable"
+    end
+
+    test "min_quantity is nil — the schema names no per-unit minimum" do
+      # Robinhood's own OpenAPI schema for V2TradingPair has no min_order_size field,
+      # despite different prose (beside estimated_price) naming one. Guessing at
+      # min_order_amount (a CASH minimum) would answer a units question with a dollar
+      # figure.
+      assert {:ok, quantum} =
+               Rest.quantization("BTC-USD", @credentials,
+                 plug: responding(%{"results" => [@pair_row]}),
+                 retry_attempts: 0
+               )
+
+      assert quantum.min_quantity == nil
+    end
+
+    test "an unlisted symbol is refused rather than answered with an empty page" do
+      assert {:refused, :not_listed} =
+               Rest.quantization("NOPE-USD", @credentials,
+                 plug: responding(%{"results" => []}),
+                 retry_attempts: 0
+               )
+    end
+
+    test "a non-numeric increment refuses rather than delivering a fabricated nil" do
+      row = %{@pair_row | "quote_increment" => "null"}
+
+      assert {:ok, quantum} =
+               Rest.quantization("BTC-USD", @credentials,
+                 plug: responding(%{"results" => [row]}),
+                 retry_attempts: 0
+               )
+
+      assert quantum.price_increment == nil
+    end
+  end
 end

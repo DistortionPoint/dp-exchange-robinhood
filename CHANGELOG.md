@@ -19,6 +19,21 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Added
+
+- **`quantization/1` is implemented.** It had sat in `@not_ported` with a comment already
+  half-answering the question DpCryptoManagement filed (issue #5 against
+  `dp_exchange_core`): "`trading_pairs` publishes min/max order size and increments per
+  pair" — true, and nothing read them. `get_symbols/1` extracts only `symbol` from each
+  row and discards the rest.
+
+  Verified against Robinhood's own OpenAPI schema before wiring anything: `V2TradingPair`
+  carries `asset_increment`, `quote_increment`, `max_order_size` and `min_order_amount`.
+  **`min_order_size` is absent from the schema**, despite different prose — beside
+  `estimated_price` — naming it as if it existed. `quantization/1`'s `min_quantity` is
+  `nil` rather than a guess built from `min_order_amount`, which is a cash minimum, not a
+  units one.
+
 ### Fixed
 
 - **`Decimal.new/1` raised on a non-numeric price string — the same defect class filed

@@ -280,7 +280,17 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_rate_limit_status(_credentials, _opts), do: Venue.not_supported()
   @impl true
-  def quantization(_symbol), do: Venue.not_supported()
+  def quantization(_symbol) do
+    {:ok,
+     %{
+       price_increment: Decimal.new("0.01"),
+       quantity_increment: Decimal.new("0.00000001"),
+       min_quantity: nil,
+       max_quantity: Decimal.new("1000"),
+       min_quote_size: Decimal.new("1.00"),
+       status: "tradable"
+     }}
+  end
 
   @impl true
   def market_status(_opts), do: {:ok, :open}

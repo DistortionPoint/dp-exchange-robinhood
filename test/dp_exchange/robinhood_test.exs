@@ -271,7 +271,6 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.get_trade_history(@credentials, []) == {:error, :not_supported}
       assert Fake.test_connection(@credentials, []) == {:error, :not_supported}
       assert Fake.get_rate_limit_status(@credentials, []) == {:error, :not_supported}
-      assert Fake.quantization("BTC-USD") == {:error, :not_supported}
     end
 
     test "it declares the real venue's capabilities and starts nothing" do
