@@ -357,4 +357,51 @@ defmodule DpExchange.Robinhood.RestTest do
       assert quantum.price_increment == nil
     end
   end
+
+  describe "rate_limit_blocking — DpCryptoManagement issue #16" do
+    defmodule RecordingLimiter do
+      @moduledoc false
+      @behaviour DpExchange.Core.RateLimitBehaviour
+
+      @impl true
+      def acquire(_provider, _weight, _opts) do
+        Process.put(:rate_limiter_call, :acquire)
+        :ok
+      end
+
+      @impl true
+      def check(_provider, _weight, _opts) do
+        Process.put(:rate_limiter_call, :check)
+        :ok
+      end
+
+      @impl true
+      def record(_provider, _weight, _opts), do: :ok
+    end
+
+    test "rate_limit_blocking: true reaches Core.HttpClient as acquire/3, not check/3" do
+      Config.put_override(:rate_limit_module, RecordingLimiter)
+
+      assert {:ok, _quote} =
+               Rest.get_price("BTC-USD", @credentials,
+                 plug: responding(quote_body()),
+                 retry_attempts: 0,
+                 rate_limit_blocking: true
+               )
+
+      assert Process.get(:rate_limiter_call) == :acquire
+    end
+
+    test "rate_limit_blocking: false (or omitted) reaches Core.HttpClient as check/3" do
+      Config.put_override(:rate_limit_module, RecordingLimiter)
+
+      assert {:ok, _quote} =
+               Rest.get_price("BTC-USD", @credentials,
+                 plug: responding(quote_body()),
+                 retry_attempts: 0
+               )
+
+      assert Process.get(:rate_limiter_call) == :check
+    end
+  end
 end

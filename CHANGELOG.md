@@ -49,6 +49,19 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **`Feed` never actually reached blocking (`acquire/3`) rate limiting, despite its own
+  moduledoc documenting exactly why it needs it — DpCryptoManagement's issue #16.**
+  `:rate_limit_blocking` — the option `Core.HttpClient.check_rate_limits/1` reads to
+  choose `acquire/3` over fail-fast `check/3` — was missing from both `Feed.start_link/1`'s
+  and `Rest.request_opts/1`'s own forwarded-options allowlists, so no caller could ever
+  turn it on: every poll fell through to `check/3` regardless, and the exact failure the
+  moduledoc describes (87 of 87 symbols delivering dropping to 8 of 87 in one cycle)
+  reproduced live. Both allowlists now include it; `Feed.start_link/1` also defaults it
+  to `true` — a poll's whole reason to exist is this venue's rate limit, so a slower
+  cycle rather than a missing price is the only correct default for it. `Rest`'s own
+  allowlist does not default it, since a direct one-off `get_price/2` call goes through
+  the same code and fail-fast may be exactly what that caller wants.
+
 - **`Decimal.new/1` raised on a non-numeric price string — the same defect class filed
   against `dp_exchange_webull` as DpCryptoManagement's issue #3.** Auditing every copy of
   the raising pattern in this package found it here too, in `rest.ex`'s `decimal/1`. Fixed

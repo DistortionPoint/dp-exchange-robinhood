@@ -648,7 +648,15 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp request_opts(opts) do
     opts
-    |> Keyword.take([:limiter, :timeout, :retry_attempts, :log_requests, :plug, :req_adapter])
+    |> Keyword.take([
+      :limiter,
+      :timeout,
+      :retry_attempts,
+      :log_requests,
+      :plug,
+      :req_adapter,
+      :rate_limit_blocking
+    ])
     |> Keyword.merge(provider: :robinhood, raw_status: true)
   end
 

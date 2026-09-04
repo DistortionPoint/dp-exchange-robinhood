@@ -31,6 +31,17 @@ defmodule DpExchange.Robinhood.Feed do
   answers "is there capacity right now" and a poll that finds none simply skips the symbol.
 
   `acquire/3` waits for capacity instead. A slower cycle rather than a missing price.
+
+  **Documenting that design was not the same as wiring it.** `:rate_limit_blocking` —
+  the option `Core.HttpClient.check_rate_limits/1` actually reads to choose `acquire/3`
+  over `check/3` — was missing from this module's own forwarded-options allowlist, so no
+  caller could ever turn it on: every request fell through to `check/3` regardless, and
+  the failure this section describes reproduced exactly, live (DpCryptoManagement's issue
+  #16). Forwarded now, and defaulted to `true` here specifically — not in `Rest`'s own
+  allowlist, which a direct one-off `get_price/2` call also goes through and where
+  fail-fast may be exactly what a caller wants. A poll is not a one-off call: this
+  module's whole reason to exist is the venue's rate limit, so `acquire` is the only
+  correct default for it.
   """
 
   alias DpExchange.Core.PollingFeed
@@ -44,7 +55,18 @@ defmodule DpExchange.Robinhood.Feed do
   def start_link(opts) do
     credentials = Keyword.get(opts, :credentials, %{})
     subscriber = Keyword.get(opts, :subscriber, self())
-    request_opts = Keyword.take(opts, [:limiter, :plug, :req_adapter, :base_url, :retry_attempts])
+
+    request_opts =
+      opts
+      |> Keyword.take([
+        :limiter,
+        :plug,
+        :req_adapter,
+        :base_url,
+        :retry_attempts,
+        :rate_limit_blocking
+      ])
+      |> Keyword.put_new(:rate_limit_blocking, true)
 
     PollingFeed.start_link(
       name: Keyword.get(opts, :name),
