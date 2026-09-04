@@ -21,6 +21,19 @@ what was run against the live venue, and when.
 
 ### Added
 
+- **`Fake` wired to `Core.FakeInjection` — DpCryptoManagement's issue #14, reference
+  implementation for the family.** Every function with a real success path (not an
+  unconditional `Venue.not_supported()`) now checks a queued or always-set outcome first:
+  `get_price/2`, `get_top_of_book/2` and `quantization/1` support per-symbol targeting,
+  and `get_symbols/1`, `get_balances/2`, `get_accounts/2`, `place_order/3`,
+  `cancel_order/3`, `get_order/3`, `get_orders/2` and `market_status/1` support
+  whole-call injection. `authenticated/1` also honours
+  `FakeInjection.credentials_bypassed?/1`, letting a wiring-only test skip the
+  venue-faithful `{:refused, :missing_credentials}` default without changing it for
+  anyone who doesn't call `bypass_credentials/1`. `subscribe/2`, `unsubscribe/2` and
+  `update_symbols/2` are deliberately not wired — each takes a symbol list in one call,
+  which whole-call injection cannot express partial failure for.
+
 - **`quantization/1` is implemented.** It had sat in `@not_ported` with a comment already
   half-answering the question DpCryptoManagement filed (issue #5 against
   `dp_exchange_core`): "`trading_pairs` publishes min/max order size and increments per

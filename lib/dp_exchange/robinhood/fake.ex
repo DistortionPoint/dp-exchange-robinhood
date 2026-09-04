@@ -12,11 +12,25 @@ defmodule DpExchange.Robinhood.Fake do
   - **Coverage is `:internal_poll`, not `:stream`** — the one place a consumer can see that
     this venue has no socket, and it shows up as *what is arriving*, never as *how*.
   - **No candles, no order book, no volume.** The venue serves none, so neither does this.
+
+  ## Failure injection and anonymous mode
+
+  Every function below that has a real success path (not an unconditional
+  `Venue.not_supported()`) checks `DpExchange.Core.FakeInjection.next_outcome/1` or `/2`
+  first — a queued or always-set outcome from `FakeInjection.queue_failures/2,3` or
+  `fail_always/2,3` short-circuits the fake's normal logic and is returned as-is.
+  `authenticated/1` also checks `FakeInjection.credentials_bypassed?/1` before its normal
+  `{:refused, :missing_credentials}` path. Neither changes anything for a test that never
+  calls `FakeInjection` — see that module for the full contract.
+
+  `subscribe/2`, `unsubscribe/2` and `update_symbols/2` are NOT wired: each takes a list
+  of symbols in one call, and "this one symbol in the batch fails, the rest succeed" is a
+  case whole-call injection cannot express — see `FakeInjection`'s own moduledoc.
   """
 
   @behaviour DpExchange.Core.Venue
 
-  alias DpExchange.Core.{Types, Venue}
+  alias DpExchange.Core.{FakeInjection, Types, Venue}
 
   @symbols ~w(BTC-USD ETH-USD DOGE-USD)
 
@@ -44,55 +58,61 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def get_price(symbol, opts \\ []) do
-    with :ok <- authenticated(opts) do
-      case Map.fetch(@price, symbol) do
-        {:ok, price} ->
-          {:ok,
-           %Types.Quote{
-             symbol: symbol,
-             # A traded price, and only that. This used to be the ask, with a comment
-             # citing "what the real adapter uses when the venue sends no separate price" —
-             # a fallback removed in Phase 1 because an ask is a resting order and a price
-             # is an execution. A fake that reproduces a defect makes the defect untestable.
-             price: Decimal.new(price),
-             volume: nil,
-             timestamp: @at,
-             provider: :robinhood
-           }}
+    with_injection(symbol, fn ->
+      with :ok <- authenticated(opts) do
+        case Map.fetch(@price, symbol) do
+          {:ok, price} ->
+            {:ok,
+             %Types.Quote{
+               symbol: symbol,
+               # A traded price, and only that. This used to be the ask, with a comment
+               # citing "what the real adapter uses when the venue sends no separate price" —
+               # a fallback removed in Phase 1 because an ask is a resting order and a price
+               # is an execution. A fake that reproduces a defect makes the defect untestable.
+               price: Decimal.new(price),
+               volume: nil,
+               timestamp: @at,
+               provider: :robinhood
+             }}
 
-        :error ->
-          {:refused, :not_listed}
+          :error ->
+            {:refused, :not_listed}
+        end
       end
-    end
+    end)
   end
 
   @impl true
   def get_top_of_book(symbol, opts \\ []) do
-    with :ok <- authenticated(opts) do
-      case Map.fetch(@price, symbol) do
-        {:ok, price} ->
-          {:ok,
-           %Types.TopOfBook{
-             symbol: symbol,
-             # A spread straddling the traded price, equal to neither side.
-             bid: Decimal.sub(Decimal.new(price), Decimal.new("0.01")),
-             ask: Decimal.add(Decimal.new(price), Decimal.new("0.01")),
-             bid_size: nil,
-             ask_size: nil,
-             venue_time: @at,
-             observed_at: @at,
-             provider: :robinhood
-           }}
+    with_injection(symbol, fn ->
+      with :ok <- authenticated(opts) do
+        case Map.fetch(@price, symbol) do
+          {:ok, price} ->
+            {:ok,
+             %Types.TopOfBook{
+               symbol: symbol,
+               # A spread straddling the traded price, equal to neither side.
+               bid: Decimal.sub(Decimal.new(price), Decimal.new("0.01")),
+               ask: Decimal.add(Decimal.new(price), Decimal.new("0.01")),
+               bid_size: nil,
+               ask_size: nil,
+               venue_time: @at,
+               observed_at: @at,
+               provider: :robinhood
+             }}
 
-        :error ->
-          {:refused, :not_listed}
+          :error ->
+            {:refused, :not_listed}
+        end
       end
-    end
+    end)
   end
 
   @impl true
   def get_symbols(opts \\ []) do
-    with :ok <- authenticated(opts), do: {:ok, @symbols}
+    with_injection(fn ->
+      with :ok <- authenticated(opts), do: {:ok, @symbols}
+    end)
   end
 
   @impl true
@@ -114,27 +134,32 @@ defmodule DpExchange.Robinhood.Fake do
   def list_instruments(_opts), do: Venue.not_supported()
   @impl true
   def get_balances(_credentials, opts) do
-    with {:ok, _account} <- fake_account(opts) do
-      # Total above available: the difference is a balance sitting in an open order, which
-      # is the case a consumer reading only one of them gets wrong. `hold` stays nil, as in
-      # the package — the venue publishes no such figure.
-      {:ok,
-       [
-         %Types.Balance{
-           currency: "BTC",
-           balance: Decimal.new("1.5"),
-           available_balance: Decimal.new("1.0"),
-           hold: nil,
-           timestamp: DateTime.utc_now(),
-           provider: :robinhood
-         }
-       ]}
-    end
+    with_injection(fn ->
+      with {:ok, _account} <- fake_account(opts) do
+        # Total above available: the difference is a balance sitting in an open order, which
+        # is the case a consumer reading only one of them gets wrong. `hold` stays nil, as in
+        # the package — the venue publishes no such figure.
+        {:ok,
+         [
+           %Types.Balance{
+             currency: "BTC",
+             balance: Decimal.new("1.5"),
+             available_balance: Decimal.new("1.0"),
+             hold: nil,
+             timestamp: DateTime.utc_now(),
+             provider: :robinhood
+           }
+         ]}
+      end
+    end)
   end
 
   @impl true
-  def get_accounts(_credentials, _opts),
-    do: {:ok, [%{"account_number" => "RH-1", "status" => "active", "buying_power" => "1000.00"}]}
+  def get_accounts(_credentials, _opts) do
+    with_injection(fn ->
+      {:ok, [%{"account_number" => "RH-1", "status" => "active", "buying_power" => "1000.00"}]}
+    end)
+  end
 
   @impl true
   def get_fees(_credentials, _opts), do: Venue.not_supported()
@@ -143,26 +168,28 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def place_order(_credentials, request, opts) do
-    with {:ok, _account} <- fake_account(opts) do
-      # `open`, not `filled`: an accepted order is not an executed one, and a fake that
-      # filled every order would let a consumer ship code that never handles a resting one.
-      {:ok,
-       %Types.Order{
-         id: "rh-order-1",
-         symbol: Map.get(request, :symbol),
-         side: Map.get(request, :side),
-         order_type: Map.get(request, :order_type),
-         time_in_force: nil,
-         quantity: Map.get(request, :quantity),
-         filled_quantity: Decimal.new("0"),
-         average_price: nil,
-         status: :open,
-         fee: nil,
-         fee_currency: nil,
-         created_at: DateTime.utc_now(),
-         provider: :robinhood
-       }}
-    end
+    with_injection(fn ->
+      with {:ok, _account} <- fake_account(opts) do
+        # `open`, not `filled`: an accepted order is not an executed one, and a fake that
+        # filled every order would let a consumer ship code that never handles a resting one.
+        {:ok,
+         %Types.Order{
+           id: "rh-order-1",
+           symbol: Map.get(request, :symbol),
+           side: Map.get(request, :side),
+           order_type: Map.get(request, :order_type),
+           time_in_force: nil,
+           quantity: Map.get(request, :quantity),
+           filled_quantity: Decimal.new("0"),
+           average_price: nil,
+           status: :open,
+           fee: nil,
+           fee_currency: nil,
+           created_at: DateTime.utc_now(),
+           provider: :robinhood
+         }}
+      end
+    end)
   end
 
   @impl true
@@ -187,46 +214,52 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def cancel_order(_credentials, id, _opts) do
-    # `:open`, not `:cancelled` — the venue acknowledges the request and reports no
-    # outcome, and a fake that said cancelled would let a consumer stop watching an order
-    # that is still live.
-    {:ok,
-     %Types.Order{
-       id: id,
-       symbol: nil,
-       side: nil,
-       order_type: nil,
-       quantity: nil,
-       status: :open,
-       provider: :robinhood
-     }}
+    with_injection(fn ->
+      # `:open`, not `:cancelled` — the venue acknowledges the request and reports no
+      # outcome, and a fake that said cancelled would let a consumer stop watching an order
+      # that is still live.
+      {:ok,
+       %Types.Order{
+         id: id,
+         symbol: nil,
+         side: nil,
+         order_type: nil,
+         quantity: nil,
+         status: :open,
+         provider: :robinhood
+       }}
+    end)
   end
 
   @impl true
   def get_order(_credentials, id, opts) do
-    with {:ok, _account} <- fake_account(opts) do
-      {:ok,
-       %Types.Order{
-         id: id,
-         symbol: "BTC-USD",
-         side: :buy,
-         order_type: :limit,
-         time_in_force: nil,
-         quantity: Decimal.new("0.5"),
-         filled_quantity: Decimal.new("0.25"),
-         average_price: Decimal.new("60000"),
-         status: :partially_filled,
-         fee: nil,
-         fee_currency: nil,
-         created_at: nil,
-         provider: :robinhood
-       }}
-    end
+    with_injection(fn ->
+      with {:ok, _account} <- fake_account(opts) do
+        {:ok,
+         %Types.Order{
+           id: id,
+           symbol: "BTC-USD",
+           side: :buy,
+           order_type: :limit,
+           time_in_force: nil,
+           quantity: Decimal.new("0.5"),
+           filled_quantity: Decimal.new("0.25"),
+           average_price: Decimal.new("60000"),
+           status: :partially_filled,
+           fee: nil,
+           fee_currency: nil,
+           created_at: nil,
+           provider: :robinhood
+         }}
+      end
+    end)
   end
 
   @impl true
   def get_orders(_credentials, opts) do
-    with {:ok, _account} <- fake_account(opts), do: {:ok, []}
+    with_injection(fn ->
+      with {:ok, _account} <- fake_account(opts), do: {:ok, []}
+    end)
   end
 
   # v2 takes the account number where v1 took none. A fake that answered without it would
@@ -280,20 +313,24 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_rate_limit_status(_credentials, _opts), do: Venue.not_supported()
   @impl true
-  def quantization(_symbol) do
-    {:ok,
-     %{
-       price_increment: Decimal.new("0.01"),
-       quantity_increment: Decimal.new("0.00000001"),
-       min_quantity: nil,
-       max_quantity: Decimal.new("1000"),
-       min_quote_size: Decimal.new("1.00"),
-       status: "tradable"
-     }}
+  def quantization(symbol) do
+    with_injection(symbol, fn ->
+      {:ok,
+       %{
+         price_increment: Decimal.new("0.01"),
+         quantity_increment: Decimal.new("0.00000001"),
+         min_quantity: nil,
+         max_quantity: Decimal.new("1000"),
+         min_quote_size: Decimal.new("1.00"),
+         status: "tradable"
+       }}
+    end)
   end
 
   @impl true
-  def market_status(_opts), do: {:ok, :open}
+  def market_status(_opts) do
+    with_injection(fn -> {:ok, :open} end)
+  end
 
   @impl true
   def subscribe(symbols, opts \\ []) do
@@ -333,9 +370,20 @@ defmodule DpExchange.Robinhood.Fake do
   defp subscribed, do: Process.get(__MODULE__, MapSet.new())
 
   defp authenticated(opts) do
-    case Keyword.get(opts, :credentials) do
-      %{api_key: _key, private_key: _private} -> :ok
-      _absent -> {:refused, :missing_credentials}
+    if FakeInjection.credentials_bypassed?(:robinhood) do
+      :ok
+    else
+      case Keyword.get(opts, :credentials) do
+        %{api_key: _key, private_key: _private} -> :ok
+        _absent -> {:refused, :missing_credentials}
+      end
+    end
+  end
+
+  defp with_injection(symbol \\ nil, fun) do
+    case FakeInjection.next_outcome(:robinhood, symbol) do
+      {:override, outcome} -> outcome
+      :none -> fun.()
     end
   end
 
