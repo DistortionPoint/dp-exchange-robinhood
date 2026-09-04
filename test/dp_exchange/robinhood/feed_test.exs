@@ -43,7 +43,16 @@ defmodule DpExchange.Robinhood.FeedTest do
       interval_ms: 60_000,
       subscriber: self(),
       limiter: permissive_limiter(),
-      plug: responding(%{"results" => [%{"price" => "1", "timestamp" => "2026-08-28T12:00:00Z"}]})
+      plug:
+        responding(%{
+          "results" => [
+            %{
+              "bid_inclusive_of_sell_spread" => "0.99",
+              "ask_inclusive_of_buy_spread" => "1.01",
+              "timestamp" => "2026-08-28T12:00:00Z"
+            }
+          ]
+        })
     ]
 
     {:ok, pid} = Feed.start_link(Keyword.merge(defaults, opts))
@@ -79,7 +88,8 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # check/3 would refuse immediately and never retry inside this window (the next
       # tick is 60s away) — only acquire/3 (the default) delivers here at all.
-      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.Quote{symbol: "BTC-USD"}},
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
                      1_000
     end
 
@@ -87,15 +97,16 @@ defmodule DpExchange.Robinhood.FeedTest do
       limiter = exhausted_limiter()
       start_feed(limiter: limiter, rate_limit_blocking: false)
 
-      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.Quote{}}, 1_000
+      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 1_000
     end
   end
 
   describe "delivery" do
-    test "a quote reaches the subscriber" do
+    test "a book reaches the subscriber" do
       start_feed()
 
-      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.Quote{symbol: "BTC-USD"}},
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
                      1_000
     end
   end

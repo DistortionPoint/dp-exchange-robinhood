@@ -11,9 +11,16 @@ defmodule DpExchange.Robinhood.Feed do
   that cannot exist.
 
   Behind a feed, the poll is an implementation detail. This module delivers the same
-  `Core.Types.Quote` to the same subscriber as a WebSocket venue, so no consumer branches
-  on transport, and `coverage/1` can report what the venue actually reports about itself:
-  these symbols are arriving.
+  `Core.Types.TopOfBook` to the same subscriber as a WebSocket venue, so no consumer
+  branches on transport, and `coverage/1` can report what the venue actually reports about
+  itself: these symbols are arriving.
+
+  **Not `Core.Types.Quote`.** This venue has no last-trade endpoint at all —
+  `best_bid_ask` carries only bid and ask — and DpCryptoManagement's issue #21 is what
+  happens when this polled `Core.Types.Quote.price` from the ask to paper over that: a
+  fabricated trade price masquerading as a real one. See `DpExchange.Robinhood`'s
+  moduledoc on `get_price/2`. Bid and ask are both genuine, so that is what this polls and
+  delivers.
 
   ## Per symbol, because there is no bulk endpoint
 
@@ -74,11 +81,11 @@ defmodule DpExchange.Robinhood.Feed do
       symbols: Keyword.get(opts, :symbols, []),
       interval_ms: Keyword.get(opts, :interval_ms, @interval_ms),
       start_delay_ms: Keyword.get(opts, :start_delay_ms),
-      sink: fn quote_struct -> send(subscriber, {:dp_exchange, :robinhood, quote_struct}) end,
+      sink: fn book -> send(subscriber, {:dp_exchange, :robinhood, book}) end,
       on_refusal: fn symbol, reason ->
         send(subscriber, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
       end,
-      fetch: fn symbol -> Rest.get_price(symbol, credentials, request_opts) end
+      fetch: fn symbol -> Rest.get_top_of_book(symbol, credentials, request_opts) end
     )
     |> case do
       # `PollingFeed` refuses to start without a fetcher, which cannot happen here — but

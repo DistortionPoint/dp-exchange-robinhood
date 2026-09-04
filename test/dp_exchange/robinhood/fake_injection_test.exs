@@ -58,13 +58,6 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
   end
 
   describe "symbol-targeted injection" do
-    test "get_price/2 only fails for the targeted symbol" do
-      FakeInjection.fail_always(:robinhood, "BTC-USD", {:error, :injected})
-
-      assert Fake.get_price("BTC-USD", credentials: @credentials) == {:error, :injected}
-      assert {:ok, _quote} = Fake.get_price("ETH-USD", credentials: @credentials)
-    end
-
     test "get_top_of_book/2 only fails for the targeted symbol" do
       FakeInjection.fail_always(:robinhood, "BTC-USD", {:error, :injected})
 
@@ -82,7 +75,7 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
     test "a whole-call queue still reaches a symbol-taking function with no symbol-specific override" do
       FakeInjection.fail_always(:robinhood, {:error, :whole_call})
 
-      assert Fake.get_price("BTC-USD", credentials: @credentials) == {:error, :whole_call}
+      assert Fake.get_top_of_book("BTC-USD", credentials: @credentials) == {:error, :whole_call}
     end
   end
 
@@ -106,7 +99,7 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
     end
 
     test "the default, without calling bypass_credentials/1, is still venue-faithful" do
-      assert Fake.get_price("BTC-USD", []) == {:refused, :missing_credentials}
+      assert Fake.get_top_of_book("BTC-USD", []) == {:refused, :missing_credentials}
     end
   end
 end

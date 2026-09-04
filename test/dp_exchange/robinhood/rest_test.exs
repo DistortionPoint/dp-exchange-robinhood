@@ -34,8 +34,8 @@ defmodule DpExchange.Robinhood.RestTest do
       Map.merge(
         %{
           "symbol" => "BTC-USD",
-          # A traded price, deliberately inside the spread and equal to neither side: if a
-          # test can pass with price == ask, it is not testing what it claims to.
+          # Nothing here reads "price" — the venue's `best_bid_ask` response shape, kept
+          # for realism even though this package no longer looks at the field.
           "price" => "77845.00",
           "bid_inclusive_of_sell_spread" => "77840.00",
           "ask_inclusive_of_buy_spread" => "77850.00",
@@ -48,7 +48,7 @@ defmodule DpExchange.Robinhood.RestTest do
   end
 
   describe "every call is signed, because there is no anonymous endpoint" do
-    test "the three headers reach the wire even for a quote" do
+    test "the three headers reach the wire even for a book" do
       plug = fn conn ->
         assert Plug.Conn.get_req_header(conn, "x-api-key") == ["k"]
         assert [_signature] = Plug.Conn.get_req_header(conn, "x-signature")
@@ -57,13 +57,13 @@ defmodule DpExchange.Robinhood.RestTest do
         Req.Test.json(conn, quote_body())
       end
 
-      assert {:ok, _quote} =
-               Rest.get_price("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
+      assert {:ok, _top} =
+               Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
     end
 
     test "without credentials it refuses rather than sending unsigned" do
       assert {:error, {:missing_credentials, :robinhood}} =
-               Rest.get_price("BTC-USD", %{}, retry_attempts: 0)
+               Rest.get_top_of_book("BTC-USD", %{}, retry_attempts: 0)
     end
 
     test "the query string is part of the signed path" do
@@ -72,94 +72,60 @@ defmodule DpExchange.Robinhood.RestTest do
         Req.Test.json(conn, quote_body())
       end
 
-      assert {:ok, _quote} =
-               Rest.get_price("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
+      assert {:ok, _top} =
+               Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
     end
   end
 
-  describe "get_price/3" do
-    test "returns a Quote with Decimal numerics" do
-      assert {:ok, %Types.Quote{} = quote_struct} =
-               Rest.get_price("BTC-USD", @credentials,
-                 plug: responding(quote_body()),
-                 retry_attempts: 0
-               )
-
-      assert quote_struct.symbol == "BTC-USD"
-      assert quote_struct.provider == :robinhood
-    end
-
-    test "the book comes back from get_top_of_book/3, not on the Quote" do
+  describe "get_top_of_book/3" do
+    test "returns a TopOfBook with Decimal numerics, spread-inclusive as the venue sent them" do
       # The venue publishes spread-inclusive prices — what a caller would transact at — and
-      # they are carried as sent. `Core.Types.Quote` has no bid or ask to put them on.
-      assert {:ok, top} =
+      # they are carried as sent. `Core.Types.Quote` has no bid or ask to put them on, which
+      # is why there is no `get_price/3` here at all — see the moduledoc.
+      assert {:ok, %Types.TopOfBook{} = top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(quote_body()),
                  retry_attempts: 0
                )
 
+      assert top.symbol == "BTC-USD"
+      assert top.provider == :robinhood
       assert Decimal.equal?(top.bid, Decimal.new("77840.00"))
       assert Decimal.equal?(top.ask, Decimal.new("77850.00"))
-      assert top.observed_at
       refute Map.has_key?(top, :price)
     end
 
-    test "an ask is never used as the price" do
-      # This test used to assert the opposite — that `price` falls back to the ask when the
-      # venue sends no separate price — and it passed, which is how the substitution
-      # survived review. An ask is a resting order: what a seller is *willing* to take. A
-      # price is what actually traded. They coincide only when that order fills.
-      #
-      # A consumer computing a position value or a stop from an ask believes it has a trade
-      # price, and the gap between them is widest exactly when the book is thin.
-      body =
-        quote_body() |> put_in(["results"], [Map.delete(hd(quote_body()["results"]), "price")])
+    test "a missing bid or ask decodes as nil, not as an error" do
+      body = quote_body() |> put_in(["results"], [%{"timestamp" => "2026-08-28T17:00:01Z"}])
 
-      assert {:error, :no_trade_price_in_response} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
-    end
-
-    test "an explicit price is used as given" do
-      body = quote_body(%{"price" => "77845.00"})
-
-      assert {:ok, quote_struct} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
-
-      assert Decimal.equal?(quote_struct.price, Decimal.new("77845.00"))
-    end
-
-    test "a non-numeric price refuses the quote rather than delivering price: nil" do
-      # Decimal.new/1 used to raise here. The fix must not trade a crash for a Quote whose
-      # required :price is silently nil, which is the same substitution wearing a
-      # quieter shape.
-      body = quote_body(%{"price" => "null"})
-
-      assert {:error, {:invalid_decimal, :price, "null"}} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
-    end
-
-    test "volume is nil — the quote carries none and there is no candle endpoint" do
-      assert {:ok, quote_struct} =
-               Rest.get_price("BTC-USD", @credentials,
-                 plug: responding(quote_body()),
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
                  retry_attempts: 0
                )
 
-      assert quote_struct.volume == nil
+      assert top.bid == nil
+      assert top.ask == nil
     end
 
-    test "a quote with no venue timestamp FAILS rather than substituting now" do
-      body =
-        quote_body()
-        |> put_in(["results"], [%{"price" => "1", "ask_inclusive_of_buy_spread" => "1"}])
+    test "a venue timestamp this package cannot parse is nil, not a failed call" do
+      # Unlike a trade price, a book with an unreadable venue_time is still a real,
+      # current book — `top_of_book_time/1` swallows the parse failure into `nil` rather
+      # than refusing the whole read.
+      body = quote_body(%{"timestamp" => "whenever"})
 
-      assert {:error, :missing_venue_timestamp} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert top.venue_time == nil
     end
 
     test "an empty results list is a refusal — the venue does not carry it" do
       assert {:refused, :not_listed} =
-               Rest.get_price("NOPE-USD", @credentials,
+               Rest.get_top_of_book("NOPE-USD", @credentials,
                  plug: responding(%{"results" => []}),
                  retry_attempts: 0
                )
@@ -167,21 +133,17 @@ defmodule DpExchange.Robinhood.RestTest do
 
     test "a body with no results key is unreadable, not empty" do
       assert {:error, :unexpected_response_shape} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(%{}), retry_attempts: 0)
-    end
-
-    test "a row with no traded price is unreadable" do
-      body = %{"results" => [%{"timestamp" => "2026-08-28T17:00:01Z"}]}
-
-      assert {:error, :no_trade_price_in_response} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(%{}),
+                 retry_attempts: 0
+               )
     end
 
     test "a 401 is a refusal carrying the venue's own detail" do
       body = %{"detail" => "invalid signature"}
 
       assert {:refused, {:venue_error, 401, "invalid signature"}} =
-               Rest.get_price("BTC-USD", @credentials,
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(body, 401),
                  retry_attempts: 0
                )
@@ -191,7 +153,7 @@ defmodule DpExchange.Robinhood.RestTest do
       body = %{"errors" => [%{"detail" => "not tradable"}]}
 
       assert {:refused, {:venue_error, 400, "not tradable"}} =
-               Rest.get_price("BTC-USD", @credentials,
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(body, 400),
                  retry_attempts: 0
                )
@@ -199,7 +161,7 @@ defmodule DpExchange.Robinhood.RestTest do
 
     test "a 500 stays an error the caller may retry" do
       assert {:error, _reason} =
-               Rest.get_price("BTC-USD", @credentials,
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(%{}, 500),
                  retry_attempts: 0
                )
@@ -211,21 +173,14 @@ defmodule DpExchange.Robinhood.RestTest do
       for value <- [1_787_936_147, 1_787_936_147_000] do
         body = quote_body(%{"timestamp" => value})
 
-        assert {:ok, quote_struct} =
-                 Rest.get_price("BTC-USD", @credentials,
+        assert {:ok, top} =
+                 Rest.get_top_of_book("BTC-USD", @credentials,
                    plug: responding(body),
                    retry_attempts: 0
                  )
 
-        assert quote_struct.timestamp.year == 2026
+        assert top.venue_time.year == 2026
       end
-    end
-
-    test "an unparseable timestamp is an error, not a guess" do
-      body = quote_body(%{"timestamp" => "whenever"})
-
-      assert {:error, {:unparseable_venue_timestamp, "whenever"}} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
     end
   end
 
@@ -382,8 +337,8 @@ defmodule DpExchange.Robinhood.RestTest do
     test "rate_limit_blocking: true reaches Core.HttpClient as acquire/3, not check/3" do
       Config.put_override(:rate_limit_module, RecordingLimiter)
 
-      assert {:ok, _quote} =
-               Rest.get_price("BTC-USD", @credentials,
+      assert {:ok, _top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(quote_body()),
                  retry_attempts: 0,
                  rate_limit_blocking: true
@@ -395,8 +350,8 @@ defmodule DpExchange.Robinhood.RestTest do
     test "rate_limit_blocking: false (or omitted) reaches Core.HttpClient as check/3" do
       Config.put_override(:rate_limit_module, RecordingLimiter)
 
-      assert {:ok, _quote} =
-               Rest.get_price("BTC-USD", @credentials,
+      assert {:ok, _top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(quote_body()),
                  retry_attempts: 0
                )

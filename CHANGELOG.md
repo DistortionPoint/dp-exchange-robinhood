@@ -49,6 +49,31 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **`get_price/2` is now `:unsupported` — the ask-fallback removal earlier in this file
+  left it permanently non-functional, and DpCryptoManagement's issue #21 is the live
+  consequence: 154 consecutive failures, 0 successes, every poll cycle since boot.**
+  `best_bid_ask` — the only quote-adjacent endpoint this venue serves — carries only
+  `bid_inclusive_of_sell_spread` / `ask_inclusive_of_buy_spread`, never a trade price.
+  Confirmed no last-trade endpoint exists anywhere on the venue's documented nine-operation
+  surface (`docs/reference/robinhood/negative-claims.md`: "No public trade tape"), and
+  that `estimated_price` is not a substitute — its own doc already said so ("Not a quote
+  and not a fill"), and it needs a side and quantity picked for it, which is fabrication
+  with extra steps. `quoted_price/1` required `row["price"]`, a field this response shape
+  never carries, so removing the ask fallback (the correct call — see `Core.Types.Quote`'s
+  own moduledoc, which now names this exact incident as why `Quote` carries no bid or ask
+  at all) left nothing honest for it to ever return.
+
+  `get_price/2` now returns `{:error, :not_supported}` unconditionally, moved into
+  `venue_does_not_serve/0`. `Rest.get_price/3`, `quoted_price/1` and the now-unused
+  `required_decimal/2` are removed rather than left dead. `capabilities().streamable`
+  changes from `[:quotes]` to `[:top_of_book]` — `:top_of_book` was always a real,
+  precedented `data_kind` (Gemini already declares it) and this venue's whole "streaming"
+  was already a REST poll internally, so `Feed`'s poll now calls `get_top_of_book/3`
+  instead of the broken `get_price/3` and delivers `Core.Types.TopOfBook` instead of
+  `Core.Types.Quote` — live bid/ask keeps flowing, honestly labelled, rather than the
+  venue's whole quote stream going dark to avoid re-fabricating a trade price. `Fake`
+  updated to match on both counts.
+
 - **`Feed` never actually reached blocking (`acquire/3`) rate limiting, despite its own
   moduledoc documenting exactly why it needs it — DpCryptoManagement's issue #16.**
   `:rate_limit_blocking` — the option `Core.HttpClient.check_rate_limits/1` reads to

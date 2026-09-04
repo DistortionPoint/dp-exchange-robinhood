@@ -52,20 +52,21 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
   end
 
   describe "empty strings are absent fields, not values" do
-    test "an empty traded price is an unreadable quote" do
-      body = %{"results" => [%{"price" => "", "timestamp" => "2026-08-28T17:00:01Z"}]}
-
-      assert {:error, :no_trade_price_in_response} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
-    end
-
-    test "an empty timestamp fails closed" do
+    test "an empty timestamp is nil, not a failed read" do
+      # Unlike a trade price, a book with no readable venue_time is still a real, current
+      # book — `top_of_book_time/1` swallows a `:missing_venue_timestamp` into `nil`
+      # rather than refusing the whole read.
       body = %{
         "results" => [%{"price" => "1", "ask_inclusive_of_buy_spread" => "1", "timestamp" => ""}]
       }
 
-      assert {:error, :missing_venue_timestamp} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert top.venue_time == nil
     end
 
     test "an empty bid is nil rather than zero" do
@@ -118,7 +119,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
     test "a 502 is an error naming the status" do
       assert {:error, {:exchange_error, :robinhood, message}} =
-               Rest.get_price("BTC-USD", @credentials,
+               Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(%{}, 502),
                  retry_attempts: 0
                )
@@ -130,7 +131,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       plug = fn conn -> Plug.Conn.resp(conn, 404, "not json") end
 
       assert {:refused, {:venue_error, 404}} =
-               Rest.get_price("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
+               Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
     end
 
     test "a seconds epoch as a string is read" do
@@ -140,13 +141,16 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
         ]
       }
 
-      assert {:ok, quote_struct} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
 
-      assert quote_struct.timestamp.year == 2026
+      assert top.venue_time.year == 2026
     end
 
-    test "a timestamp of an unexpected type is an error, not a guess" do
+    test "a timestamp of an unexpected type is nil, not a guess" do
       body = %{
         "results" => [
           %{
@@ -157,13 +161,18 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
         ]
       }
 
-      assert {:error, {:unparseable_venue_timestamp, _value}} =
-               Rest.get_price("BTC-USD", @credentials, plug: responding(body), retry_attempts: 0)
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert top.venue_time == nil
     end
   end
 
   describe "the feed's own plumbing" do
-    test "a fetched quote reaches the subscriber through the sink", %{limiter: limiter} do
+    test "a fetched book reaches the subscriber through the sink", %{limiter: limiter} do
       # The feed is a poll, and this is the wiring that makes a poll indistinguishable
       # from a socket to whoever subscribed.
       body = %{
@@ -190,7 +199,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
           retry_attempts: 0
         )
 
-      assert_receive {:dp_exchange, :robinhood, %Types.Quote{symbol: "BTC-USD"}}, 3_000
+      assert_receive {:dp_exchange, :robinhood, %Types.TopOfBook{symbol: "BTC-USD"}}, 3_000
       assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
     end
 

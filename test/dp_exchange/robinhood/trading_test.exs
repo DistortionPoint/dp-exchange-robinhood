@@ -579,15 +579,6 @@ defmodule DpExchange.Robinhood.TradingTest do
         ]
       }
 
-      assert {:ok, _quote} =
-               Rest.get_price("BTC-USD", @credentials,
-                 plug: capturing(body, me),
-                 retry_attempts: 0
-               )
-
-      assert_receive {:request, "GET", path, _query, _raw}
-      assert path == "/api/v2/crypto/marketdata/best_bid_ask/"
-
       assert {:ok, _book} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: capturing(body, me),

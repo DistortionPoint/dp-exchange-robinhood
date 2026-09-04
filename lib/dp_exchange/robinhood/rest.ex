@@ -8,18 +8,16 @@ defmodule DpExchange.Robinhood.Rest do
   an order, which is why this venue declares `credential_benefit: :required` and why
   `get_price/2` takes credentials.
 
-  ## The price is the ask, and that is worth stating plainly
+  ## There is no `get_price/3` here, and that is deliberate
 
-  `best_bid_ask` returns `bid_inclusive_of_sell_spread` and
-  `ask_inclusive_of_buy_spread` — the prices a taker would actually get. When the venue
-  sends no separate `price`, this package uses the **ask** as the quote's price, because it
-  is a real number the venue quoted and it is the one a buyer pays.
-
-  It is not a mid, and it is not a last trade. **A series built from it sits a spread above
-  a mid-based series from another venue**, which matters if two venues' prices are ever
-  compared. `bid` and `ask` are both carried so a caller can compute whatever it actually
-  wants; nothing here computes a mid, because what a price *means* is the caller's
-  decision.
+  `best_bid_ask` returns `bid_inclusive_of_sell_spread` and `ask_inclusive_of_buy_spread` —
+  the prices a taker would actually get — and never a trade price. This module used to fill
+  a quote's `price` from the ask when the venue sent none. `Core.Types.Quote`'s own
+  moduledoc now names that incident directly as the reason `Quote` carries no bid or ask at
+  all: a package filling `price` from `ask` "is exactly what one of them did." Removing the
+  fallback was correct and left nothing here for `get_price/3` to honestly return —
+  DpCryptoManagement's issue #21. The facade declares `get_price/2` `:unsupported`
+  accordingly. `bid` and `ask` are both real and both carried, through `get_top_of_book/3`.
 
   ## No candles, no order book, no volume
 
@@ -30,7 +28,7 @@ defmodule DpExchange.Robinhood.Rest do
   """
 
   alias DpExchange.Core.HttpClient
-  alias DpExchange.Core.Types.{Balance, Order, Quote, TopOfBook}
+  alias DpExchange.Core.Types.{Balance, Order, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
   @base_url "https://trading.robinhood.com"
@@ -40,46 +38,15 @@ defmodule DpExchange.Robinhood.Rest do
   def base_url(opts), do: Keyword.get(opts, :base_url, @base_url)
 
   @doc """
-  Best bid and ask for one symbol.
-
-  Timestamped from the venue's own `timestamp`. A quote the venue did not date returns
-  `{:error, :missing_venue_timestamp}` — the local clock is never substituted, which is
-  what the adapter this replaces did.
-  """
-  @spec get_price(String.t(), map(), keyword()) ::
-          {:ok, Quote.t()} | {:error, term()} | {:refused, term()}
-  def get_price(symbol, credentials, opts) do
-    native = SymbolFormat.to_exchange_symbol(symbol)
-    path = "/api/v2/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
-
-    with {:ok, body} <- get(path, credentials, opts),
-         {:ok, row} <- first_result(body),
-         {:ok, raw_price} <- quoted_price(row),
-         {:ok, price} <- required_decimal(raw_price, :price),
-         {:ok, timestamp} <- venue_time(row) do
-      {:ok,
-       %Quote{
-         symbol: SymbolFormat.to_canonical_symbol(native),
-         price: price,
-         # The quote carries no volume, and there is no candle endpoint to source one
-         # from. `nil`, never `0`.
-         volume: nil,
-         timestamp: timestamp,
-         provider: :robinhood
-       }}
-    end
-  end
-
-  @doc """
   Best bid and ask for `symbol` — the top of the book, not a traded price.
 
-  Reads the same `best_bid_ask` payload as `get_price/3`. **The venue's spread-inclusive
-  fields are what it publishes** — `bid_inclusive_of_sell_spread` and
+  Reads `best_bid_ask`, the only quote-adjacent endpoint this venue serves. **The venue's
+  spread-inclusive fields are what it publishes** — `bid_inclusive_of_sell_spread` and
   `ask_inclusive_of_buy_spread` are the prices a caller would actually transact at, and are
   carried as sent rather than adjusted back to a raw book.
 
-  This is the split that the `get_price/3` fix in Phase 1 made possible: the quote keeps
-  only what traded, and the book comes back here.
+  This is the whole of what `best_bid_ask` gives: no trade price. See the moduledoc on why
+  there is no `get_price/3` reading this same payload.
   """
   @spec get_top_of_book(String.t(), map(), keyword()) ::
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
@@ -666,29 +633,6 @@ defmodule DpExchange.Robinhood.Rest do
   defp first_result(%{"results" => []}), do: {:refused, :not_listed}
   defp first_result(_other), do: {:error, :unexpected_response_shape}
 
-  # The ask when the venue sends no explicit price — see the module doc. Neither present
-  # is an unreadable quote rather than one with a nil price.
-  # A bid or an ask is **not** a trade price.
-  #
-  # This used to read `row["price"] || row["ask_inclusive_of_buy_spread"]`, falling back to
-  # the ask when the venue sent no price. That is the §0 substitution in its purest form:
-  # the ask is a real number the venue really sent, so nothing looks wrong, and the meaning
-  # is wrong. An ask is a resting order — what someone is *willing* to sell at. A price is
-  # what something *traded* at. They coincide only when that order fills.
-  #
-  # A consumer computing a position value, a P&L or a stop from an ask believes it is using
-  # a trade price. In a wide or thin book those are different numbers, and the error is
-  # largest exactly when the market is least liquid — when it matters most.
-  #
-  # So there is no fallback. No price, no quote.
-  defp quoted_price(row) do
-    case row["price"] do
-      nil -> {:error, :no_trade_price_in_response}
-      "" -> {:error, :no_trade_price_in_response}
-      price -> {:ok, price}
-    end
-  end
-
   defp venue_time(row) do
     case row["timestamp"] do
       nil -> {:error, :missing_venue_timestamp}
@@ -751,16 +695,4 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   defp decimal(_other), do: nil
-
-  # A garbage or missing value in a field this contract requires must not become a `nil`
-  # carried into `@enforce_keys` — a struct's field list does not check that a value is
-  # non-nil, only that the key was given. Refuse the record instead.
-  defp required_decimal(nil, field), do: {:error, {:missing_required_field, field}}
-
-  defp required_decimal(value, field) do
-    case decimal(value) do
-      nil -> {:error, {:invalid_decimal, field, value}}
-      parsed -> {:ok, parsed}
-    end
-  end
 end

@@ -56,31 +56,11 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def capabilities, do: DpExchange.Robinhood.capabilities()
 
+  # This venue has no last-trade endpoint at all — see `DpExchange.Robinhood`'s moduledoc
+  # on `get_price/2`, `:unsupported` since DpCryptoManagement's issue #21. A fake that kept
+  # answering here, backed by `@price`, would make that gap untestable.
   @impl true
-  def get_price(symbol, opts \\ []) do
-    with_injection(symbol, fn ->
-      with :ok <- authenticated(opts) do
-        case Map.fetch(@price, symbol) do
-          {:ok, price} ->
-            {:ok,
-             %Types.Quote{
-               symbol: symbol,
-               # A traded price, and only that. This used to be the ask, with a comment
-               # citing "what the real adapter uses when the venue sends no separate price" —
-               # a fallback removed in Phase 1 because an ask is a resting order and a price
-               # is an execution. A fake that reproduces a defect makes the defect untestable.
-               price: Decimal.new(price),
-               volume: nil,
-               timestamp: @at,
-               provider: :robinhood
-             }}
-
-          :error ->
-            {:refused, :not_listed}
-        end
-      end
-    end)
-  end
+  def get_price(_symbol, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def get_top_of_book(symbol, opts \\ []) do
@@ -337,8 +317,8 @@ defmodule DpExchange.Robinhood.Fake do
     target = Keyword.get(opts, :to, self())
 
     for symbol <- symbols, symbol in @symbols do
-      case get_price(symbol, credentials: %{api_key: "fake", private_key: "fake"}) do
-        {:ok, quote_struct} -> send(target, {:dp_exchange, :robinhood, quote_struct})
+      case get_top_of_book(symbol, credentials: %{api_key: "fake", private_key: "fake"}) do
+        {:ok, book} -> send(target, {:dp_exchange, :robinhood, book})
         _refused -> :ok
       end
     end

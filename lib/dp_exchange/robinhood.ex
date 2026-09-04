@@ -13,7 +13,7 @@ defmodule DpExchange.Robinhood do
   ## This venue has no streaming API, and you cannot tell
 
   Robinhood Crypto publishes no socket. `subscribe/2` is served by a REST poll inside this
-  package, and it delivers the same `Core.Types.Quote` to the same subscriber as a
+  package, and it delivers the same `Core.Types.TopOfBook` to the same subscriber as a
   WebSocket venue would.
 
   That is the sharpest test in the family of §6.0's claim that **both endpoints always
@@ -28,22 +28,26 @@ defmodule DpExchange.Robinhood do
 
   ## Credentials are required for market data
 
-  Every Robinhood Crypto call is signed with an Ed25519 key, including the quotes. There is
-  no anonymous endpoint, so `get_price/2` takes credentials:
+  Every Robinhood Crypto call is signed with an Ed25519 key, including the book. There is
+  no anonymous endpoint, so `get_top_of_book/2` takes credentials:
 
-      {:ok, quote} = DpExchange.Robinhood.get_price("BTC-USD", credentials: %{
+      {:ok, book} = DpExchange.Robinhood.get_top_of_book("BTC-USD", credentials: %{
         api_key: "…", private_key: "…"
       })
 
   You hold the credentials; this package signs one request with them and keeps nothing.
 
-  ## The price is the ask
+  ## `get_price/2` is `:unsupported` — this venue has no last-trade data at all
 
-  `best_bid_ask` returns the prices a taker would actually get. Where the venue sends no
-  separate price, the **ask** is used — a real quoted number, and the one a buyer pays. It
-  is not a mid and not a last trade, so **a series built from it sits a spread above a
-  mid-based series** from another venue. `bid` and `ask` are both carried; what a price
-  means is your decision, not this package's.
+  `best_bid_ask` is the only quote-adjacent endpoint this venue serves, and it carries only
+  `bid_inclusive_of_sell_spread` / `ask_inclusive_of_buy_spread`, never a trade price. This
+  package used to fill `Core.Types.Quote.price` from the ask when the venue sent none —
+  `Quote`'s own moduledoc now names this incident directly as the reason `Quote` carries no
+  bid or ask at all. Removing that fallback was correct and left `get_price/2` with no
+  honest number to return, ever: DpCryptoManagement's issue #21. There is no separate
+  last-trade endpoint to fall back to either — confirmed against the vendor's complete
+  nine-operation surface, see `docs/reference/robinhood/negative-claims.md`. `bid` and
+  `ask` are still real and live, through `get_top_of_book/2` and the poll above.
 
   ## No candles, no order book, no volume
 
@@ -65,6 +69,17 @@ defmodule DpExchange.Robinhood do
   # package got — and the two are worth telling apart, so the account and trading endpoints
   # below are listed separately.
   @venue_does_not_serve [
+    # No last-trade data exists on this venue at any endpoint — confirmed against the
+    # vendor's complete nine-operation surface (`docs/reference/robinhood/negative-claims.md`:
+    # "No public trade tape"). `best_bid_ask` carries only bid/ask, never a `price` field.
+    # `Core.Types.Quote`'s own moduledoc names the trap directly: this package used to fill
+    # `price` from the ask when the venue sent none, "which is exactly what one of them
+    # did" — DpCryptoManagement's issue #21, after that fallback was correctly removed and
+    # left `get_price/3` with no honest number to return, ever. `estimated_price` is not a
+    # substitute either; its own doc says so ("Not a quote and not a fill"), and it needs a
+    # side and quantity picked for it, which is fabrication with extra steps. Bid and ask
+    # are still real and live, via `get_top_of_book/2` and the `:top_of_book` stream below.
+    {:get_price, 2},
     # Robinhood's v2 order surface is four endpoints and none takes a list.
     {:place_orders, 3},
     # **A crypto brokerage with no funding API.** The vendor's crypto trading documentation
@@ -222,10 +237,11 @@ defmodule DpExchange.Robinhood do
       supported_instrument_types: [:spot],
       supports_short_selling: false,
 
-      # `:quotes`, and they arrive by poll. What a consumer receives is identical to a
-      # streaming venue's; `coverage/1` reports `:internal_poll` so the difference is
-      # visible as what is arriving rather than as how.
-      streamable: [:quotes],
+      # `:top_of_book`, and it arrives by poll — never `:quotes`, because this venue has no
+      # last-trade data to poll for (see `get_price/2`'s entry in `@venue_does_not_serve`).
+      # What a consumer receives is identical to a streaming venue's; `coverage/1` reports
+      # `:internal_poll` so the difference is visible as what is arriving rather than as how.
+      streamable: [:top_of_book],
 
       # The venue publishes no candle endpoint at all, so there is no width to declare.
       # An empty list is the honest answer, and `get_historical_prices/4` is
@@ -275,8 +291,7 @@ defmodule DpExchange.Robinhood do
   # --- market data -------------------------------------------------------
 
   @impl true
-  def get_price(symbol, opts \\ []),
-    do: Rest.get_price(symbol, credentials(opts), with_limiter(opts))
+  def get_price(_symbol, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def get_top_of_book(symbol, opts \\ []),

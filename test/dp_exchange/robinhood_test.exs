@@ -50,10 +50,12 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.capabilities().endpoints[{:get_historical_prices, 4}] == :unsupported
     end
 
-    test "quotes are streamable even though there is no stream" do
+    test "top_of_book is streamable even though there is no stream" do
       # The claim §6.0 makes: both endpoints always exist. What arrives is identical to a
-      # socket venue's; only `coverage/1` says how.
-      assert :quotes in Robinhood.capabilities().streamable
+      # socket venue's; only `coverage/1` says how. Not `:quotes` — this venue has no
+      # last-trade endpoint at all, see `get_price/2`'s entry in `venue_does_not_serve/0`.
+      assert :top_of_book in Robinhood.capabilities().streamable
+      refute :quotes in Robinhood.capabilities().streamable
       assert Robinhood.capabilities().endpoints[{:subscribe, 2}] == :experimental
     end
 
@@ -80,6 +82,7 @@ defmodule DpExchange.RobinhoodTest do
       # to know which is which.
       assert {:get_historical_prices, 4} in Robinhood.venue_does_not_serve()
       assert {:get_order_book, 2} in Robinhood.venue_does_not_serve()
+      assert {:get_price, 2} in Robinhood.venue_does_not_serve()
       refute {:place_order, 3} in Robinhood.venue_does_not_serve()
     end
 
@@ -152,9 +155,13 @@ defmodule DpExchange.RobinhoodTest do
   end
 
   describe "market data without credentials refuses before any request" do
-    test "get_price and get_symbols both refuse" do
-      assert Robinhood.get_price("BTC-USD") == {:error, {:missing_credentials, :robinhood}}
+    test "get_top_of_book and get_symbols both refuse" do
+      assert Robinhood.get_top_of_book("BTC-USD") == {:error, {:missing_credentials, :robinhood}}
       assert Robinhood.get_symbols() == {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "get_price is unsupported regardless of credentials" do
+      assert Robinhood.get_price("BTC-USD") == {:error, :not_supported}
     end
   end
 
@@ -191,30 +198,24 @@ defmodule DpExchange.RobinhoodTest do
 
   describe "the fake" do
     test "refuses market data without credentials, as the real venue does" do
-      assert Fake.get_price("BTC-USD") == {:refused, :missing_credentials}
+      assert Fake.get_top_of_book("BTC-USD") == {:refused, :missing_credentials}
       assert Fake.get_symbols() == {:refused, :missing_credentials}
     end
 
-    test "answers with credentials, and the price is a traded price" do
-      # This asserted `price == ask` until 2026-08-31, mirroring a fallback in the real
-      # adapter that Phase 1 removed. A fake that reproduces a defect makes the defect
-      # untestable — the suite agrees with itself and both are wrong.
-      assert {:ok, quote_struct} = Fake.get_price("BTC-USD", credentials: @credentials)
-
-      assert quote_struct.price
-      assert quote_struct.volume == nil
-      refute Map.has_key?(quote_struct, :ask)
+    test "get_price is unsupported regardless of credentials, matching the real venue" do
+      # This used to answer with a Quote whose price fell back to the ask — mirroring a
+      # fallback in the real adapter that was removed. A fake that reproduces a defect
+      # makes the defect untestable, the suite agrees with itself and both are wrong.
+      # DpCryptoManagement's issue #21 is what happens when that removal only landed in
+      # the real package: the fake kept answering, so nothing here caught that `get_price`
+      # had become permanently non-functional against the real venue's response shape.
+      assert Fake.get_price("BTC-USD", credentials: @credentials) == {:error, :not_supported}
     end
 
-    test "the book comes back from the fake's get_top_of_book/2, straddling the price" do
-      assert {:ok, quote_struct} = Fake.get_price("BTC-USD", credentials: @credentials)
+    test "the book comes back from the fake's get_top_of_book/2" do
       assert {:ok, top} = Fake.get_top_of_book("BTC-USD", credentials: @credentials)
 
       assert Decimal.lt?(top.bid, top.ask)
-      # The traded price sits inside the spread and equals neither side, so a test that
-      # passes only when they coincide fails here.
-      assert Decimal.lt?(top.bid, quote_struct.price)
-      assert Decimal.lt?(quote_struct.price, top.ask)
     end
 
     test "coverage reports :internal_poll, never :stream" do
@@ -223,7 +224,7 @@ defmodule DpExchange.RobinhoodTest do
       :ok = Fake.subscribe(["BTC-USD"], to: self())
 
       assert Fake.coverage() == %{"BTC-USD" => :internal_poll}
-      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.Quote{}}
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
     end
 
     test "unsubscribe and update_symbols narrow coverage" do
@@ -236,7 +237,8 @@ defmodule DpExchange.RobinhoodTest do
     end
 
     test "an unlisted symbol is refused, and subscribing to one pushes nothing" do
-      assert Fake.get_price("NOPE-USD", credentials: @credentials) == {:refused, :not_listed}
+      assert Fake.get_top_of_book("NOPE-USD", credentials: @credentials) ==
+               {:refused, :not_listed}
 
       :ok = Fake.subscribe(["NOPE-USD"], to: self())
       assert Fake.coverage() == %{}
@@ -309,7 +311,8 @@ defmodule DpExchange.RobinhoodTest do
     {:get_screener, 2} => ["id", []],
     {:commit_conversion, 2} => ["id", []],
     {:get_conversion, 2} => ["id", []],
-    {:get_top_of_book, 2} => ["BTC-USD", []]
+    {:get_top_of_book, 2} => ["BTC-USD", []],
+    {:get_price, 2} => ["BTC-USD", []]
   }
 
   defp unsupported_args(name, arity) do
