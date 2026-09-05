@@ -141,16 +141,18 @@ A limit without a price, or a stop-limit without a stop, is refused **by field n
 the request.
 
 **`time_in_force` is real on `limit`, `stop_loss` and `stop_limit` orders**, and this
-package supports `:gtc` and `:day` (the venue's own `gfd`, "good for day") — pass either as
-`opts[:time_in_force]` on `place_order/3`'s request map. Anything else this package cannot
-send is refused locally as `{:error, {:unsupported_time_in_force, tif}}` rather than
-silently dropped, which would have placed your order under an instruction the venue never
-received. `market_order_config` carries no `time_in_force` in the venue's own schema, so a
-market order never sends one regardless of what you pass. Reading an order back decodes the
-venue's `gtc` and `gfd` the same way; a value this package has no atom for yet (the venue
-also publishes `gfw` and `gfm`, "good for week" and "good for month") decodes to `nil`
-rather than the nearest guess — `capabilities().supported_time_in_force` says which ones you
-can actually place.
+package supports all four values the vendor's own schema documents — `:gtc`, `:day` (the
+venue's own `gfd`, "good for day"), `:gfw` and `:gfm` ("good for week" and "good for
+month") — pass any of them as `opts[:time_in_force]` on `place_order/3`'s request map.
+Anything else this package cannot send is refused locally as
+`{:error, {:unsupported_time_in_force, tif}}` rather than silently dropped, which would
+have placed your order under an instruction the venue never received. `market_order_config`
+carries no `time_in_force` in the venue's own schema, so a market order never sends one
+regardless of what you pass. Reading an order back decodes all four of the venue's values
+the same way. `gfw` and `gfm` decoded to `nil` for one release — not invented locally and
+not mapped to a nearest-match value, because Core's `time_in_force` vocabulary had no atom
+for either yet. `dp_exchange_core` 0.1.45 added both, so that gap is closed and
+`capabilities().supported_time_in_force` now lists all four you can actually place.
 
 **`client_order_id` is an idempotency key.** It is generated when you do not supply one, and
 re-sending the same one returns the original order instead of placing a second. If a request's

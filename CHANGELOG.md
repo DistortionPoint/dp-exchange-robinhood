@@ -19,6 +19,38 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Documentation
+
+- **`usage-rules.md`'s `time_in_force` section still taught the pre-C7 vocabulary after the
+  code moved past it.** The `gfw`/`gfm` fix below extended `capabilities().supported_time_in_force`
+  to all four of the vendor's documented values and updated `Rest`'s own moduledoc, but
+  `usage-rules.md` — the file that actually ships inside the Hex tarball and is what a
+  consuming agent reads — still said "this package supports `:gtc` and `:day`" and described
+  `gfw`/`gfm` as decoding to `nil` for "a value this package has no atom for yet," which
+  stopped being true the moment Core `0.1.45` landed. A consuming agent reading only this
+  file would have believed two of the four vendor values it could actually place were
+  unsupported. Rewritten to name all four and to carry the one-release `nil` history forward
+  as what it now is — closed, not current.
+
+  Audited `README.md` and `usage-rules.md` end to end against live execution rather than by
+  eye: `capabilities().endpoints` confirms `get_price/2 => :unsupported` and every other
+  maturity the docs claim; `subscribe/2`'s delivered struct was confirmed against
+  `Feed`'s poll (`Rest.get_top_of_book/3` constructs `%Core.Types.TopOfBook{}`) and against
+  `feed_test.exs`'s own `assert_receive`; and all four `time_in_force` values were round-tripped
+  live through `place_order/3` and a decoding response, none dropped. The `get_price/2` /
+  ask-fallback docs this audit was chartered to re-check (R1 in `dp_exchange_core`'s
+  `2026-09-05_family-wide-defect-sweep.md`) were already correct — no stale `Quote`-delivery
+  or ask-fallback text remained.
+
+  Also found and fixed, unrelated to `time_in_force`: `README.md`'s own usage example called
+  `subscribe(["BTCUSD"], to: self())`, but the real facade's `subscribe/2` reads no `:to`
+  option at all — only `Fake.subscribe/2` (a test double) honours one. On the real venue the
+  subscriber is fixed once, at supervision start, via `subscriber:` in the child spec
+  (`usage-rules.md`'s own example already did this correctly). The README example ran
+  without error but silently did not do what it implied — a `to:` a reader would reasonably
+  expect to redirect delivery per call had no effect. Rewritten to match `usage-rules.md`'s
+  pattern: `subscriber: self()` on the child spec, plain `subscribe(["BTCUSD"])` on the call.
+
 ### Fixed
 
 - **`gfw` and `gfm` now round-trip too, closing the one gap left open by the entry below.**
