@@ -237,6 +237,15 @@ defmodule DpExchange.Robinhood do
       supported_instrument_types: [:spot],
       supports_short_selling: false,
 
+      # Real vendor values (`AddOrderV2`'s `limit_order_config`, `.stop_loss_order_config`
+      # and `.stop_limit_order_config`, enum `["gtc", "gfd", "gfw", "gfm"]`), not the empty
+      # list this used to default to. `:gtc` and `:day` (the venue's `gfd`, "good for day")
+      # are both representable in Core's current vocabulary; `:gfw`/`:gfm` have no atom yet
+      # and stay undeclared until Core ships one — see `Rest`'s `@tif_names` comment and the
+      # design doc's §3 follow-up. `market_order_config` accepts none of these, so
+      # a market order never carries a `time_in_force` regardless of this declaration.
+      supported_time_in_force: [:gtc, :day],
+
       # `:top_of_book`, and it arrives by poll — never `:quotes`, because this venue has no
       # last-trade data to poll for (see `get_price/2`'s entry in `@venue_does_not_serve`).
       # What a consumer receives is identical to a streaming venue's; `coverage/1` reports

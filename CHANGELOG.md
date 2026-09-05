@@ -19,6 +19,75 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`time_in_force` is wired, both directions — it is a real vendor field this package
+  wrongly claimed absent.** Confirmed against Robinhood's own OpenAPI schema:
+  `AddOrderV2.limit_order_config`, `.stop_loss_order_config` and `.stop_limit_order_config`
+  (the request side) and the matching `OrderResponse` config objects (the response side —
+  what `GET`/`POST /api/v2/crypto/trading/orders/` actually return) all carry
+  `time_in_force`, enum `["gtc", "gfd", "gfw", "gfm"]`. `to_order/1` hardcoded `nil` with a
+  comment asserting the venue publishes none; `order_config/2` never built the key; and
+  `capabilities/0` left `supported_time_in_force` at its empty default, hiding the gap a
+  second time.
+
+  `order_config/2` now accepts `opts[:time_in_force]` of `:gtc` or `:day` (Core's existing
+  atom for the venue's `gfd`, "good for day") on `limit`, `stop_loss` and `stop_limit`
+  orders — the three the vendor's schema carries the field on; `market_order_config` has no
+  such field, so a market order never sends one. Anything this package cannot send is
+  refused locally as `{:error, {:unsupported_time_in_force, tif}}` rather than silently
+  dropped, which would have placed an order under an instruction the venue never received.
+  `to_order/1` decodes the venue's `gtc`/`gfd` back to the same atoms; `gfw`/`gfm` decode to
+  `nil` because Core's `time_in_force` vocabulary has no atom for either yet — Core is
+  being extended with both in the same defect-sweep batch this fix belongs to, but this
+  package cannot use them until that version reaches Hex (tracked in
+  `dp_exchange_core`'s `docs/design/2026-09-05_family-wide-defect-sweep.md` §3).
+  `capabilities/0` now declares `supported_time_in_force: [:gtc, :day]`.
+
+  The `trading_test.exs` fixture that asserted `time_in_force == nil` under a comment
+  encoding the same wrong assumption as the code was rewritten to the vendor's real
+  response shape, and five regression tests were added against it.
+
+- **v2's own fee fields were discarded — `to_order/1` hardcoded `fee: nil` on the exact
+  endpoint this package calls v2 *in order to get fee data from*.** `V2CryptoOrder`
+  (Robinhood's own schema for what the v2 order endpoints return) carries `fee_charged` and
+  `estimated_fee_remaining`, both real numeric fields. `to_order/1` now decodes
+  `fee: decimal(row["fee_charged"])`. `fee_currency` stays `nil` — the vendor's schema
+  states no currency for the figure, and assuming the pair's quote asset would be this
+  package's own convention standing in for the venue's word, which this family's
+  fail-closed rule refuses. `estimated_fee_remaining` has no slot on `Types.Order` and is
+  not decoded, with a comment saying why rather than inventing one.
+
+  Also recorded, not fixed: `get_accounts/2` reads only the first page of
+  `V2AccountsResponse`, which carries the same `next`/`previous` cursors `get_symbols/2`
+  deliberately walks. Left un-walked as a documented decision in `Rest.get_accounts/2`'s
+  own doc — one account per credential is this venue's common case, and walking would be
+  complexity against a case never observed — rather than an undocumented inconsistency.
+
+### Documentation
+
+- **`usage-rules.md` and `README.md` no longer teach the exact behaviour that caused
+  DpCryptoManagement's issue #21.** `usage-rules.md` said `subscribe/2` delivered
+  `Core.Types.Quote` (it delivers `TopOfBook` and always has, since the `get_price/2`
+  fix below), carried a `get_price/2` usage example that crashes against the current
+  `{:error, :not_supported}` return, and had a whole "The price is the ask" section
+  describing the ask-fallback that *caused* issue #21 as if it were current behaviour.
+  `README.md` carried the same broken `get_price/2` example. Both are rewritten: `get_price/2`
+  is documented as unsupported with the incident named directly — so a reader hits the
+  explanation before re-filing #21 — `get_top_of_book/2` is documented as the real
+  market-data call, and `subscribe/2` is documented as delivering `TopOfBook` over the
+  internal REST poll. This file ships inside the Hex tarball and is what a consuming agent
+  reads; per `dp_exchange_core`'s own `CLAUDE.md`, "it is not optional and it is not the
+  README."
+
+- **`usage-rules.md`'s "Timestamps come from the venue, or the call fails" section was
+  wrong — a missing venue timestamp does not fail `get_top_of_book/2`, and per
+  `Core.Types.TopOfBook`'s own contract it should not.** `Rest.top_of_book_time/1` already
+  swallowed a missing or unparseable timestamp into `venue_time: nil`, which
+  `rest_test.exs` already asserted; the doc was stale prose from before the `Quote` →
+  `TopOfBook` migration, where `:timestamp` was a required field. No code changed; the
+  section is rewritten to say what the code actually does and why that is correct.
+
 ### Added
 
 - **`Fake` wired to `Core.FakeInjection` — DpCryptoManagement's issue #14, reference

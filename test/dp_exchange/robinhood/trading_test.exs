@@ -288,6 +288,121 @@ defmodule DpExchange.Robinhood.TradingTest do
                )
     end
 
+    test "a limit order's time_in_force rides in its own config, as the vendor's schema takes it" do
+      # `AddOrderV2.limit_order_config` carries `time_in_force` — a real field, not one
+      # invented here.
+      me = self()
+
+      assert {:ok, _order} =
+               Rest.place_order(
+                 @credentials,
+                 %{
+                   symbol: "BTC-USD",
+                   side: :sell,
+                   order_type: :limit,
+                   quantity: Decimal.new("0.5"),
+                   price: Decimal.new("60000"),
+                   time_in_force: :gtc
+                 },
+                 account_number: "RH-1",
+                 plug: capturing(%{"id" => "o-3"}, me),
+                 retry_attempts: 0
+               )
+
+      assert_receive {:request, "POST", _path, _query, raw}
+
+      assert Jason.decode!(raw)["limit_order_config"] == %{
+               "asset_quantity" => "0.5",
+               "limit_price" => "60000",
+               "time_in_force" => "gtc"
+             }
+    end
+
+    test "the venue's :day is sent as gfd — that is its own name for it" do
+      me = self()
+
+      assert {:ok, _order} =
+               Rest.place_order(
+                 @credentials,
+                 %{
+                   symbol: "BTC-USD",
+                   side: :buy,
+                   order_type: :stop_loss,
+                   quantity: Decimal.new("1"),
+                   stop_price: Decimal.new("50000"),
+                   time_in_force: :day
+                 },
+                 account_number: "RH-1",
+                 plug: capturing(%{"id" => "o-4"}, me),
+                 retry_attempts: 0
+               )
+
+      assert_receive {:request, "POST", _path, _query, raw}
+      assert Jason.decode!(raw)["stop_loss_order_config"]["time_in_force"] == "gfd"
+    end
+
+    test "no time_in_force means no key at all, not a default" do
+      me = self()
+
+      assert {:ok, _order} =
+               Rest.place_order(
+                 @credentials,
+                 %{
+                   symbol: "BTC-USD",
+                   side: :buy,
+                   order_type: :limit,
+                   quantity: Decimal.new("1"),
+                   price: Decimal.new("50000")
+                 },
+                 account_number: "RH-1",
+                 plug: capturing(%{"id" => "o-5"}, me),
+                 retry_attempts: 0
+               )
+
+      assert_receive {:request, "POST", _path, _query, raw}
+      refute Map.has_key?(Jason.decode!(raw)["limit_order_config"], "time_in_force")
+    end
+
+    test "a time_in_force this venue cannot honour is refused, not silently dropped" do
+      # Core's vocabulary has :ioc — a real atom this venue has no wire name for. Silently
+      # omitting it would place a GTC-equivalent order under a caller's IOC instruction.
+      assert {:error, {:unsupported_time_in_force, :ioc}} =
+               Rest.place_order(
+                 @credentials,
+                 %{
+                   symbol: "BTC-USD",
+                   side: :buy,
+                   order_type: :limit,
+                   quantity: Decimal.new("1"),
+                   price: Decimal.new("50000"),
+                   time_in_force: :ioc
+                 },
+                 account_number: "RH-1"
+               )
+    end
+
+    test "market orders have no time_in_force slot on the vendor's schema, and none is sent" do
+      me = self()
+
+      assert {:ok, _order} =
+               Rest.place_order(
+                 @credentials,
+                 %{
+                   symbol: "BTC-USD",
+                   side: :buy,
+                   order_type: :market,
+                   quantity: Decimal.new("1"),
+                   time_in_force: :gtc
+                 },
+                 account_number: "RH-1",
+                 plug: capturing(%{"id" => "o-6"}, me),
+                 retry_attempts: 0
+               )
+
+      assert_receive {:request, "POST", _path, _query, raw}
+      refute Map.has_key?(Jason.decode!(raw)["market_order_config"], "time_in_force")
+    end
+
     test "a client order id is generated when absent and honoured when given" do
       # The venue treats it as an idempotency key: a retry of a request whose response was
       # never seen must reuse the same one rather than place a second order.
@@ -339,6 +454,10 @@ defmodule DpExchange.Robinhood.TradingTest do
 
   describe "reading and cancelling orders" do
     test "an order's state maps to the contract's status" do
+      # Shaped like the vendor's real `OrderResponse`/`V2CryptoOrder`: `limit_order_config`
+      # carries `time_in_force` and `fee_charged` sits on the row itself, per Robinhood's
+      # own OpenAPI schema — this used to be built with neither, which is the same wrong
+      # assumption the code made.
       body = %{
         "id" => "o-1",
         "symbol" => "BTC-USD",
@@ -347,7 +466,14 @@ defmodule DpExchange.Robinhood.TradingTest do
         "state" => "partially_filled",
         "filled_asset_quantity" => "0.25",
         "average_price" => "60000",
-        "created_at" => "2026-09-01T12:00:00Z"
+        "created_at" => "2026-09-01T12:00:00Z",
+        "fee_charged" => "0.15",
+        "estimated_fee_remaining" => "0.05",
+        "limit_order_config" => %{
+          "asset_quantity" => "0.5",
+          "limit_price" => "60000",
+          "time_in_force" => "gtc"
+        }
       }
 
       assert {:ok, order} =
@@ -362,8 +488,76 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert order.side == :buy
       assert order.order_type == :limit
       assert order.symbol == "BTC-USD"
-      # The venue publishes no time-in-force on a crypto order.
+      assert order.time_in_force == :gtc
+      assert Decimal.equal?(order.fee, Decimal.new("0.15"))
+      # The vendor's schema does not state a currency for `fee_charged` — not assumed to be
+      # the quote currency.
+      assert order.fee_currency == nil
+    end
+
+    test "the venue's gfd decodes to Core's :day, the closest real match" do
+      body = %{
+        "id" => "o-1",
+        "state" => "open",
+        "type" => "stop_loss",
+        "stop_loss_order_config" => %{
+          "asset_quantity" => "0.5",
+          "stop_price" => "1000",
+          "time_in_force" => "gfd"
+        }
+      }
+
+      assert {:ok, order} =
+               Rest.get_order(@credentials, "o-1",
+                 account_number: "RH-1",
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert order.time_in_force == :day
+    end
+
+    for wire <- ["gfw", "gfm"] do
+      test "the venue's #{wire} decodes to nil — Core has no atom for it yet" do
+        body = %{
+          "id" => "o-1",
+          "state" => "open",
+          "type" => "limit",
+          "limit_order_config" => %{
+            "asset_quantity" => "0.5",
+            "limit_price" => "1000",
+            "time_in_force" => unquote(wire)
+          }
+        }
+
+        assert {:ok, order} =
+                 Rest.get_order(@credentials, "o-1",
+                   account_number: "RH-1",
+                   plug: responding(body),
+                   retry_attempts: 0
+                 )
+
+        assert order.time_in_force == nil
+      end
+    end
+
+    test "a market order's row carries no time_in_force, decoded honestly as nil" do
+      body = %{
+        "id" => "o-1",
+        "state" => "open",
+        "type" => "market",
+        "market_order_config" => %{"asset_quantity" => "0.5"}
+      }
+
+      assert {:ok, order} =
+               Rest.get_order(@credentials, "o-1",
+                 account_number: "RH-1",
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
       assert order.time_in_force == nil
+      assert order.fee == nil
     end
 
     for {venue, expected} <- [

@@ -33,6 +33,23 @@ defmodule DpExchange.Robinhood.Rest do
 
   @base_url "https://trading.robinhood.com"
 
+  # The vendor's own OpenAPI schema (`AddOrderV2.limit_order_config`,
+  # `.stop_loss_order_config` and `.stop_limit_order_config` on the request side;
+  # `OrderResponse`'s matching config objects on the response side) carries `time_in_force`
+  # as an enum of `["gtc", "gfd", "gfw", "gfm"]` — a REAL field, not one this venue lacks.
+  # `market_order_config` has no such field in the schema, so a market order never carries
+  # one either way.
+  #
+  # Core's `time_in_force` vocabulary (`DpExchange.Core.Capabilities`) has no atom for
+  # "good for week" or "good for month" yet — those two are wired here as `nil` rather
+  # than invented locally or mapped to a nearest-match value. Core is being extended with
+  # `:gfw`/`:gfm` in the same defect-sweep batch this fix belongs to, but this package
+  # cannot use them until that version is published to Hex — tracked as a follow-up in
+  # `docs/design/2026-09-05_family-wide-defect-sweep.md` §3. `gtc` and `gfd` are both
+  # representable today, against Core's existing `:gtc` and `:day` atoms.
+  @tif_names %{gtc: "gtc", day: "gfd"}
+  @tif_atoms Map.new(@tif_names, fn {atom, name} -> {name, atom} end)
+
   @doc "Base URL, overridable for tests."
   @spec base_url(keyword()) :: String.t()
   def base_url(opts), do: Keyword.get(opts, :base_url, @base_url)
@@ -185,6 +202,15 @@ defmodule DpExchange.Robinhood.Rest do
   those with.
 
   Returned as the venue's own map.
+
+  **Deliberately does not walk `next`/`previous`, unlike `get_symbols/2`.**
+  `V2AccountsResponse` carries the same cursor fields the trading-pairs response does, so
+  the shape supports paging. This does not follow it: one account per credential is this
+  venue's common case (a crypto brokerage account is singular by design), the risk of a
+  truncated result silently reads as "the credential's one account" either way, and walking
+  here would be undischarged complexity against a case that has never been observed. This is
+  a recorded decision, not an oversight — revisit if a credential is ever seen with more than
+  one page.
   """
   @spec get_accounts(map(), keyword()) ::
           {:ok, [map()]} | {:error, term()} | {:refused, term()}
@@ -433,6 +459,10 @@ defmodule DpExchange.Robinhood.Rest do
   # The venue's four order types, and what each config must carry. A limit without a price
   # is an order the venue rejects; refusing here says which field rather than relaying a
   # message about a config key.
+  #
+  # `market_order_config` carries no `time_in_force` in the vendor's schema, so a market
+  # order never gets one — even if the caller supplied one, it would have nowhere honest to
+  # go.
   defp order_config(type, request) when type in [:market, "market"] do
     with {:ok, quantity} <- order_field(request, :quantity) do
       {:ok, %{"asset_quantity" => decimal_string(quantity)}}
@@ -441,33 +471,65 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp order_config(type, request) when type in [:limit, "limit"] do
     with {:ok, quantity} <- order_field(request, :quantity),
-         {:ok, price} <- order_field(request, :price) do
+         {:ok, price} <- order_field(request, :price),
+         {:ok, tif} <- order_time_in_force(request) do
       {:ok,
-       %{"asset_quantity" => decimal_string(quantity), "limit_price" => decimal_string(price)}}
+       %{"asset_quantity" => decimal_string(quantity), "limit_price" => decimal_string(price)}
+       |> put_time_in_force(tif)}
     end
   end
 
   defp order_config(type, request) when type in [:stop_loss, "stop_loss"] do
     with {:ok, quantity} <- order_field(request, :quantity),
-         {:ok, stop} <- order_field(request, :stop_price) do
-      {:ok, %{"asset_quantity" => decimal_string(quantity), "stop_price" => decimal_string(stop)}}
+         {:ok, stop} <- order_field(request, :stop_price),
+         {:ok, tif} <- order_time_in_force(request) do
+      {:ok,
+       %{"asset_quantity" => decimal_string(quantity), "stop_price" => decimal_string(stop)}
+       |> put_time_in_force(tif)}
     end
   end
 
   defp order_config(type, request) when type in [:stop_limit, "stop_limit"] do
     with {:ok, quantity} <- order_field(request, :quantity),
          {:ok, price} <- order_field(request, :price),
-         {:ok, stop} <- order_field(request, :stop_price) do
+         {:ok, stop} <- order_field(request, :stop_price),
+         {:ok, tif} <- order_time_in_force(request) do
       {:ok,
        %{
          "asset_quantity" => decimal_string(quantity),
          "limit_price" => decimal_string(price),
          "stop_price" => decimal_string(stop)
-       }}
+       }
+       |> put_time_in_force(tif)}
     end
   end
 
   defp order_config(type, _request), do: {:error, {:unsupported_order_type, type}}
+
+  # `opts[:time_in_force]` is absent for almost every caller today, and absence must build
+  # exactly the config this package built before this atom existed — no key at all, not a
+  # key holding a default the venue was never asked for. A value present but unrepresentable
+  # (an atom `tif_name/1` has no wire name for — `:ioc`, `:fok`, `:gtd`, or one of Core's
+  # `:gfw`/`:gfm` when those ship) is refused, rather than sent as nothing and silently
+  # ignored the way a wrong config key already is on this venue.
+  defp order_time_in_force(request) do
+    case Map.get(request, :time_in_force) do
+      nil ->
+        {:ok, nil}
+
+      tif ->
+        case tif_name(tif) do
+          nil -> {:error, {:unsupported_time_in_force, tif}}
+          name -> {:ok, name}
+        end
+    end
+  end
+
+  defp put_time_in_force(config, nil), do: config
+  defp put_time_in_force(config, name), do: Map.put(config, "time_in_force", name)
+
+  defp tif_name(tif), do: Map.get(@tif_names, tif)
+  defp tif_atom(name), do: Map.get(@tif_atoms, name)
 
   # A v4 UUID from the VM's own CSPRNG. The venue treats `client_order_id` as an idempotency
   # key, so a collision would return someone else's order — worth generating correctly, and
@@ -491,13 +553,21 @@ defmodule DpExchange.Robinhood.Rest do
       symbol: order_canonical(row["symbol"]),
       side: order_side(row["side"]),
       order_type: order_kind(row["type"]),
-      # The venue publishes no time-in-force on a crypto order. `nil` says so.
-      time_in_force: nil,
+      time_in_force: tif_atom(configured_time_in_force(row)),
       quantity: decimal(row["filled_asset_quantity"] || configured_quantity(row)),
       filled_quantity: decimal(row["filled_asset_quantity"]),
       average_price: decimal(row["average_price"]),
       status: order_status(row["state"]),
-      fee: nil,
+      # `V2CryptoOrder` (the vendor's own schema for what these v2 endpoints return) carries
+      # `fee_charged` — the exact data this package chose v2 in order to get. It also
+      # carries `estimated_fee_remaining`, which has no slot on `Types.Order` and is not
+      # decoded here for that reason: there is nowhere honest to put it.
+      #
+      # `fee_currency` is left `nil` rather than assumed to be the quote currency: the
+      # vendor's schema does not state a currency for `fee_charged`, and this venue's fee is
+      # denominated in the pair's quote asset by convention rather than by anything the
+      # schema declares — a convention is not the venue's word.
+      fee: decimal(row["fee_charged"]),
       fee_currency: nil,
       created_at: order_time(row["created_at"]),
       provider: :robinhood
@@ -521,6 +591,20 @@ defmodule DpExchange.Robinhood.Rest do
     |> Enum.find_value(fn
       {"" <> key, %{"asset_quantity" => quantity}} ->
         if String.ends_with?(key, "_order_config"), do: quantity
+
+      _other ->
+        nil
+    end)
+  end
+
+  # `time_in_force` lives inside the type-named config object, same as `asset_quantity` —
+  # `market_order_config` never carries one (see `order_config/2`'s market clause), so a
+  # market order's row yields `nil` here honestly rather than by omission.
+  defp configured_time_in_force(row) do
+    row
+    |> Enum.find_value(fn
+      {"" <> key, %{"time_in_force" => tif}} ->
+        if String.ends_with?(key, "_order_config"), do: tif
 
       _other ->
         nil

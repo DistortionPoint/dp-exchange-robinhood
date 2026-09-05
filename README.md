@@ -33,7 +33,9 @@ end
 # In your supervision tree. Nothing starts itself.
 children = [{DpExchange.Robinhood, credentials: my_credentials()}]
 
-{:ok, quote} = DpExchange.Robinhood.get_price("BTCUSD", [])
+# This venue publishes no last-trade data at all — get_price/2 is :unsupported. The book
+# is the real market-data call here; see usage-rules.md for why.
+{:ok, book} = DpExchange.Robinhood.get_top_of_book("BTCUSD", credentials: my_credentials())
 
 :ok = DpExchange.Robinhood.subscribe(["BTCUSD"], to: self())
 ```
