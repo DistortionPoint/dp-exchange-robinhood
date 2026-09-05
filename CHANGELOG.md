@@ -21,6 +21,21 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **`gfw` and `gfm` now round-trip too, closing the one gap left open by the entry below.**
+  Those two of the vendor's four documented `time_in_force` values decoded to `nil` for a
+  single release, because Core's vocabulary had no atom for "good for week" or "good for
+  month". They were deliberately left as `nil` rather than invented locally or mapped to a
+  nearest-match value — a wrong atom on a real order is worse than an absent one, and
+  declaring support this package could not honour would have been the same untrue claim as
+  the empty list it replaced, pointing the other way.
+
+  `dp_exchange_core` 0.1.45 added `:gfw`/`:gfm`, so the gap is closed: all four values the
+  vendor's enum documents now decode, and `capabilities/0` declares all four. The dependency
+  floor moves to `~> 0.1.45` so this cannot compile against a Core that lacks them. A new
+  test walks the vendor's whole enum and asserts each value both decodes to a real atom and
+  appears in the declaration — so a future vendor addition with no Core atom fails a test
+  rather than quietly becoming `nil` on a live order.
+
 - **`time_in_force` is wired, both directions — it is a real vendor field this package
   wrongly claimed absent.** Confirmed against Robinhood's own OpenAPI schema:
   `AddOrderV2.limit_order_config`, `.stop_loss_order_config` and `.stop_limit_order_config`

@@ -239,12 +239,14 @@ defmodule DpExchange.Robinhood do
 
       # Real vendor values (`AddOrderV2`'s `limit_order_config`, `.stop_loss_order_config`
       # and `.stop_limit_order_config`, enum `["gtc", "gfd", "gfw", "gfm"]`), not the empty
-      # list this used to default to. `:gtc` and `:day` (the venue's `gfd`, "good for day")
-      # are both representable in Core's current vocabulary; `:gfw`/`:gfm` have no atom yet
-      # and stay undeclared until Core ships one — see `Rest`'s `@tif_names` comment and the
-      # design doc's §3 follow-up. `market_order_config` accepts none of these, so
-      # a market order never carries a `time_in_force` regardless of this declaration.
-      supported_time_in_force: [:gtc, :day],
+      # list this used to default to. All four are declared now: `:gtc`, `:day` (the venue's
+      # `gfd`, "good for day"), and `:gfw`/`:gfm`, which Core 0.1.45 added a vocabulary for.
+      # For one release the last two were deliberately left undeclared rather than mapped to
+      # a nearest-match atom — a declaration this package could not actually honour would be
+      # the same untrue claim as the empty list, pointing the other way.
+      # `market_order_config` accepts none of these, so a market order never carries a
+      # `time_in_force` regardless of this declaration.
+      supported_time_in_force: [:gtc, :day, :gfw, :gfm],
 
       # `:top_of_book`, and it arrives by poll — never `:quotes`, because this venue has no
       # last-trade data to poll for (see `get_price/2`'s entry in `@venue_does_not_serve`).

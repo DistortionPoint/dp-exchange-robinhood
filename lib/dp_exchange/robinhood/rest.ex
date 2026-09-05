@@ -40,14 +40,14 @@ defmodule DpExchange.Robinhood.Rest do
   # `market_order_config` has no such field in the schema, so a market order never carries
   # one either way.
   #
-  # Core's `time_in_force` vocabulary (`DpExchange.Core.Capabilities`) has no atom for
-  # "good for week" or "good for month" yet — those two are wired here as `nil` rather
-  # than invented locally or mapped to a nearest-match value. Core is being extended with
-  # `:gfw`/`:gfm` in the same defect-sweep batch this fix belongs to, but this package
-  # cannot use them until that version is published to Hex — tracked as a follow-up in
-  # `docs/design/2026-09-05_family-wide-defect-sweep.md` §3. `gtc` and `gfd` are both
-  # representable today, against Core's existing `:gtc` and `:day` atoms.
-  @tif_names %{gtc: "gtc", day: "gfd"}
+  # All four of the venue's values are representable. `gfw` and `gfm` decoded to `nil` for
+  # one release — not invented locally and not mapped to a nearest-match value — because
+  # Core's `time_in_force` vocabulary had no atom for "good for week" or "good for month".
+  # Core 0.1.45 added `:gfw`/`:gfm` (`DpExchange.Core.Capabilities`), so the gap is closed
+  # and every value this venue documents now round-trips. `gfd` maps to Core's `:day`,
+  # which is the same meaning under the family's own name rather than a second spelling
+  # of it.
+  @tif_names %{gtc: "gtc", day: "gfd", gfw: "gfw", gfm: "gfm"}
   @tif_atoms Map.new(@tif_names, fn {atom, name} -> {name, atom} end)
 
   @doc "Base URL, overridable for tests."

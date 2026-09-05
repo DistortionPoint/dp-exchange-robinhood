@@ -517,8 +517,12 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert order.time_in_force == :day
     end
 
-    for wire <- ["gfw", "gfm"] do
-      test "the venue's #{wire} decodes to nil — Core has no atom for it yet" do
+    # These decoded to `nil` for one release, because Core's vocabulary had no atom for
+    # "good for week" or "good for month". Core 0.1.45 added `:gfw`/`:gfm`, so every value
+    # the vendor's enum documents now round-trips — nothing this venue can return is
+    # silently dropped any more.
+    for {wire, expected} <- [{"gfw", :gfw}, {"gfm", :gfm}] do
+      test "the venue's #{wire} decodes to #{inspect(expected)}" do
         body = %{
           "id" => "o-1",
           "state" => "open",
@@ -537,7 +541,36 @@ defmodule DpExchange.Robinhood.TradingTest do
                    retry_attempts: 0
                  )
 
-        assert order.time_in_force == nil
+        assert order.time_in_force == unquote(expected)
+      end
+    end
+
+    test "every value the vendor's enum documents is representable — none decode to nil" do
+      # The whole point of the Core 0.1.45 follow-up. If a future vendor value appears with
+      # no Core atom, it must fail this test rather than quietly become nil on a real order.
+      for {wire, expected} <- [{"gtc", :gtc}, {"gfd", :day}, {"gfw", :gfw}, {"gfm", :gfm}] do
+        body = %{
+          "id" => "o-1",
+          "state" => "open",
+          "type" => "limit",
+          "limit_order_config" => %{
+            "asset_quantity" => "0.5",
+            "limit_price" => "1000",
+            "time_in_force" => wire
+          }
+        }
+
+        assert {:ok, order} =
+                 Rest.get_order(@credentials, "o-1",
+                   account_number: "RH-1",
+                   plug: responding(body),
+                   retry_attempts: 0
+                 )
+
+        assert order.time_in_force == expected,
+               "venue value #{inspect(wire)} decoded to #{inspect(order.time_in_force)}"
+
+        assert expected in DpExchange.Robinhood.capabilities().supported_time_in_force
       end
     end
 
