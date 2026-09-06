@@ -84,7 +84,7 @@ It has now been checked, and it holds. Method, so it can be re-run:
 | check | result |
 |---|---|
 | `docs.robinhood.com/sitemap.xml` | 5 pages total: `/`, `/crypto/`, `/crypto/connect/`, `/crypto/trading/`, `/healthcheck/`. **No streaming page.** |
-| `websocket`, `wss://`, `streaming` across all three doc pages | **0 occurrences** |
+| `websocket`, `wss://`, `streaming` across all five doc pages | **0 occurrences** |
 | the trading page's own JS bundle (which carries the endpoint list) | **0** — 67 apparent `sse` hits are the substring in *asset* |
 | the Connect bundle | same |
 | any `ws://` or `wss://` URL anywhere in the documentation | **none** |

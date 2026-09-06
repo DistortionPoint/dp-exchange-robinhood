@@ -5,11 +5,12 @@
 > This package has **never run in production.** It is published early and openly so it
 > can be used and reported on, not because it is finished.
 >
-> - **The API may change without a major version.** Pin three-part (`~> 0.1.0`).
+> - **The API may change without a major version.** Pin three-part (`~> 0.2.0`).
 > - **Verification is uneven, and the gaps are on the expensive side.** The conformance
->   suite passes against a fake, and against Robinhood's live public endpoints.
->   **Order placement and authenticated flows are thinly covered.** No test in this repo
->   spends money.
+>   suite passes against a fake and against a stubbed HTTP transport — **nothing here has
+>   ever run against Robinhood itself**, because every endpoint on this venue requires a
+>   credential this repo does not hold. **Order placement and authenticated flows are
+>   thinly covered.** No test in this repo spends money.
 > - **Maturity is declared per endpoint.** Read `capabilities/0`, not this banner.
 >
 > [Report a divergence](https://github.com/DistortionPoint/dp-exchange-robinhood/issues).
@@ -22,7 +23,7 @@ same facade every venue in the family exposes.
 ```elixir
 def deps do
   [
-    {:dp_exchange_robinhood, "~> 0.1.0"}
+    {:dp_exchange_robinhood, "~> 0.2.0"}
   ]
 end
 ```
@@ -36,9 +37,9 @@ children = [{DpExchange.Robinhood, credentials: my_credentials(), subscriber: se
 
 # This venue publishes no last-trade data at all — get_price/2 is :unsupported. The book
 # is the real market-data call here; see usage-rules.md for why.
-{:ok, book} = DpExchange.Robinhood.get_top_of_book("BTCUSD", credentials: my_credentials())
+{:ok, book} = DpExchange.Robinhood.get_top_of_book("BTC-USD", credentials: my_credentials())
 
-:ok = DpExchange.Robinhood.subscribe(["BTCUSD"])
+:ok = DpExchange.Robinhood.subscribe(["BTC-USD"])
 ```
 
 `DpExchange.Robinhood` is the **entire public API**. Everything else — transport, signing,

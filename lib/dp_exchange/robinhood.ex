@@ -75,7 +75,7 @@ defmodule DpExchange.Robinhood do
     # `Core.Types.Quote`'s own moduledoc names the trap directly: this package used to fill
     # `price` from the ask when the venue sent none, "which is exactly what one of them
     # did" — DpCryptoManagement's issue #21, after that fallback was correctly removed and
-    # left `get_price/3` with no honest number to return, ever. `estimated_price` is not a
+    # left `get_price/2` with no honest number to return, ever. `estimated_price` is not a
     # substitute either; its own doc says so ("Not a quote and not a fill"), and it needs a
     # side and quantity picked for it, which is fabrication with extra steps. Bid and ask
     # are still real and live, via `get_top_of_book/2` and the `:top_of_book` stream below.
@@ -339,7 +339,7 @@ defmodule DpExchange.Robinhood do
   Every tradable pair as a `Core.Instrument` — base, quote, instrument type and status.
 
   See `DpExchange.Robinhood.Rest.list_instruments/2`: it walks the same paginated
-  `trading_pairs` endpoint `get_symbols/2` already calls, reading `asset_code` and
+  `trading_pairs` endpoint `get_symbols/1` already calls, reading `asset_code` and
   `quote_code` off the same rows for base and quote rather than parsing them back out of
   the canonical symbol string. Every row is `:spot`.
   """
@@ -395,7 +395,8 @@ defmodule DpExchange.Robinhood do
   @doc """
   An execution estimate for a given size.
 
-  Venue-specific: the third price on this venue, and the only one that accounts for size.
+  Venue-specific: the second of this venue's two prices, and the only one that accounts for
+  size — `get_price/2` is `:unsupported`, so there is no third.
   See `DpExchange.Robinhood.Rest.get_estimated_price/5` — **the endpoint moved from
   `marketdata` to `trading` between v1 and v2.**
   """

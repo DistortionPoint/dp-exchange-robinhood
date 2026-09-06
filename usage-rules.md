@@ -95,7 +95,7 @@ The venue publishes none of them:
 |---|---|
 | `get_historical_prices/4` | `{:error, :not_supported}` |
 | `get_order_book/2` | `{:error, :not_supported}` |
-| `volume` on a quote | always `nil` |
+| `bid_size` / `ask_size` on a book | always `nil` — `best_bid_ask` publishes no size |
 
 `historical_timeframes` is an **empty list**, which is the honest answer for a venue with
 no candle endpoint. Route backfill and volume-dependent work elsewhere.
@@ -106,12 +106,13 @@ them might change.
 
 ## A missing venue timestamp does not fail the call
 
-`get_top_of_book/2` carries `venue_time: nil` when the venue's row has no readable
-timestamp, rather than refusing the call. That is correct, not a gap: `Core.Types.TopOfBook`
-itself says `venue_time` is `nil` "where the venue publishes none," and a book that arrived
-without a date is still a real, current book — refusing it would throw away a genuine bid
-and ask over a field that is allowed to be absent. `observed_at` is always this package's
-own clock at request time, whether or not the venue dated its own row.
+`get_top_of_book/2` carries `venue_time: nil` rather than refusing the call — and on this
+venue that is **every** book, not an occasional one: v2's `best_bid_ask` response
+(`V2BestBidAsk`) is three fields, `symbol`, `bid` and `ask`, with no `timestamp` property at
+all. That is correct, not a gap: `Core.Types.TopOfBook` itself says `venue_time` is `nil`
+"where the venue publishes none," and a book that arrived without a date is still a real,
+current book — refusing it would throw away a genuine bid and ask over a field that is
+allowed to be absent. `observed_at` is always this package's own clock at request time.
 
 ## The catalogue is what your credential sees
 

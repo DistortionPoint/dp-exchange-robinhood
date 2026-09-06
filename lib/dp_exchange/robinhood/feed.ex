@@ -77,7 +77,7 @@ defmodule DpExchange.Robinhood.Feed do
   caller could ever turn it on: every request fell through to `check/3` regardless, and
   the failure this section describes reproduced exactly, live (DpCryptoManagement's issue
   #16). Forwarded now, and defaulted to `true` here specifically — not in `Rest`'s own
-  allowlist, which a direct one-off `get_price/2` call also goes through and where
+  allowlist, which a direct one-off `get_top_of_book/2` call also goes through and where
   fail-fast may be exactly what a caller wants. A poll is not a one-off call: this
   module's whole reason to exist is the venue's rate limit, so `acquire` is the only
   correct default for it.

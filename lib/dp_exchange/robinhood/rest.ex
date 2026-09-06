@@ -134,7 +134,7 @@ defmodule DpExchange.Robinhood.Rest do
   Calls **`/api/v2/crypto/trading/trading_pairs/`** (D5). The endpoint paginates, so this
   walks it. v2's response shape is identical for this purpose — `results` rows carrying
   `symbol`, and a `next` cursor — which is why this half of the v2 migration was safe to
-  make and the quote half was not; see `get_price/3`.
+  make and the quote half was not; see this module's moduledoc.
 
   Measured by the prior adapter on 2026-08-05 against v1: 86 symbols, every one quoted in
   USD — **as seen by that credential**. Listings can differ by account tier, so a consumer
@@ -156,9 +156,9 @@ defmodule DpExchange.Robinhood.Rest do
 
   @doc """
   Every tradable pair as a `Core.Instrument` — base, quote, instrument type and status —
-  from the same paginated `trading_pairs` endpoint `get_symbols/1` already walks.
+  from the same paginated `trading_pairs` endpoint `get_symbols/2` already walks.
 
-  `get_symbols/1` extracts only `symbol` and discards the rest; this reads `asset_code`
+  `get_symbols/2` extracts only `symbol` and discards the rest; this reads `asset_code`
   and `quote_code` off the same rows for base and quote, never parsed back out of the
   canonical symbol string. Every row is `:spot` — Robinhood Crypto's trading-pairs
   endpoint lists no other instrument type.
@@ -205,9 +205,9 @@ defmodule DpExchange.Robinhood.Rest do
   # on count: a page already visited ends the walk with what was collected, and says so.
   @doc """
   Rounds a price and quantity to what the venue will actually accept, from the same
-  `trading_pairs` endpoint `get_symbols/1` already calls.
+  `trading_pairs` endpoint `get_symbols/2` already calls.
 
-  `get_symbols/1` extracts only `symbol` from each row and discards the rest —
+  `get_symbols/2` extracts only `symbol` from each row and discards the rest —
   `asset_increment`, `quote_increment`, `max_order_size` and `min_order_amount` are real
   fields on `V2TradingPair` (Robinhood's own OpenAPI schema, `docs.robinhood.com`), not
   invented here. `min_order_size` is absent from the schema itself despite being named in
@@ -237,8 +237,8 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
-  # Collects raw `trading_pairs` rows across every page — `get_symbols/1` and
-  # `list_instruments/1` each map the same rows to what they need, rather than this
+  # Collects raw `trading_pairs` rows across every page — `get_symbols/2` and
+  # `list_instruments/2` each map the same rows to what they need, rather than this
   # walk deciding ahead of time which fields anyone wants.
   defp walk(path, credentials, opts, acc, seen) do
     if path in seen do
@@ -359,9 +359,10 @@ defmodule DpExchange.Robinhood.Rest do
   `trading`. A package pointed at the v1 path gets a 404 that reads like an outage.
 
   **Not a quote and not a fill.** It is what the venue estimates a given quantity would
-  execute at *now*, which is a different number from `get_price/3`'s last trade and from
-  `get_top_of_book/3`'s top of book — the third price on this venue, and the only one that
-  accounts for size.
+  execute at *now*, which is a different number from `get_top_of_book/3`'s top of book —
+  the second price on this venue, and the only one that accounts for size. There is no
+  third: this venue publishes no last trade at any endpoint, which is why the facade's
+  `get_price/2` is `:unsupported` (see this module's moduledoc).
 
   `side` is the venue's own `bid`, `ask` or `both`. Several quantities can be asked at once:
   the venue takes them comma-separated, and asking for `0.1,1,10` in one request is how a

@@ -6,7 +6,7 @@ import Config
 # carries a dev/test fallback literal so a missing var degrades to a working
 # development default rather than a boot crash:
 #
-#     config :dp_exchange_gemini,
+#     config :dp_exchange_robinhood,
 #       some_key: System.get_env("SOME_KEY") || "dev-only-some-key"
 #
 # Adding a var is a five-step lifecycle — all five or none:
@@ -17,7 +17,7 @@ import Config
 #   4. tell CI to set it
 #   5. tell the deploy platform to set it
 #
-# `dp_exchange_gemini` currently reads nothing. It is a contract library: it
-# opens no sockets, holds no credentials, and takes its one configurable seam
-# (`:rate_limit_module`, D5) from the CONSUMER's application environment at
-# call time, never from here.
+# `dp_exchange_robinhood` currently reads nothing here. It holds no credentials —
+# a caller hands them in per call — and the one rate-limiting seam a consumer can
+# swap (`:rate_limit_module`) is read by `dp_exchange_core` under its OWN app key,
+# from the CONSUMER's application environment at call time, never from here.

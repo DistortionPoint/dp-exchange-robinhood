@@ -74,13 +74,16 @@ hunting a streaming fault that cannot exist.
 mix deps.get
 mix compile
 mix test                            # tier 1 — in-process fakes, every CI run
-mix test --include tier2            # tier 2 — LIVE public endpoints, BY HAND ONLY
 mix test --cover                    # threshold 90
 mix quality                         # format + credo --strict + dialyzer + sobelow
 ```
 
-**Never run tier-2 tests on a schedule.** They hit Robinhood's live public API, and a
-venue that sees a package polling it on a timer will rate-limit or block.
+**This venue has no tier-2 tests, and cannot have any.** Every endpoint here requires a
+credential — there is no public surface to probe (`docs/reference/robinhood/endpoint-inventory.md`).
+`test_helper.exs` still excludes `:tier2` so the family's convention holds, but nothing in
+`test/` carries the tag. Anything needing a live call is tier 3, run by whoever holds a
+credential, by hand and never on a schedule: a venue that sees a package polling it on a
+timer will rate-limit or block.
 
 ## Documentation is the source, not the host adapter
 
@@ -98,8 +101,10 @@ which host state was read, including that the working tree was dirty.
 Four tiers; only the first two ever run unattended:
 
 1. **In-process fakes** — every CI run. The default.
-2. **Live public endpoints** — by hand, tagged `:tier2`, excluded from CI.
-3. **Authenticated, read-only** — needs credentials this repo must never hold.
+2. **Live public endpoints** — the family's tier, and **empty on this venue**: Robinhood
+   Crypto publishes no unauthenticated endpoint, so there is nothing here to tag `:tier2`.
+3. **Authenticated, read-only** — needs credentials this repo must never hold. On this
+   venue that is every call, market data included.
 4. **Money-moving** — never a test. Answered in production, which is what moves an
    endpoint to `:proven`.
 

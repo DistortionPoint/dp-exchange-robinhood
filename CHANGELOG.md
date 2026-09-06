@@ -122,6 +122,51 @@ what was run against the live venue, and when.
 
 ### Documentation
 
+- **A documentation-only sweep for claims the code contradicts, 2026-09-06.** Nine false
+  claims, none of which changes behaviour:
+  - **`README.md`'s usage example did not work.** `get_top_of_book("BTCUSD", …)` and
+    `subscribe(["BTCUSD"])` used a separatorless symbol, and canonical form here is
+    `BASE-QUOTE`. `CanonicalPair.to_exchange/2` on a `sep: "-"` mapping splits the
+    canonical string on `-` and finds none, so `"BTCUSD"` goes to the venue as `"BTCUSD-"`
+    — a malformed symbol, not a working call. Both examples now read `"BTC-USD"`.
+  - **`README.md` claimed the conformance suite passes "against Robinhood's live public
+    endpoints."** There are none: every endpoint on this venue requires a credential, which
+    is exactly why `docs/reference/robinhood/endpoint-inventory.md` records that *"no
+    tier-2 test exists here."* `CLAUDE.md`, `test_helper.exs` and `.env.sample` carried
+    the same claim in three more shapes, including a `mix test --include tier2` command
+    for a tag nothing in `test/` sets.
+  - **`.env.sample` described a different venue.** It named Gemini's OAuth flow, a "WEBULL
+    App Key", and a `DpExchange.Gemini.get_price(…, environment: :sandbox)` example — and
+    said "every endpoint that would need [a credential] is declared `:unsupported`", which
+    is the opposite of this venue, where every implemented endpoint needs one.
+  - **`usage-rules.md` listed `volume` on a quote as "always `nil`."** This package never
+    returns a `Core.Types.Quote` at all since `get_price/2` became `:unsupported`. The row
+    now names what a caller does receive: `bid_size` / `ask_size` on a `TopOfBook`, always
+    `nil` because `best_bid_ask` publishes no size.
+  - **`usage-rules.md` said `venue_time` is `nil` "when the venue's row has no readable
+    timestamp,"** implying it is sometimes present. `V2BestBidAsk` has no `timestamp`
+    property at all, so it is `nil` on every book.
+  - **`Feed`'s moduledoc said a "direct one-off `get_price/2` call" goes through `Rest`'s
+    forwarded-options allowlist.** `get_price/2` returns `{:error, :not_supported}` at the
+    facade and never reaches `Rest`; the one-off call that does is `get_top_of_book/2`.
+  - **`Rest.get_estimated_price/5`'s doc called it "a different number from `get_price/3`'s
+    last trade."** There is no last trade on this venue and no `get_price/3` anywhere —
+    `usage-rules.md` already said "two prices … there is no third," and the facade's own
+    `get_estimated_price/5` doc still said "third." Both corrected.
+  - **Wrong arities on six real cross-references.** `Rest`'s docs called its own
+    `get_symbols/2` and `list_instruments/2` "`/1`" (the facade's arity), the facade called
+    its own `get_symbols/1` "`/2`" (`Rest`'s arity), and the `{:get_price, 2}` entry in
+    `@venue_does_not_serve` said `get_price/3`.
+  - **`config/*.exs` and `docs/design/README.md` named the wrong package** —
+    `:dp_exchange_gemini` and `dp_exchange_core` — and `runtime.exs` called this a
+    "contract library" that "opens no sockets" whose seam `:rate_limit_module` it reads;
+    that key is read by `dp_exchange_core` under its own app name.
+  - **`README.md` told a consumer to pin `~> 0.1.0`** while `mix.exs` is at `0.2.1` — a
+    constraint that cannot resolve the current package. Now `~> 0.2.0`, in both the
+    banner and the `deps` snippet.
+  - **`.gitignore` ignored `dp_exchange_coinbase-*.tar`** in this repo, so a built Hex
+    tarball here was not ignored at all. Corrected to this package's own name.
+
 - **`time_in_force` is not symmetric between placing an order and reading it back, and
   several comments and tests claimed it was.** Confirmed against the vendor's own OpenAPI
   document, 2026-09-06: on the REQUEST side, `AddOrderV2.limit_order_config`,
