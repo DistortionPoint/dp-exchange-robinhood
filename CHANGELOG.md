@@ -21,6 +21,47 @@ what was run against the live venue, and when.
 
 ### Added
 
+- **This feed now says out loud when it has delivered nothing, not only to a log a human
+  has to go grepping for — DpCryptoManagement's issue #21, closed at the source.** Issue
+  #21 was itself a wrong credential (ciphertext where a key belonged) making every fetch
+  fail, every cycle, for a whole deployment, with the only trace `Core.PollingFeed`'s own
+  `Logger.warning` — "has delivered NOTHING in 154 consecutive attempts" — a sentence
+  nobody was watching for at the time. That earlier fix (below, `get_price/2` →
+  `:unsupported`) closed the specific cause; it did nothing about the reporting gap, which
+  is a defect on its own: any future outage of this feed, for any reason at all, would have
+  been exactly as invisible.
+
+  `dp_exchange_core` 0.1.50 closes the reporting gap in the contract itself:
+  `PollingFeed.start_link/1` gained an `:on_notice` option, called with a
+  `%Core.Notice{kind: :coverage_change}` the instant the feed crosses INTO
+  delivering-nothing (`severity: :warning`) and a second time the instant it crosses back
+  OUT (`severity: :info`, message naming how many consecutive failures preceded recovery).
+  It fires **once per transition**, never once per failed tick and never once per sweep
+  while an outage continues — an 86-symbol feed retrying every symbol every cycle does not
+  turn one outage into a notice storm. `:on_notice` defaults to a no-op, so the option
+  existing upstream was not itself a fix; a venue has to wire it.
+
+  This package now does: `Feed.start_link/1` passes
+  `on_notice: fn notice -> send(subscriber, {:dp_exchange, :robinhood, notice}) end`,
+  the same shape and the same destination as the existing `on_refusal` wiring right next to
+  it. The dependency floor moves to `~> 0.1.50` so this cannot compile against a Core that
+  lacks the option. This venue has one fixed subscriber, set at supervision-tree boot via
+  `subscriber:` — not a dynamic registry (`subscribe_notices/1` remains a documented no-op
+  for exactly that reason, see its own moduledoc) — so wiring `on_notice` to that same
+  subscriber is the whole integration; there was no separate fanout to build.
+
+  Three new tests in `feed_test.exs` prove the wiring end to end against a real `Feed`
+  process and a forced-failing `plug:`, not against `PollingFeed` in isolation (its own
+  latching logic is `dp_exchange_core`'s to cover): a single failed fetch on this venue's
+  one-symbol-per-request feed already crosses the threshold, so the warning notice is
+  deterministic on the very first tick; repeated failures across several more ticks do not
+  produce a second notice; and a plug that fails twice then succeeds produces exactly one
+  `severity: :info` "has resumed delivering after 2 consecutive failures" notice afterward.
+  `retry_attempts: 0` is set in these tests specifically — `HttpClient`'s default retry
+  backoff (up to ~3s per failed attempt) would otherwise make the notice arrive well after
+  a bounded `assert_receive`, for a reason having nothing to do with the behaviour under
+  test.
+
 - **`coverage_by_kind/1` implemented — `dp_exchange_core` 0.1.48's optional callback,
   wired for family-wide consumer tooling even though this venue cannot reproduce the
   defect the callback exists to catch.** `coverage/1` reports what is observed arriving,

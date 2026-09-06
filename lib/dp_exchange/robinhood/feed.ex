@@ -39,6 +39,21 @@ defmodule DpExchange.Robinhood.Feed do
 
   `acquire/3` waits for capacity instead. A slower cycle rather than a missing price.
 
+  ## A silent outage says so, not only to the log
+
+  This is the venue `Core.PollingFeed`'s "delivered NOTHING" warning was written about:
+  DpCryptoManagement's issue #21 is a wrong credential (ciphertext where a key belonged)
+  producing a fetch failure on every symbol, every cycle, for a whole deployment, with the
+  only trace a `Logger.warning` a human had to go grepping for. `dp_exchange_core` 0.1.50
+  gives `PollingFeed.start_link/1` an `:on_notice` option for exactly this, and it is wired
+  here the same way `on_refusal` already is: forwarded to `subscriber`, so this feed's one
+  fixed subscriber learns about a coverage outage as a `Core.Notice`, not only from a log
+  line nothing downstream reacts to. It fires once on the transition into
+  delivering-nothing (`severity: :warning`) and once on the transition back out
+  (`severity: :info`) — never per tick and never per sweep while the outage continues, so
+  an 86-symbol feed retrying every symbol every cycle does not turn one outage into a
+  notice storm.
+
   **Documenting that design was not the same as wiring it.** `:rate_limit_blocking` —
   the option `Core.HttpClient.check_rate_limits/1` actually reads to choose `acquire/3`
   over `check/3` — was missing from this module's own forwarded-options allowlist, so no
@@ -85,6 +100,7 @@ defmodule DpExchange.Robinhood.Feed do
       on_refusal: fn symbol, reason ->
         send(subscriber, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
       end,
+      on_notice: fn notice -> send(subscriber, {:dp_exchange, :robinhood, notice}) end,
       fetch: fn symbol -> Rest.get_top_of_book(symbol, credentials, request_opts) end
     )
     |> case do
