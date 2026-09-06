@@ -46,6 +46,16 @@ what was run against the live venue, and when.
   because the fixtures encoded the same wrong assumption as the code), on the venue's most
   load-bearing endpoint.
 
+  **Affected published versions: `0.1.11` through `0.1.17` inclusive.** The v1→v2 URL
+  switch landed in `ea25ffb`, the commit immediately before the `0.1.11` release, and the
+  decoder was never moved with it. A consumer that polled `top_of_book` on any of those
+  versions received a `TopOfBook` whose `bid`, `ask` and `venue_time` were all `nil` — so
+  **any stored history written from this venue over that range holds no prices and cannot
+  be repaired from the package side.** It is stated here rather than only in the fix
+  description because a consumer streaming this into a time-series store has bad rows
+  already written, and nothing in an upgrade tells them which ones.
+
+
 - **`cancel_order/3` discarded the venue's real response and always returned a fabricated
   `status: :open`, regardless of what the venue actually said.** Confirmed against the
   vendor's own OpenAPI document, 2026-09-06: v1's cancel endpoint
