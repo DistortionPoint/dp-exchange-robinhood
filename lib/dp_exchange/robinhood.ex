@@ -531,6 +531,40 @@ defmodule DpExchange.Robinhood do
     if alive?(feed), do: Feed.coverage(feed), else: %{}
   end
 
+  @doc """
+  `coverage/1`, split by kind — required family-wide so consumer tooling can call the
+  same function on every venue, even though this one has nothing to split.
+
+  ## Why this exists even where it cannot find anything
+
+  `coverage/1` reports what is observed arriving, truthfully, but it collapses every
+  kind of payload into one boolean. On a venue streaming more than one kind behind a
+  single subscription, that hid a dark channel behind a healthy one for days — Coinbase
+  delivered order-book frames for hundreds of symbols while its last-trade channel sat
+  dark for all but a handful, and `coverage/1` alone reported all of them healthy
+  because it counts any payload, regardless of kind. See
+  `DpExchange.Core.Venue`'s moduledoc on `c:DpExchange.Core.Venue.coverage_by_kind/1`
+  for the incident in full.
+
+  Robinhood cannot reproduce that discrepancy, and this implementation does not pretend
+  otherwise. `capabilities().streamable` names exactly one kind, `:top_of_book`, and
+  this venue's feed delivers it by poll: `Feed`'s fetcher is
+  `Rest.get_top_of_book/3`, which returns exclusively `Core.Types.TopOfBook.t()` —
+  never `Core.Types.Quote.t()`, because this venue has no last-trade endpoint at all
+  (see `get_price/2` above). A single-key map is therefore the honestly derived shape
+  for a venue with exactly one delivery path, not a shortcut taken because there was
+  only one declared kind to wrap. Uniformity across the family is the point of
+  implementing this callback here — not detecting something that structurally cannot
+  happen on this venue.
+  """
+  @impl true
+  @spec coverage_by_kind(keyword()) ::
+          %{Capabilities.data_kind() => %{Venue.symbol() => Venue.route()}}
+  def coverage_by_kind(opts \\ []) do
+    feed = feed(opts)
+    if alive?(feed), do: Feed.coverage_by_kind(feed), else: %{top_of_book: %{}}
+  end
+
   # NOT `:unsupported`, and not a socket either. This venue's feed reports refusals
   # through the same subscriber, so a caller registering here receives them.
   @impl true

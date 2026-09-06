@@ -30,7 +30,7 @@ defmodule DpExchange.Robinhood.Fake do
 
   @behaviour DpExchange.Core.Venue
 
-  alias DpExchange.Core.{FakeInjection, Types, Venue}
+  alias DpExchange.Core.{Capabilities, FakeInjection, Types, Venue}
 
   @symbols ~w(BTC-USD ETH-USD DOGE-USD)
 
@@ -343,6 +343,18 @@ defmodule DpExchange.Robinhood.Fake do
   # would let a consumer build on a route that does not exist.
   @impl true
   def coverage(_opts \\ []), do: Map.new(subscribed(), &{&1, :internal_poll})
+
+  @doc """
+  `coverage/1`, split by kind. Same single-key shape as the real venue, and for the
+  same reason: `get_top_of_book/2` above is this fake's only source of subscription
+  data and it produces exclusively `Types.TopOfBook`, so `:top_of_book` is the only
+  kind there is to report — see `DpExchange.Robinhood.coverage_by_kind/1` for why the
+  family requires this callback even where a venue has nothing to split.
+  """
+  @impl true
+  @spec coverage_by_kind(keyword()) ::
+          %{Capabilities.data_kind() => %{Venue.symbol() => Venue.route()}}
+  def coverage_by_kind(opts \\ []), do: %{top_of_book: coverage(opts)}
 
   @impl true
   def subscribe_notices(_opts \\ []), do: :ok

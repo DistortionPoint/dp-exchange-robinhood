@@ -201,6 +201,10 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
       assert_receive {:dp_exchange, :robinhood, %Types.TopOfBook{symbol: "BTC-USD"}}, 3_000
       assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
+
+      # `coverage_by_kind/1` wraps the exact same observed fact under the one kind this
+      # feed's fetcher can ever produce — a `Types.TopOfBook`, never a `Types.Quote`.
+      assert Feed.coverage_by_kind(feed) == %{top_of_book: %{"BTC-USD" => :internal_poll}}
     end
 
     test "a refusal reaches the subscriber rather than being retried forever", %{limiter: limiter} do
@@ -242,6 +246,11 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       assert Robinhood.unsubscribe(["BTC-USD"]) == :ok
       assert Robinhood.update_symbols(["BTC-USD"]) == {:error, :feed_not_started}
       assert Robinhood.coverage() == %{}
+
+      # No feed running means no observed symbols under any kind — the invariant
+      # (`coverage/1`'s keys equal the union across `coverage_by_kind/1`'s values) holds
+      # here too: empty against empty.
+      assert Robinhood.coverage_by_kind() == %{top_of_book: %{}}
     end
 
     test "coverage accepts a pid as well as a name" do

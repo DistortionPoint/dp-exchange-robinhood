@@ -19,6 +19,28 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Added
+
+- **`coverage_by_kind/1` implemented — `dp_exchange_core` 0.1.48's optional callback,
+  wired for family-wide consumer tooling even though this venue cannot reproduce the
+  defect the callback exists to catch.** `coverage/1` reports what is observed arriving,
+  truthfully, but collapses every kind of payload into one boolean — on a venue streaming
+  several kinds behind one subscription, that hid a dark channel behind a healthy one for
+  days (Coinbase's `level2`-vs-`ticker` incident, `dp_exchange_core`'s
+  `Venue.coverage_by_kind/1` moduledoc has the full writeup). Robinhood streams exactly one
+  kind, `:top_of_book`, delivered by poll — `Feed`'s fetcher is `Rest.get_top_of_book/3`,
+  which returns exclusively `Core.Types.TopOfBook.t()`, never `Core.Types.Quote.t()`,
+  because this venue has no last-trade endpoint at all. So the honest, structurally-derived
+  answer is a single-key map, `%{top_of_book: coverage(opts)}` — not detecting a
+  discrepancy that cannot occur here, but giving the family's tooling the same shape every
+  venue answers. Wired on `Feed`, the facade and `Fake`; the dependency floor moves to
+  `~> 0.1.48` so this cannot compile against a Core that lacks the callback. New tests
+  assert a delivering symbol appears under `:top_of_book`, the union invariant against
+  `coverage/1` holds, the reported kind is declared in `capabilities().streamable`, and the
+  map carries exactly one key — and the conformance suite's assertion group 15 ("coverage
+  by kind"), previously skipped for every venue that had not adopted the callback, now runs
+  against this package and passes.
+
 ### Documentation
 
 - **`usage-rules.md`'s `time_in_force` section still taught the pre-C7 vocabulary after the

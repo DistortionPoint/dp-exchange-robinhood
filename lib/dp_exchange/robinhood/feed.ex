@@ -105,6 +105,20 @@ defmodule DpExchange.Robinhood.Feed do
   @spec coverage(pid() | atom()) :: %{String.t() => :internal_poll}
   def coverage(feed), do: PollingFeed.coverage(feed)
 
+  @doc """
+  `coverage/1`, split by kind — see `DpExchange.Robinhood.coverage_by_kind/1` for why
+  the family wants this at all when Robinhood has nothing to split.
+
+  Traceable to the actual struct, not assumed from the declared kind list: this feed's
+  `fetch` calls only `Rest.get_top_of_book/3`, wired in `start_link/1` above, and that
+  function returns exclusively `DpExchange.Core.Types.TopOfBook.t()` — never
+  `DpExchange.Core.Types.Quote.t()` (see this module's own moduledoc on why not). Every
+  symbol `coverage/1` reports therefore arrived through that one fetcher, so wrapping its
+  map under `:top_of_book` reports what was actually produced, not a guess.
+  """
+  @spec coverage_by_kind(pid() | atom()) :: %{top_of_book: %{String.t() => :internal_poll}}
+  def coverage_by_kind(feed), do: %{top_of_book: coverage(feed)}
+
   @doc "Replaces the polled set."
   @spec update_symbols(pid() | atom(), [String.t()]) :: :ok
   def update_symbols(feed, symbols), do: PollingFeed.update_symbols(feed, symbols)

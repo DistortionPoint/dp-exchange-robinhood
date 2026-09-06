@@ -227,6 +227,51 @@ defmodule DpExchange.RobinhoodTest do
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
     end
 
+    test "coverage_by_kind reports a delivering symbol under :top_of_book" do
+      # This fake's `get_top_of_book/2` produces exclusively `Types.TopOfBook`, so a
+      # symbol that delivers a quote must appear under `:top_of_book` here — the same
+      # struct-derived fact `coverage/1` already reports, split by kind.
+      :ok = Fake.subscribe(["BTC-USD"], to: self())
+
+      assert Fake.coverage_by_kind() == %{top_of_book: %{"BTC-USD" => :internal_poll}}
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
+    end
+
+    test "coverage_by_kind's symbol union equals coverage/1's keys exactly" do
+      # The family-wide invariant: whatever `coverage/1` reports, `coverage_by_kind/1`'s
+      # values must union back to precisely the same symbol set — never more, never
+      # fewer.
+      :ok = Fake.subscribe(["BTC-USD", "ETH-USD"], to: self())
+
+      coverage_symbols = Fake.coverage() |> Map.keys() |> MapSet.new()
+
+      union =
+        Fake.coverage_by_kind()
+        |> Map.values()
+        |> Enum.flat_map(&Map.keys/1)
+        |> MapSet.new()
+
+      assert union == coverage_symbols
+    end
+
+    test "the one kind reported is declared streamable" do
+      :ok = Fake.subscribe(["BTC-USD"], to: self())
+
+      reported_kinds = Fake.coverage_by_kind() |> Map.keys() |> MapSet.new()
+      declared = MapSet.new(Robinhood.capabilities().streamable)
+
+      assert MapSet.subset?(reported_kinds, declared)
+    end
+
+    test "coverage_by_kind has exactly one key — a single-kind venue is a single-key map" do
+      # Robinhood streams only one kind, delivered by poll. Documenting the map's shape
+      # directly: this is the honest, structurally-derived answer for a venue with one
+      # delivery path, not an accident of only writing one branch.
+      :ok = Fake.subscribe(["BTC-USD"], to: self())
+
+      assert Map.keys(Fake.coverage_by_kind()) == [:top_of_book]
+    end
+
     test "unsubscribe and update_symbols narrow coverage" do
       :ok = Fake.subscribe(["BTC-USD", "ETH-USD"], to: self())
       :ok = Fake.update_symbols(["BTC-USD"])
