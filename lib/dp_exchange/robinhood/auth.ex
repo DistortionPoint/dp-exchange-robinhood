@@ -52,6 +52,10 @@ defmodule DpExchange.Robinhood.Auth do
   credential, and `{:error, {:invalid_private_key, reason}}` when the key is not the
   base64 32-byte seed the venue issues — both of which are clearer than the 401 they would
   otherwise become.
+
+  Builds the signed string through `payload/5` rather than concatenating a second time
+  here — see that function's moduledoc for why a second, hand-kept copy of the same
+  ordering is exactly the kind of thing that drifts.
   """
   @spec headers(String.t(), String.t(), String.t(), credentials(), keyword()) ::
           {:ok, [{String.t(), String.t()}]} | {:error, term()}
@@ -62,9 +66,9 @@ defmodule DpExchange.Robinhood.Auth do
     timestamp = opts |> Keyword.get(:timestamp, System.system_time(:second)) |> to_string()
 
     with {:ok, seed} <- decode_seed(private_key) do
-      payload = api_key <> timestamp <> path <> String.upcase(method) <> body
+      signed_payload = payload(api_key, timestamp, path, method, body)
       {_public, secret} = :crypto.generate_key(:eddsa, :ed25519, seed)
-      signature = :crypto.sign(:eddsa, :none, payload, [secret, :ed25519])
+      signature = :crypto.sign(:eddsa, :none, signed_payload, [secret, :ed25519])
 
       {:ok,
        [
@@ -79,10 +83,16 @@ defmodule DpExchange.Robinhood.Auth do
     do: {:error, {:missing_credentials, :robinhood}}
 
   @doc """
-  The signed payload, exposed because its ordering is the whole scheme.
+  The signed payload — `headers/5`'s own signing path builds it by calling this, not by
+  concatenating a second time. Also exposed because its ordering is the whole scheme.
 
   A signature is opaque; the string it was taken over is not, and it is the thing worth
-  asserting.
+  asserting. Confirmed against the vendor's own documentation,
+  `docs.robinhood.com/crypto/trading/` (Authentication → Headers and Signature),
+  fetched live 2026-09-06 and against the reference implementation Robinhood links from
+  it: `message = f"{api_key}{current_timestamp}{path}{method}{body}"`, method uppercase,
+  path including the query string, body contributing no characters for a request that has
+  none — the same string a plain concatenation with an empty `body` argument produces here.
   """
   @spec payload(String.t(), String.t(), String.t(), String.t(), String.t()) :: String.t()
   def payload(api_key, timestamp, path, method, body),

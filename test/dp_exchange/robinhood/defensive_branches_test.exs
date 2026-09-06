@@ -11,7 +11,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
   alias DpExchange.Core.{Config, Types}
   alias DpExchange.Robinhood
-  alias DpExchange.Robinhood.{Fake, Feed, Rest, SymbolFormat}
+  alias DpExchange.Robinhood.{Fake, Feed, Rest}
 
   @moduletag :capture_log
 
@@ -262,13 +262,6 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
         )
 
       assert Robinhood.coverage(feed: feed) == %{}
-    end
-  end
-
-  describe "the mapping is exposed so it cannot drift" do
-    test "mapping/0 and quotes/0 agree" do
-      assert SymbolFormat.mapping().quotes == SymbolFormat.quotes()
-      assert SymbolFormat.mapping().sep == "-"
     end
   end
 

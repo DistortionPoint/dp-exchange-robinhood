@@ -19,7 +19,45 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Removed
+
+- **`SymbolFormat.mapping/0` — dead code, and a breaking change if anything outside this
+  package called it.** Found by Core's new "16. internal wiring" conformance assertion
+  (`DpExchange.Core.UnwiredCheck`), which reads the real `:xref` call graph restricted to
+  this package's own `lib/` — a test calling a function does not count as wiring it, which
+  is deliberate: it is the same shape as `rate_limit_blocking` never being set by its
+  caller (issue #16), the defect the assertion exists to catch family-wide. `mapping/0`
+  had no caller anywhere in `lib/`: `to_canonical_symbol/1` and `to_exchange_symbol/1`
+  read the `@mapping` module attribute directly, `quotes/0` reads `@mapping.quotes`
+  directly, and `Core.AdapterContract`'s conformance suite — despite this function's own
+  doc claiming it exists "so the conformance suite can drive `CanonicalPair` with it" —
+  never calls `.mapping()` on a venue's `SymbolFormat` module; it only ever calls
+  `to_canonical_symbol/1` and `to_exchange_symbol/1`. Core's own reference pattern in
+  `usage-rules/symbols.md` does not expose a `mapping/0` either. A vestigial `def`-exposed
+  getter over a module attribute the real code never reads through it.
+
 ### Fixed
+
+- **`Auth.headers/5` recomputed the signed payload with its own second copy of the
+  concatenation `payload/5` already implements, rather than calling `payload/5`.** Also
+  found by the "16. internal wiring" assertion: `payload/5` had no caller in `lib/`, only
+  in `auth_test.exs`. The two copies agreed byte-for-byte — confirmed both against each
+  other (the test at `auth_test.exs:52` already verified a signature produced by
+  `headers/5` against a payload reconstructed by `payload/5`) and against the vendor's own
+  documentation, `docs.robinhood.com/crypto/trading/` → Authentication → Headers and
+  Signature, fetched live 2026-09-06: `message = f"{api_key}{current_timestamp}{path}
+  {method}{body}"`, method uppercase, path including the query string, and the reference
+  implementation Robinhood links from that page passes `body=""` for a bodyless request —
+  the same empty-string-in-the-concatenation this package always did, not the literal
+  omission the page's own prose says in passing (concatenating `""` and omitting it
+  produce the identical string, so there was never a behavioural difference either way).
+  So this was **not** the "two implementations disagree" defect the internal-wiring check
+  exists to catch on a signing path — a signature-correctness bug — but the hand-kept
+  duplicate was still a landmine waiting for the day the two drifted. `headers/5` now
+  builds its signed string by calling `payload/5`, so there is exactly one implementation
+  of the venue's signature ordering, and it is the one both the header path and the test
+  suite exercise. No change to any wire behaviour — every existing signature-shape test
+  passes unchanged.
 
 - **`get_top_of_book/2` decoded v1's field names against the v2 endpoint this package
   actually calls, and every real poll silently returned `bid: nil, ask: nil` — the venue's

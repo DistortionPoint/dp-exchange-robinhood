@@ -25,10 +25,6 @@ defmodule DpExchange.Robinhood.SymbolFormat do
   # nothing, and it stops being merely cosmetic the moment someone reuses this mapping.
   @mapping %{sep: "-", quotes: ~w(USDC USDT USD BTC ETH)}
 
-  @doc "The mapping, exposed so the conformance suite can drive `CanonicalPair` with it."
-  @spec mapping() :: CanonicalPair.mapping()
-  def mapping, do: @mapping
-
   @doc "The quote currencies this venue settles in."
   @spec quotes() :: [String.t()]
   def quotes, do: @mapping.quotes
