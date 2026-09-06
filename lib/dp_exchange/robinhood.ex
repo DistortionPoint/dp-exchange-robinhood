@@ -40,7 +40,7 @@ defmodule DpExchange.Robinhood do
   ## `get_price/2` is `:unsupported` — this venue has no last-trade data at all
 
   `best_bid_ask` is the only quote-adjacent endpoint this venue serves, and it carries only
-  `bid_inclusive_of_sell_spread` / `ask_inclusive_of_buy_spread`, never a trade price. This
+  a bid and an ask, never a trade price. This
   package used to fill `Core.Types.Quote.price` from the ask when the venue sent none —
   `Quote`'s own moduledoc now names this incident directly as the reason `Quote` carries no
   bid or ask at all. Removing that fallback was correct and left `get_price/2` with no
@@ -440,8 +440,10 @@ defmodule DpExchange.Robinhood do
   @doc """
   Cancels an order. **A POST, not a DELETE**, and it takes no account number.
 
-  See `DpExchange.Robinhood.Rest.cancel_order/3` — cancellation is a request the venue
-  accepts, not an outcome; read the order back before treating it as gone.
+  See `DpExchange.Robinhood.Rest.cancel_order/3` — the response is the venue's own
+  `V2CryptoOrder`, decoded the same way `get_order/3`'s is, so the returned `Order`
+  reflects the venue's real state (`:open` if the cancel is still in flight, `:cancelled`
+  once it lands, or a fill if one won the race) rather than an assumed outcome.
   """
   @impl true
   def cancel_order(credentials, id, opts),

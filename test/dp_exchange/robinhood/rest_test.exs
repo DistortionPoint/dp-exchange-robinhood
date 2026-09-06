@@ -29,20 +29,16 @@ defmodule DpExchange.Robinhood.RestTest do
     fn conn -> Req.Test.json(%{conn | status: status}, body) end
   end
 
+  # v2's `V2BestBidAsk` — the schema `/api/v2/crypto/marketdata/best_bid_ask/` actually
+  # returns, confirmed against the vendor's own OpenAPI document, 2026-09-06 — is exactly
+  # `symbol`, `bid`, `ask`. No spread-inclusive names, no `price`, no `timestamp`. An
+  # earlier version of this fixture used v1's field names
+  # (`bid_inclusive_of_sell_spread` / `ask_inclusive_of_buy_spread`) against the v2 path
+  # this module actually calls — realistic-looking and wrong, so every test built on it
+  # passed while `Rest.get_top_of_book/3` silently decoded `bid: nil, ask: nil` against the
+  # real venue. See `Rest`'s own moduledoc, "v2's field names are not v1's."
   defp quote_body(overrides \\ %{}) do
-    row =
-      Map.merge(
-        %{
-          "symbol" => "BTC-USD",
-          # Nothing here reads "price" — the venue's `best_bid_ask` response shape, kept
-          # for realism even though this package no longer looks at the field.
-          "price" => "77845.00",
-          "bid_inclusive_of_sell_spread" => "77840.00",
-          "ask_inclusive_of_buy_spread" => "77850.00",
-          "timestamp" => "2026-08-28T17:00:01Z"
-        },
-        overrides
-      )
+    row = Map.merge(%{"symbol" => "BTC-USD", "bid" => "77840.00", "ask" => "77850.00"}, overrides)
 
     %{"results" => [row]}
   end
@@ -78,10 +74,10 @@ defmodule DpExchange.Robinhood.RestTest do
   end
 
   describe "get_top_of_book/3" do
-    test "returns a TopOfBook with Decimal numerics, spread-inclusive as the venue sent them" do
-      # The venue publishes spread-inclusive prices — what a caller would transact at — and
-      # they are carried as sent. `Core.Types.Quote` has no bid or ask to put them on, which
-      # is why there is no `get_price/3` here at all — see the moduledoc.
+    test "returns a TopOfBook with Decimal numerics, from v2's plain bid/ask fields" do
+      # v2's `V2BestBidAsk` names its two prices `bid` and `ask` — not v1's spread-inclusive
+      # names. `Core.Types.Quote` has no bid or ask to put them on either way, which is why
+      # there is no `get_price/3` here at all — see the moduledoc.
       assert {:ok, %Types.TopOfBook{} = top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(quote_body()),
@@ -96,7 +92,7 @@ defmodule DpExchange.Robinhood.RestTest do
     end
 
     test "a missing bid or ask decodes as nil, not as an error" do
-      body = quote_body() |> put_in(["results"], [%{"timestamp" => "2026-08-28T17:00:01Z"}])
+      body = quote_body() |> put_in(["results"], [%{"symbol" => "BTC-USD"}])
 
       assert {:ok, top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
@@ -108,10 +104,24 @@ defmodule DpExchange.Robinhood.RestTest do
       assert top.ask == nil
     end
 
-    test "a venue timestamp this package cannot parse is nil, not a failed call" do
-      # Unlike a trade price, a book with an unreadable venue_time is still a real,
-      # current book — `top_of_book_time/1` swallows the parse failure into `nil` rather
-      # than refusing the whole read.
+    test "venue_time is nil against a real v2 response — the venue sends no timestamp here" do
+      # `V2BestBidAsk` has exactly three properties: `symbol`, `bid`, `ask`. There is no
+      # `timestamp` to read, so this is the honest, permanent answer for this endpoint —
+      # not a parse failure on an occasionally-missing field.
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(quote_body()),
+                 retry_attempts: 0
+               )
+
+      assert top.venue_time == nil
+    end
+
+    test "an unparseable timestamp, if the venue ever sent one, would decode to nil rather than fail the call" do
+      # Defensive coverage, not a documented v2 behaviour: `V2BestBidAsk` publishes no
+      # `timestamp` today (see the test above), but `top_of_book_time/1` still tolerates a
+      # present-and-unparseable one gracefully rather than refusing a real, current book
+      # over a field the schema does not even promise.
       body = quote_body(%{"timestamp" => "whenever"})
 
       assert {:ok, top} =
@@ -186,7 +196,7 @@ defmodule DpExchange.Robinhood.RestTest do
     end
   end
 
-  describe "timestamps" do
+  describe "timestamps — defensive coverage against a field v2 does not currently send" do
     test "an epoch in seconds or milliseconds both land in the right year" do
       for value <- [1_787_936_147, 1_787_936_147_000] do
         body = quote_body(%{"timestamp" => value})
@@ -398,7 +408,7 @@ defmodule DpExchange.Robinhood.RestTest do
                )
     end
 
-    test "a non-numeric increment refuses rather than delivering a fabricated nil" do
+    test "a non-numeric increment decodes to nil rather than a fabricated numeric guess" do
       row = %{@pair_row | "quote_increment" => "null"}
 
       assert {:ok, quantum} =

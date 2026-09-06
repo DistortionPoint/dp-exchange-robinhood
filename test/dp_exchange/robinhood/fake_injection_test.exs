@@ -65,11 +65,11 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
       assert {:ok, _tob} = Fake.get_top_of_book("ETH-USD", credentials: @credentials)
     end
 
-    test "quantization/1 only fails for the targeted symbol" do
+    test "quantization/2 only fails for the targeted symbol" do
       FakeInjection.fail_always(:robinhood, "BTC-USD", {:error, :injected})
 
-      assert Fake.quantization("BTC-USD") == {:error, :injected}
-      assert {:ok, _quantum} = Fake.quantization("ETH-USD")
+      assert Fake.quantization("BTC-USD", credentials: @credentials) == {:error, :injected}
+      assert {:ok, _quantum} = Fake.quantization("ETH-USD", credentials: @credentials)
     end
 
     test "a whole-call queue still reaches a symbol-taking function with no symbol-specific override" do
@@ -100,6 +100,32 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
 
     test "the default, without calling bypass_credentials/1, is still venue-faithful" do
       assert Fake.get_top_of_book("BTC-USD", []) == {:refused, :missing_credentials}
+    end
+  end
+
+  describe "quantization/2 — matches the real facade's arity and credential gating" do
+    # `Rest.quantization/3` signs the request like every other call on this venue, and
+    # `DpExchange.Robinhood.quantization/2` carries credentials through `opts`. A fake
+    # exposing only `quantization/1` could never stand in for that call — swapping `Fake` in
+    # at the `Config` seam and calling `quantization(symbol, opts)` the same way production
+    # code does would raise `UndefinedFunctionError` — and answering success with no
+    # credentials at all would be "differently capable" on top of that.
+    test "quantization/2 exists and refuses without credentials, same as get_top_of_book/2" do
+      assert Fake.quantization("BTC-USD", []) == {:refused, :missing_credentials}
+    end
+
+    test "quantization/1 still works — opts defaults to [], which is still no credentials" do
+      assert Fake.quantization("BTC-USD") == {:refused, :missing_credentials}
+    end
+
+    test "quantization/2 succeeds once credentials are given" do
+      assert {:ok, _quantum} = Fake.quantization("BTC-USD", credentials: @credentials)
+    end
+
+    test "bypass_credentials/1 covers quantization/2 too" do
+      FakeInjection.bypass_credentials(:robinhood)
+
+      assert {:ok, _quantum} = Fake.quantization("BTC-USD", [])
     end
   end
 end

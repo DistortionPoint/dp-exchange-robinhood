@@ -22,12 +22,29 @@ defmodule DpExchange.Robinhood.Feed do
   moduledoc on `get_price/2`. Bid and ask are both genuine, so that is what this polls and
   delivers.
 
-  ## Per symbol, because there is no bulk endpoint
+  ## Per symbol, for now — not because there is no bulk endpoint
 
-  `best_bid_ask` carries no 24-hour statistics and the venue publishes no bulk-stats
-  endpoint, so `Core.PollingFeed` runs each symbol on its own schedule — spread across the
-  interval rather than swept in a burst. With 86 pairs, a burst would put 86 signed
-  requests into one instant of a budget this venue has already proven sensitive to.
+  This runs `Core.PollingFeed` in its per-symbol `:fetch` mode, each symbol on its own
+  schedule — spread across the interval rather than swept in a burst. With 86 pairs, a
+  burst would put 86 signed requests into one instant of a budget this venue has already
+  proven sensitive to.
+
+  **Correction, 2026-09-06:** an earlier version of this note said the venue "publishes no
+  bulk-stats endpoint" and left it there. That is not quite what the vendor's own OpenAPI
+  document says. `best_bid_ask` genuinely carries no 24-hour statistics — that part holds —
+  but its `symbol` query parameter is documented as repeatable: `?symbol=BTC-USD&symbol=
+  ETH-USD` returns a `results` array covering every symbol asked for in ONE signed request.
+  `Core.PollingFeed`'s own moduledoc names Robinhood as the intended user of its
+  `:fetch_all` mode for exactly this shape. This module does not use it yet: the vendor's
+  document does not say what a batched call does when one symbol in it is unlisted or
+  malformed, and `PollingFeed`'s `fetch_all` path has no `on_refusal`-equivalent — a
+  `{:refused, _}` returned from `:fetch_all` does not match either clause
+  `fetch_all_and_publish/1` handles and would crash this feed's process instead of
+  recording one refused symbol, which is a worse failure than today's per-symbol design for
+  the one case (a delisted symbol mixed into a live batch) this venue's rate limit already
+  makes likely. Adopting `:fetch_all` needs that answered against the live venue first —
+  which is tier-2 work, done by hand, never on a schedule — or a `Core` change giving
+  `:fetch_all` its own refusal path. Recorded as an idea, not implemented as a guess.
 
   ## `acquire`, not `check`
 

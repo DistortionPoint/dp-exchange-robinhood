@@ -65,9 +65,9 @@ You hold the credentials. This package signs one request with them and keeps not
 If you came here after filing an issue that looked like a Robinhood quote returning a
 fabricated price, this is that incident's writeup — **DpCryptoManagement's issue #21.**
 
-`best_bid_ask` is the only quote-adjacent endpoint this venue serves, and it carries only
-`bid_inclusive_of_sell_spread` and `ask_inclusive_of_buy_spread` — never a trade price.
-An earlier version of this package filled `Core.Types.Quote.price` from the ask whenever
+`best_bid_ask` is the only quote-adjacent endpoint this venue serves, and it carries only a
+bid and an ask — never a trade price. An earlier version of this package filled
+`Core.Types.Quote.price` from the ask whenever
 the venue sent none. That produced a real-looking number with the wrong meaning: a taker's
 ask, presented as a trade that never happened. `Core.Types.Quote`'s own moduledoc now names
 this incident directly as the reason `Quote` carries no bid or ask field at all — a package
@@ -138,7 +138,7 @@ have more than one.
 
 ## Two prices, and the one that accounts for size
 
-- `get_top_of_book/2` — the top of the book, spread-inclusive as the venue publishes it
+- `get_top_of_book/2` — the top of the book, as the venue publishes it
 - `get_estimated_price/4` — what a **given quantity** would execute at now
 
 There is no third. `get_price/2` is `:unsupported` — see above.
@@ -166,22 +166,35 @@ Anything else this package cannot send is refused locally as
 `{:error, {:unsupported_time_in_force, tif}}` rather than silently dropped, which would
 have placed your order under an instruction the venue never received. `market_order_config`
 carries no `time_in_force` in the venue's own schema, so a market order never sends one
-regardless of what you pass. Reading an order back decodes all four of the venue's values
-the same way. `gfw` and `gfm` decoded to `nil` for one release — not invented locally and
-not mapped to a nearest-match value, because Core's `time_in_force` vocabulary had no atom
-for either yet. `dp_exchange_core` 0.1.45 added both, so that gap is closed and
+regardless of what you pass. `gfw` and `gfm` decoded to `nil` for one release — not invented
+locally and not mapped to a nearest-match value, because Core's `time_in_force` vocabulary
+had no atom for either yet. `dp_exchange_core` 0.1.45 added both, so that gap is closed and
 `capabilities().supported_time_in_force` now lists all four you can actually place.
+
+**Reading it back is not symmetric with placing it.** Only a `stop_loss` or `stop_limit`
+order echoes `time_in_force` when you `get_order/3` or `cancel_order/3` it — confirmed
+against the vendor's own OpenAPI document, 2026-09-06: `OrderResponse.limit_order_config`
+has no `time_in_force` property at all, unlike the request-side config that placed it. A
+`limit` order's `time_in_force` therefore decodes `nil` on every read, always — the venue's
+own asymmetry, not a gap here. If you need to know what you set, that is the value you
+passed to `place_order/3`, not something you can re-derive from reading the order.
 
 **`client_order_id` is an idempotency key.** It is generated when you do not supply one, and
 re-sending the same one returns the original order instead of placing a second. If a request's
 response never reached you, retry with the *same* id — `opts[:client_order_id]` is there for
 exactly that.
 
-## Cancelling is a request, not an outcome
+## Cancelling returns the venue's real state, not an assumed one
 
-`cancel_order/3` returns an order whose `status` is `:open`. **The venue acknowledges the
-request and reports no outcome**, and telling you the order is gone would invite a second
-order for the same exposure. Read it back with `get_order/3`.
+`cancel_order/3`'s response is v2's own `V2CryptoOrder` — the same schema `get_order/3`
+reads — decoded the same way. `status` is whatever the venue actually reports at that
+moment: `:open` if the cancel is still in flight, `:cancelled` once it lands, or a fill's
+status if one won the race against your cancel. An earlier version of this function
+discarded that body and always returned `:open`, which was correct for v1's cancel endpoint
+(a bare acknowledgement string, no order data) and wrong for the v2 endpoint this package
+actually calls — confirmed against the vendor's own OpenAPI document, 2026-09-06. You still
+do not have to poll separately to find out whether a cancel took; the response already
+says.
 
 ## Fees ride on the order you placed, not a schedule
 

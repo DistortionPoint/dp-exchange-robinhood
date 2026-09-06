@@ -53,12 +53,13 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
   describe "empty strings are absent fields, not values" do
     test "an empty timestamp is nil, not a failed read" do
-      # Unlike a trade price, a book with no readable venue_time is still a real, current
-      # book — `top_of_book_time/1` swallows a `:missing_venue_timestamp` into `nil`
+      # v2's real `best_bid_ask` never sends a `timestamp` at all (see `rest_test.exs`'s
+      # "venue_time is nil against a real v2 response"); this is defensive coverage for
+      # `top_of_book_time/1`'s own tolerance of a present-and-empty one, should the vendor
+      # ever add the field. Unlike a trade price, a book with no readable venue_time is
+      # still a real, current book — this swallows a `:missing_venue_timestamp` into `nil`
       # rather than refusing the whole read.
-      body = %{
-        "results" => [%{"price" => "1", "ask_inclusive_of_buy_spread" => "1", "timestamp" => ""}]
-      }
+      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "1", "timestamp" => ""}]}
 
       assert {:ok, top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
@@ -71,16 +72,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
     test "an empty bid is nil rather than zero" do
       # Zero is a price. A venue that did not quote a bid has not quoted a bid of nothing.
-      body = %{
-        "results" => [
-          %{
-            "price" => "1",
-            "ask_inclusive_of_buy_spread" => "1",
-            "bid_inclusive_of_sell_spread" => "",
-            "timestamp" => "2026-08-28T17:00:01Z"
-          }
-        ]
-      }
+      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "1", "bid" => ""}]}
 
       assert {:ok, top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
@@ -96,16 +88,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
   describe "numbers and statuses" do
     test "JSON numbers become Decimals, whichever type they arrive as" do
-      body = %{
-        "results" => [
-          %{
-            "price" => 1,
-            "ask_inclusive_of_buy_spread" => 1,
-            "bid_inclusive_of_sell_spread" => 0.5,
-            "timestamp" => "2026-08-28T17:00:01Z"
-          }
-        ]
-      }
+      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => 1, "bid" => 0.5}]}
 
       assert {:ok, top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
@@ -135,11 +118,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
     end
 
     test "a seconds epoch as a string is read" do
-      body = %{
-        "results" => [
-          %{"price" => "1", "ask_inclusive_of_buy_spread" => "1", "timestamp" => "1787936147"}
-        ]
-      }
+      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "1", "timestamp" => "1787936147"}]}
 
       assert {:ok, top} =
                Rest.get_top_of_book("BTC-USD", @credentials,
@@ -152,13 +131,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
     test "a timestamp of an unexpected type is nil, not a guess" do
       body = %{
-        "results" => [
-          %{
-            "price" => "1",
-            "ask_inclusive_of_buy_spread" => "1",
-            "timestamp" => %{"nested" => true}
-          }
-        ]
+        "results" => [%{"symbol" => "BTC-USD", "ask" => "1", "timestamp" => %{"nested" => true}}]
       }
 
       assert {:ok, top} =
@@ -175,16 +148,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
     test "a fetched book reaches the subscriber through the sink", %{limiter: limiter} do
       # The feed is a poll, and this is the wiring that makes a poll indistinguishable
       # from a socket to whoever subscribed.
-      body = %{
-        "results" => [
-          %{
-            "price" => "77845.00",
-            "ask_inclusive_of_buy_spread" => "77850.00",
-            "bid_inclusive_of_sell_spread" => "77840.00",
-            "timestamp" => "2026-08-28T17:00:01Z"
-          }
-        ]
-      }
+      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "77850.00", "bid" => "77840.00"}]}
 
       {:ok, feed} =
         Feed.start_link(

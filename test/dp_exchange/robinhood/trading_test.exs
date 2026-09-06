@@ -454,10 +454,11 @@ defmodule DpExchange.Robinhood.TradingTest do
 
   describe "reading and cancelling orders" do
     test "an order's state maps to the contract's status" do
-      # Shaped like the vendor's real `OrderResponse`/`V2CryptoOrder`: `limit_order_config`
-      # carries `time_in_force` and `fee_charged` sits on the row itself, per Robinhood's
-      # own OpenAPI schema — this used to be built with neither, which is the same wrong
-      # assumption the code made.
+      # Shaped like the vendor's real `OrderResponse`/`V2CryptoOrder`: `fee_charged` sits on
+      # the row itself, per Robinhood's own OpenAPI schema — this used to be built without
+      # it, which is the same wrong assumption the code made. `limit_order_config` carries
+      # NO `time_in_force` on a response (only `stop_loss_order_config` and
+      # `stop_limit_order_config` do — see the dedicated test below), so none is given here.
       body = %{
         "id" => "o-1",
         "symbol" => "BTC-USD",
@@ -469,11 +470,7 @@ defmodule DpExchange.Robinhood.TradingTest do
         "created_at" => "2026-09-01T12:00:00Z",
         "fee_charged" => "0.15",
         "estimated_fee_remaining" => "0.05",
-        "limit_order_config" => %{
-          "asset_quantity" => "0.5",
-          "limit_price" => "60000",
-          "time_in_force" => "gtc"
-        }
+        "limit_order_config" => %{"asset_quantity" => "0.5", "limit_price" => "60000"}
       }
 
       assert {:ok, order} =
@@ -488,11 +485,36 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert order.side == :buy
       assert order.order_type == :limit
       assert order.symbol == "BTC-USD"
-      assert order.time_in_force == :gtc
       assert Decimal.equal?(order.fee, Decimal.new("0.15"))
       # The vendor's schema does not state a currency for `fee_charged` — not assumed to be
       # the quote currency.
       assert order.fee_currency == nil
+    end
+
+    test "a limit order's response never carries time_in_force, even when one was placed" do
+      # Confirmed against the vendor's own OpenAPI document, 2026-09-06: `OrderResponse`'s
+      # `limit_order_config` has exactly three properties — `quote_amount`, `asset_quantity`,
+      # `limit_price` — no `time_in_force`, unlike `AddOrderV2`'s `limit_order_config` on the
+      # REQUEST side, which does carry one (see `place_order/3`'s own tests). Only
+      # `stop_loss_order_config` and `stop_limit_order_config` echo the field back on a read.
+      # So `time_in_force` on a placed-and-then-reread limit order is knowable from the
+      # placement call, not from `get_order/3` — this decodes `nil` honestly rather than
+      # inventing the value the caller originally asked for.
+      body = %{
+        "id" => "o-1",
+        "state" => "open",
+        "type" => "limit",
+        "limit_order_config" => %{"asset_quantity" => "0.5", "limit_price" => "60000"}
+      }
+
+      assert {:ok, order} =
+               Rest.get_order(@credentials, "o-1",
+                 account_number: "RH-1",
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert order.time_in_force == nil
     end
 
     test "the venue's gfd decodes to Core's :day, the closest real match" do
@@ -521,15 +543,19 @@ defmodule DpExchange.Robinhood.TradingTest do
     # "good for week" or "good for month". Core 0.1.45 added `:gfw`/`:gfm`, so every value
     # the vendor's enum documents now round-trips — nothing this venue can return is
     # silently dropped any more.
+    # `stop_limit_order_config`, not `limit_order_config`: per the vendor's own schema, only
+    # `stop_loss_order_config` and `stop_limit_order_config` carry `time_in_force` on a
+    # response — see "a limit order's response never carries time_in_force" above.
     for {wire, expected} <- [{"gfw", :gfw}, {"gfm", :gfm}] do
       test "the venue's #{wire} decodes to #{inspect(expected)}" do
         body = %{
           "id" => "o-1",
           "state" => "open",
-          "type" => "limit",
-          "limit_order_config" => %{
+          "type" => "stop_limit",
+          "stop_limit_order_config" => %{
             "asset_quantity" => "0.5",
             "limit_price" => "1000",
+            "stop_price" => "950",
             "time_in_force" => unquote(wire)
           }
         }
@@ -548,14 +574,16 @@ defmodule DpExchange.Robinhood.TradingTest do
     test "every value the vendor's enum documents is representable — none decode to nil" do
       # The whole point of the Core 0.1.45 follow-up. If a future vendor value appears with
       # no Core atom, it must fail this test rather than quietly become nil on a real order.
+      # `stop_loss_order_config` here, not `limit_order_config` — see the dedicated test
+      # above for why a limit order's response never carries the field at all.
       for {wire, expected} <- [{"gtc", :gtc}, {"gfd", :day}, {"gfw", :gfw}, {"gfm", :gfm}] do
         body = %{
           "id" => "o-1",
           "state" => "open",
-          "type" => "limit",
-          "limit_order_config" => %{
+          "type" => "stop_loss",
+          "stop_loss_order_config" => %{
             "asset_quantity" => "0.5",
-            "limit_price" => "1000",
+            "stop_price" => "1000",
             "time_in_force" => wire
           }
         }
@@ -680,6 +708,41 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert query == ""
     end
 
+    test "cancelling decodes the venue's real V2CryptoOrder response, not a fabricated :open stub" do
+      # Confirmed against the vendor's own OpenAPI document, 2026-09-06:
+      # `POST /api/v2/crypto/trading/orders/{id}/cancel/` returns `200` with a body matching
+      # `V2CryptoOrder` — the identical schema `get_order/3` reads — not the bare
+      # acknowledgement string v1's cancel endpoint returns. This used to discard that body
+      # entirely and return a hardcoded `status: :open` regardless of what the venue said;
+      # it now decodes the real state, same as every other order read.
+      body = %{
+        "id" => "o-1",
+        "symbol" => "BTC-USD",
+        "side" => "buy",
+        "type" => "limit",
+        "state" => "canceled",
+        "limit_order_config" => %{"asset_quantity" => "0.5", "limit_price" => "60000"}
+      }
+
+      assert {:ok, order} =
+               Rest.cancel_order(@credentials, "o-1", plug: responding(body), retry_attempts: 0)
+
+      assert order.status == :cancelled
+      assert order.symbol == "BTC-USD"
+      assert order.side == :buy
+    end
+
+    test "a cancel that could not complete before a fill still reports the venue's real state" do
+      # The point of decoding rather than assuming: a cancel racing a fill is exactly the
+      # case a hardcoded `:open` would have reported wrong in the OTHER direction too.
+      body = %{"id" => "o-1", "state" => "filled", "type" => "market"}
+
+      assert {:ok, order} =
+               Rest.cancel_order(@credentials, "o-1", plug: responding(body), retry_attempts: 0)
+
+      assert order.status == :filled
+    end
+
     test "a refusal on a write is a refusal, not an error" do
       plug = fn conn ->
         conn
@@ -789,29 +852,26 @@ defmodule DpExchange.Robinhood.TradingTest do
   end
 
   describe "the v1 to v2 migration" do
-    test "market data reads v2's best_bid_ask" do
+    test "market data reads v2's best_bid_ask, decoded with v2's own field names" do
       # D5 makes v2 the surface. The package shipped these two on v1, which is why their
-      # boxes stayed open in the coverage plan even though the functions existed.
+      # boxes stayed open in the coverage plan even though the functions existed. `v2's
+      # V2BestBidAsk` is `symbol`, `bid`, `ask` — not v1's `bid_inclusive_of_sell_spread`
+      # / `ask_inclusive_of_buy_spread` — confirmed against the vendor's own OpenAPI
+      # document, 2026-09-06. Decoding v1's names against this path silently produced
+      # `bid: nil, ask: nil` on every real call; asserting the actual values here, not just
+      # that the call succeeded, is what would have caught it.
       me = self()
 
-      body = %{
-        "results" => [
-          %{
-            "symbol" => "BTC-USD",
-            "price" => "60000",
-            "bid_inclusive_of_sell_spread" => "59990",
-            "ask_inclusive_of_buy_spread" => "60010",
-            "timestamp" => "2026-09-01T12:00:00Z"
-          }
-        ]
-      }
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "59990", "ask" => "60010"}]}
 
-      assert {:ok, _book} =
+      assert {:ok, book} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: capturing(body, me),
                  retry_attempts: 0
                )
 
+      assert Decimal.equal?(book.bid, Decimal.new("59990"))
+      assert Decimal.equal?(book.ask, Decimal.new("60010"))
       assert_receive {:request, "GET", "/api/v2/crypto/marketdata/best_bid_ask/", _q, _r}
     end
 

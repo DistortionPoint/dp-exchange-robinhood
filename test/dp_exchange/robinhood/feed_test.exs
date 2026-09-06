@@ -8,15 +8,12 @@ defmodule DpExchange.Robinhood.FeedTest do
 
   @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<3>>, 32))}
 
-  @good_book %{
-    "results" => [
-      %{
-        "bid_inclusive_of_sell_spread" => "0.99",
-        "ask_inclusive_of_buy_spread" => "1.01",
-        "timestamp" => "2026-08-28T12:00:00Z"
-      }
-    ]
-  }
+  # v2's `V2BestBidAsk` — confirmed against the vendor's own OpenAPI document, 2026-09-06 —
+  # is `symbol`, `bid`, `ask`. No spread-inclusive names, no `timestamp`. A v1-shaped
+  # fixture here would decode to `bid: nil, ask: nil` silently, which is exactly the defect
+  # `Rest.get_top_of_book/3` carried until this field-name fix, invisible to this suite
+  # because every test below only matched on the struct's `symbol`, never its `bid`/`ask`.
+  @good_book %{"results" => [%{"symbol" => "BTC-USD", "bid" => "0.99", "ask" => "1.01"}]}
 
   defp responding(body) do
     fn conn ->
@@ -85,16 +82,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       interval_ms: 60_000,
       subscriber: self(),
       limiter: permissive_limiter(),
-      plug:
-        responding(%{
-          "results" => [
-            %{
-              "bid_inclusive_of_sell_spread" => "0.99",
-              "ask_inclusive_of_buy_spread" => "1.01",
-              "timestamp" => "2026-08-28T12:00:00Z"
-            }
-          ]
-        })
+      plug: responding(@good_book)
     ]
 
     {:ok, pid} = Feed.start_link(Keyword.merge(defaults, opts))
@@ -144,12 +132,16 @@ defmodule DpExchange.Robinhood.FeedTest do
   end
 
   describe "delivery" do
-    test "a book reaches the subscriber" do
+    test "a book reaches the subscriber with real bid/ask, not nils from a field-name mismatch" do
+      # Matching only on `symbol` here would pass even if `Rest.get_top_of_book/3` decoded
+      # v2's `bid`/`ask` against v1's field names and delivered `bid: nil, ask: nil` on
+      # every real poll — the exact defect this asserts against.
       start_feed()
 
-      assert_receive {:dp_exchange, :robinhood,
-                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     1_000
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{} = book}, 1_000
+      assert book.symbol == "BTC-USD"
+      assert Decimal.equal?(book.bid, Decimal.new("0.99"))
+      assert Decimal.equal?(book.ask, Decimal.new("1.01"))
     end
   end
 

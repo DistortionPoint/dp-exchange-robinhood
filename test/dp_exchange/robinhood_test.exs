@@ -387,8 +387,9 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.place_order(@credentials, %{}, []) ==
                {:error, {:account_number_required, :robinhood}}
 
-      # `:open`, not `:cancelled`: the venue acknowledges the request and reports no outcome.
-      assert {:ok, %{status: :open}} = Fake.cancel_order(@credentials, "id", [])
+      # `:cancelled`: the v2 cancel endpoint returns a full order reflecting the venue's
+      # real state, and the fake's ordinary case matches that — see `Fake.cancel_order/3`.
+      assert {:ok, %{status: :cancelled}} = Fake.cancel_order(@credentials, "id", [])
 
       assert Fake.get_order(@credentials, "id", []) ==
                {:error, {:account_number_required, :robinhood}}

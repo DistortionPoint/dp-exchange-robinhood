@@ -208,9 +208,12 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def cancel_order(_credentials, id, _opts) do
     with_injection(fn ->
-      # `:open`, not `:cancelled` — the venue acknowledges the request and reports no
-      # outcome, and a fake that said cancelled would let a consumer stop watching an order
-      # that is still live.
+      # `:cancelled`, matching `Rest.cancel_order/3`: the v2 endpoint this venue calls
+      # returns a full `V2CryptoOrder` reflecting the venue's real state, not a bare
+      # acknowledgement. A fake that answered `:open` here — the v1 behaviour, and the
+      # wrong one for the v2 endpoint this package actually calls — would be "differently
+      # capable" than the real adapter for the ordinary case: a consumer's test would see a
+      # cancel confirmed here that the real venue would report cancelled for.
       {:ok,
        %Types.Order{
          id: id,
@@ -218,7 +221,7 @@ defmodule DpExchange.Robinhood.Fake do
          side: nil,
          order_type: nil,
          quantity: nil,
-         status: :open,
+         status: :cancelled,
          provider: :robinhood
        }}
     end)
@@ -305,18 +308,31 @@ defmodule DpExchange.Robinhood.Fake do
   def test_connection(_credentials, _opts), do: Venue.not_supported()
   @impl true
   def get_rate_limit_status(_credentials, _opts), do: Venue.not_supported()
+  # `Venue.quantization/1` is the required arity, but the real `DpExchange.Robinhood.
+  # quantization/2` takes a second, `opts`, argument beyond it — the only place credentials
+  # can travel, because this venue signs `trading_pairs` same as every other call. A fake
+  # that only defined arity 1 could never be swapped in for a caller using the real facade's
+  # own documented signature (`quantization(symbol, opts)`) — `Fake.quantization/2` would be
+  # undefined — and even at arity 1 it answered success unconditionally, never checking
+  # `credentials:`, while the real `Rest.quantization/3` refuses without them. Both are the
+  # "differently capable" defect `usage-rules/testing.md` warns about: less capable than the
+  # real adapter is fine, differently capable is not. Matches `get_top_of_book/2`,
+  # `get_symbols/1` and `list_instruments/1` above now, all of which already gate on
+  # `authenticated/1`.
   @impl true
-  def quantization(symbol) do
+  def quantization(symbol, opts \\ []) do
     with_injection(symbol, fn ->
-      {:ok,
-       %{
-         price_increment: Decimal.new("0.01"),
-         quantity_increment: Decimal.new("0.00000001"),
-         min_quantity: nil,
-         max_quantity: Decimal.new("1000"),
-         min_quote_size: Decimal.new("1.00"),
-         status: "tradable"
-       }}
+      with :ok <- authenticated(opts) do
+        {:ok,
+         %{
+           price_increment: Decimal.new("0.01"),
+           quantity_increment: Decimal.new("0.00000001"),
+           min_quantity: nil,
+           max_quantity: Decimal.new("1000"),
+           min_quote_size: Decimal.new("1.00"),
+           status: "tradable"
+         }}
+      end
     end)
   end
 

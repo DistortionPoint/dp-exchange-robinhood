@@ -19,6 +19,87 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_top_of_book/2` decoded v1's field names against the v2 endpoint this package
+  actually calls, and every real poll silently returned `bid: nil, ask: nil` — the venue's
+  entire quoted-price surface, and the whole data path behind `subscribe/2`.** Found during
+  a bug audit, 2026-09-06, and confirmed against the vendor's own OpenAPI document at
+  `docs.robinhood.com/crypto/trading/`, fetched live the same day: v1's `best_bid_ask`
+  (schema `BidAskPrice`) publishes `bid_inclusive_of_sell_spread` and
+  `ask_inclusive_of_buy_spread`; **v2's `best_bid_ask` (schema `V2BestBidAsk`, what
+  `Rest.get_top_of_book/3` has always called) is a different, three-field schema:
+  `symbol`, `bid`, `ask`.** `row["bid_inclusive_of_sell_spread"]` is never present on a v2
+  row, so `decimal/1` correctly returned `nil` for it, every time — a `200 OK` with a
+  well-formed, plausible-looking `TopOfBook` struct on every poll, which is exactly why
+  nothing caught it: `Core.PollingFeed` counts any `{:ok, event}` as a delivery regardless
+  of which fields are `nil`, so this never tripped the "delivering nothing" escalation, and
+  every existing test matched the delivered struct only by `symbol`, never by `bid`/`ask`.
+
+  Now reads `row["bid"]` / `row["ask"]`. `venue_time` stays `nil` for this endpoint — not a
+  parse failure, but the honest answer to a `timestamp` field v2 never sends at all (v1's
+  did). Every test fixture across `rest_test.exs`, `feed_test.exs` and `trading_test.exs`
+  that built a v1-shaped `best_bid_ask` body against the v2 path is rewritten to the real
+  v2 shape, and the delivery tests now assert actual `bid`/`ask` values rather than only the
+  struct's `symbol` — the exact gap that let this ship. This is the same defect class as
+  the wrong `time_in_force` field fixed earlier (a venue-schema mismatch invisible to tests
+  because the fixtures encoded the same wrong assumption as the code), on the venue's most
+  load-bearing endpoint.
+
+- **`cancel_order/3` discarded the venue's real response and always returned a fabricated
+  `status: :open`, regardless of what the venue actually said.** Confirmed against the
+  vendor's own OpenAPI document, 2026-09-06: v1's cancel endpoint
+  (`POST /api/v1/.../cancel/`) really does answer with a bare `text/plain` acknowledgement
+  and no order data, which is what the discarded-body behaviour was originally correct for.
+  **v2's cancel endpoint — the one this module calls — is different: `200` returns
+  `application/json` against `$ref: V2CryptoOrder`, the identical schema `get_order/3`
+  reads.** A cancel that lands returns `state: "canceled"`; one that loses a race to a fill
+  returns the fill's own state. Hardcoding `:open` was silently wrong for either outcome
+  the moment the v1→v2 migration happened. `cancel_order/3` now decodes the response with
+  `to_order/1`, exactly like `get_order/3` and `place_order/3`. `Fake.cancel_order/3` moves
+  from `:open` to `:cancelled` to match — the real venue's ordinary case for a call that
+  succeeds — and both facade tests and the fake-injection suite are updated.
+
+- **`Fake.quantization/1` could not be called the way the real facade's
+  `quantization/2` is, and never checked credentials at all.** Every other real,
+  successful-path function on this venue's `Fake` (`get_top_of_book/2`, `get_symbols/1`,
+  `list_instruments/1`) gates on `authenticated/1`, matching the real venue signing every
+  call. `quantization` did not: it took no `opts` parameter at all, so a caller reaching
+  it the way production code reaches `DpExchange.Robinhood.quantization/2` — with
+  `credentials:` in `opts` — got `UndefinedFunctionError`, and a caller invoking arity 1
+  got an unconditional success no credentials could have produced against the real venue.
+  Both are the "differently capable" defect `usage-rules/testing.md` warns about. Now
+  `quantization/2` (opts defaulting to `[]`, so the old arity-1 call still works),
+  authenticated the same way its siblings are.
+
+### Documentation
+
+- **`time_in_force` is not symmetric between placing an order and reading it back, and
+  several comments and tests claimed it was.** Confirmed against the vendor's own OpenAPI
+  document, 2026-09-06: on the REQUEST side, `AddOrderV2.limit_order_config`,
+  `.stop_loss_order_config` and `.stop_limit_order_config` all carry `time_in_force` — true,
+  and what the request-building code already did correctly. On the RESPONSE side,
+  `OrderResponse.limit_order_config` has no `time_in_force` property at all; only
+  `.stop_loss_order_config` and `.stop_limit_order_config` echo it back. A limit order's
+  `time_in_force` is therefore knowable from the `place_order/3` call that set it, never
+  from re-reading the order — `get_order/3` and `cancel_order/3` honestly decode `nil` for
+  it, always, on a limit order, which the decoder already did correctly; only the comments
+  and `usage-rules.md` claimed otherwise, and several tests exercised the decoder against a
+  `limit_order_config` fixture carrying `time_in_force`, a shape the real venue never
+  sends. Rewritten to use `stop_loss_order_config` / `stop_limit_order_config` for the
+  decode-side tests, with a new test asserting the limit-order `nil` case directly.
+
+- **This feed's own moduledoc said the venue "publishes no bulk-stats endpoint." That
+  is not what the vendor's document says.** `best_bid_ask`'s `symbol` query parameter is
+  documented as repeatable (`?symbol=BTC-USD&symbol=ETH-USD`, one signed request, one
+  `results` array covering every symbol asked for) — confirmed 2026-09-06.
+  `Core.PollingFeed`'s own moduledoc names Robinhood as the intended user of its
+  `:fetch_all` mode for exactly this shape. Not adopted here yet: `:fetch_all` has no
+  refusal path in `Core.PollingFeed` today, and the vendor's document does not say what a
+  batched call does when one symbol in it is invalid — guessing wrong would turn one bad
+  symbol into a feed-wide crash loop, worse than today's per-symbol design. Recorded as
+  `docs/design/ideas/bulk-best-bid-ask-fetch.md` rather than implemented as a guess.
+
 ### Added
 
 - **This feed now says out loud when it has delivered nothing, not only to a log a human

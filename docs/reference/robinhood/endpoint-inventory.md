@@ -63,6 +63,16 @@ without one is a v1 habit, and this package refuses it locally rather than sendi
 **Every endpoint on this venue requires a credential** — there is no public surface, which
 is why `credential_benefit` is `:required` and why no tier-2 test exists here.
 
+**v1 and v2 do not share a `best_bid_ask` response schema.** v1's (`BidAskPrice`) publishes
+`bid_inclusive_of_sell_spread` / `ask_inclusive_of_buy_spread` and a computed midpoint
+`price`; v2's (`V2BestBidAsk`) is three fields only — `symbol`, `bid`, `ask` — no spread
+naming, no `price`, no `timestamp`. This cost a working quote for one release: see
+CHANGELOG's `### Fixed` entry, 2026-09-06.
+
+**`best_bid_ask`'s `symbol` parameter is repeatable** on both versions — `?symbol=BTC-USD&
+symbol=ETH-USD` — one signed request answering for every symbol named. Not yet used by
+this package's feed; see `docs/design/ideas/bulk-best-bid-ask-fetch.md` for why.
+
 ## Streaming: checked against the vendor, not inherited
 
 This package polls, and every document in this family has said the venue "has no streaming

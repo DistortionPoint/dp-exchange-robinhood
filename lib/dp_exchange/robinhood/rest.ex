@@ -10,14 +10,29 @@ defmodule DpExchange.Robinhood.Rest do
 
   ## There is no `get_price/3` here, and that is deliberate
 
-  `best_bid_ask` returns `bid_inclusive_of_sell_spread` and `ask_inclusive_of_buy_spread` —
-  the prices a taker would actually get — and never a trade price. This module used to fill
-  a quote's `price` from the ask when the venue sent none. `Core.Types.Quote`'s own
-  moduledoc now names that incident directly as the reason `Quote` carries no bid or ask at
-  all: a package filling `price` from `ask` "is exactly what one of them did." Removing the
-  fallback was correct and left nothing here for `get_price/3` to honestly return —
-  DpCryptoManagement's issue #21. The facade declares `get_price/2` `:unsupported`
-  accordingly. `bid` and `ask` are both real and both carried, through `get_top_of_book/3`.
+  `best_bid_ask` returns a bid and an ask — the prices a taker would actually get — and
+  never a trade price. This module used to fill a quote's `price` from the ask when the
+  venue sent none. `Core.Types.Quote`'s own moduledoc now names that incident directly as
+  the reason `Quote` carries no bid or ask at all: a package filling `price` from `ask` "is
+  exactly what one of them did." Removing the fallback was correct and left nothing here for
+  `get_price/3` to honestly return — DpCryptoManagement's issue #21. The facade declares
+  `get_price/2` `:unsupported` accordingly. `bid` and `ask` are both real and both carried,
+  through `get_top_of_book/3`.
+
+  ## v2's field names are not v1's, and this cost a working quote
+
+  v1's `best_bid_ask` (`BidAskPrice`) publishes `bid_inclusive_of_sell_spread` and
+  `ask_inclusive_of_buy_spread`, plus a computed `price` (their midpoint — still not a trade
+  price) and a `timestamp`. **v2's `best_bid_ask` (`V2BestBidAsk`) is a different schema**:
+  three fields only — `symbol`, `bid`, `ask`. No spread-inclusive names, no `price`, no
+  `timestamp` at all. This module calls v2 but, for one release, decoded v1's field names
+  against it — every real poll got `200 OK` with a well-formed body and silently decoded
+  `bid: nil, ask: nil, venue_time: nil` every time, because `row["bid_inclusive_of_sell_spread"]`
+  is never present on a v2 row. Confirmed against the vendor's own OpenAPI document,
+  `docs.robinhood.com/crypto/trading/`, 2026-09-06: `V2BestBidAskResponse.results` is an
+  array of `V2BestBidAsk`, and `V2BestBidAsk`'s only properties are `symbol`, `bid`, `ask`.
+  Reads `row["bid"]` / `row["ask"]` now. `venue_time` stays `nil` for this endpoint — not a
+  parse failure, but the honest answer to a field v2 never sends.
 
   ## No candles, no order book, no volume
 
@@ -34,12 +49,24 @@ defmodule DpExchange.Robinhood.Rest do
   @base_url "https://trading.robinhood.com"
   @trading_pairs_path "/api/v2/crypto/trading/trading_pairs/"
 
-  # The vendor's own OpenAPI schema (`AddOrderV2.limit_order_config`,
-  # `.stop_loss_order_config` and `.stop_limit_order_config` on the request side;
-  # `OrderResponse`'s matching config objects on the response side) carries `time_in_force`
-  # as an enum of `["gtc", "gfd", "gfw", "gfm"]` — a REAL field, not one this venue lacks.
-  # `market_order_config` has no such field in the schema, so a market order never carries
-  # one either way.
+  # The vendor's own OpenAPI schema carries `time_in_force` as an enum of
+  # `["gtc", "gfd", "gfw", "gfm"]` on `AddOrderV2.limit_order_config`,
+  # `.stop_loss_order_config` and `.stop_limit_order_config` — a REAL field on every
+  # non-market REQUEST config, not one this venue lacks. `market_order_config` has no such
+  # field in the schema, so a market order never carries one either way.
+  #
+  # **The RESPONSE side is not symmetric with the request side, and that is the venue's own
+  # asymmetry, not a gap here.** `OrderResponse.limit_order_config` — confirmed against the
+  # vendor's OpenAPI document, 2026-09-06 — carries only `quote_amount`, `asset_quantity`
+  # and `limit_price`; it has no `time_in_force` property at all. Only
+  # `stop_loss_order_config` and `stop_limit_order_config` echo it back on a read. So a
+  # limit order's `time_in_force` is knowable from the `place_order/3` call that set it, not
+  # from re-reading the order afterwards — `get_order/3` and `cancel_order/3` on a LIMIT
+  # order honestly decode `nil` here, always, because the venue never sends the field for
+  # that type. `configured_time_in_force/1` below still scans every `*_order_config`
+  # generically rather than special-casing this: it costs nothing when the key is absent,
+  # and it means this stays correct without a rewrite if the vendor ever adds the field to
+  # `limit_order_config` too.
   #
   # All four of the venue's values are representable. `gfw` and `gfm` decoded to `nil` for
   # one release — not invented locally and not mapped to a nearest-match value — because
@@ -58,13 +85,14 @@ defmodule DpExchange.Robinhood.Rest do
   @doc """
   Best bid and ask for `symbol` — the top of the book, not a traded price.
 
-  Reads `best_bid_ask`, the only quote-adjacent endpoint this venue serves. **The venue's
-  spread-inclusive fields are what it publishes** — `bid_inclusive_of_sell_spread` and
-  `ask_inclusive_of_buy_spread` are the prices a caller would actually transact at, and are
-  carried as sent rather than adjusted back to a raw book.
+  Reads v2's `best_bid_ask`, the only quote-adjacent endpoint this venue serves. **v2's
+  response (`V2BestBidAsk`) is three fields: `symbol`, `bid`, `ask`** — not v1's
+  spread-inclusive names, and no `timestamp`. Carried as sent rather than adjusted back to
+  a raw book.
 
   This is the whole of what `best_bid_ask` gives: no trade price. See the moduledoc on why
-  there is no `get_price/3` reading this same payload.
+  there is no `get_price/3` reading this same payload, and on the v1/v2 field-name defect
+  this function used to carry.
   """
   @spec get_top_of_book(String.t(), map(), keyword()) ::
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
@@ -77,8 +105,8 @@ defmodule DpExchange.Robinhood.Rest do
       {:ok,
        %TopOfBook{
          symbol: SymbolFormat.to_canonical_symbol(native),
-         bid: decimal(row["bid_inclusive_of_sell_spread"]),
-         ask: decimal(row["ask_inclusive_of_buy_spread"]),
+         bid: decimal(row["bid"]),
+         ask: decimal(row["ask"]),
          bid_size: nil,
          ask_size: nil,
          venue_time: top_of_book_time(row),
@@ -88,6 +116,11 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
+  # `V2BestBidAsk` — the schema the venue's own OpenAPI document names for this response —
+  # has no `timestamp` property at all, so `row["timestamp"]` is absent on every real call
+  # today and this always returns `nil`. Left as a lookup rather than hardcoded `nil`
+  # outright: harmless if the vendor ever adds the field, and it shares `venue_time/1` with
+  # nothing else that would need a second copy.
   defp top_of_book_time(row) do
     case venue_time(row) do
       {:ok, at} -> at
@@ -445,29 +478,24 @@ defmodule DpExchange.Robinhood.Rest do
   **A POST, not a DELETE**, and it takes no account number where every other order call
   does.
 
-  **The venue acknowledges the request and does not report an outcome**, so the `Order`
-  returned carries `status: :open` — the order is still live until the venue says otherwise,
-  and telling a caller it is gone invites a second order for the same exposure. Everything
-  the venue did not state is `nil`. `get_order/3` is what says whether the cancel took.
+  **v2's cancel response is a full `V2CryptoOrder`, decoded the same way `get_order/3` and
+  `place_order/3` decode theirs** — confirmed against the vendor's own OpenAPI document,
+  2026-09-06: `200` on `/api/v2/crypto/trading/orders/{id}/cancel/` is
+  `application/json` against `$ref: V2CryptoOrder`, the identical schema `get_order/3`
+  reads. This function used to discard that body and return a fabricated stub with
+  `status: :open` hardcoded regardless of what the venue actually said — correct for v1's
+  cancel endpoint (`text/plain`, `"Cancel request was submitted for order {id}"`, genuinely
+  no outcome), wrong for the v2 endpoint this module actually calls, which reports the
+  order's real state (`open` if the cancel is still in flight, `canceled` once it lands,
+  or `filled`/`partially_filled` if a fill won the race). Read that state rather than
+  assume it.
   """
   @spec cancel_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
   def cancel_order(credentials, order_id, opts) when is_binary(order_id) do
     path = "/api/v2/crypto/trading/orders/" <> URI.encode(order_id) <> "/cancel/"
 
-    with {:ok, _body} <- post(path, %{}, credentials, opts) do
-      {:ok,
-       %Order{
-         id: order_id,
-         symbol: nil,
-         side: nil,
-         order_type: nil,
-         quantity: nil,
-         # Accepted, not cancelled. The venue reports no outcome here.
-         status: :open,
-         provider: :robinhood
-       }}
-    end
+    with {:ok, body} <- post(path, %{}, credentials, opts), do: {:ok, to_order(body)}
   end
 
   defp required_account(opts) do
@@ -645,8 +673,12 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   # `time_in_force` lives inside the type-named config object, same as `asset_quantity` —
-  # `market_order_config` never carries one (see `order_config/2`'s market clause), so a
-  # market order's row yields `nil` here honestly rather than by omission.
+  # but on the RESPONSE side the venue only puts it there for `stop_loss_order_config` and
+  # `stop_limit_order_config` (see the module attribute comment above `@tif_names`).
+  # `market_order_config` never carries one (see `order_config/2`'s market clause), and
+  # `limit_order_config` never carries one EITHER on a response, despite taking one on the
+  # request — both yield `nil` here honestly, for two different reasons the venue's own
+  # schema states.
   defp configured_time_in_force(row) do
     row
     |> Enum.find_value(fn
