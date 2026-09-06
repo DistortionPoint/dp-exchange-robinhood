@@ -126,6 +126,45 @@ what was run against the live venue, and when.
   by kind"), previously skipped for every venue that had not adopted the callback, now runs
   against this package and passes.
 
+- **`list_instruments/1` is implemented — it was one query away, not a new endpoint.**
+  `get_symbols/1` already walked every page of `trading_pairs` and discarded everything but
+  `symbol`; `quantization/3` already read the richer fields off the same rows. This reuses
+  the same walk and maps `asset_code`/`quote_code` straight to `Core.Instrument`'s `base`
+  and `quote` — never parsed back out of the canonical symbol string, matching how
+  `dp_exchange_coinbase` builds the same struct. Every row is `:spot`, the only instrument
+  type this venue's trading-pairs endpoint lists. Moved out of `@not_ported`, whose comment
+  had called this "reads only the symbols" — true of `get_symbols/1`, never a reason the
+  richer fields couldn't be read too. `capabilities/0` now declares it `:experimental`
+  instead of `:unsupported`.
+
+### Fixed
+
+- **An empty `trading_pairs`/`best_bid_ask` page was read as the venue stating a symbol
+  does not exist, and it is not that — DpCryptoManagement's issue #25, measured on the
+  reporting consumer's own production node.** `first_result/1` turned any 200 response
+  whose `results` array happened to be empty into `{:refused, :not_listed}`, and
+  `Core.PollingFeed`'s own contract reports a refusal exactly once and never retries it —
+  so a transient empty page, indistinguishable at the HTTP layer from "genuinely not
+  listed," became a permanent catalog verdict. Measured: 83 refusals held on one
+  deployment, 56 of them `{:refused, :not_listed}` for pairs that answer normally on the
+  very next call — `BTC-USD`, `ETH-USD`, `LTC-USD`, `LINK-USD` and `DOGE-USD` among them.
+  Clearing only those 56 took that consumer's collection scope from 5 pairs to 63, 62 of
+  them fresh within 60 seconds. **92% of this venue's collection was suppressed by an
+  inference the venue never made.**
+
+  `first_result/1` now returns `{:error, :empty_result}` for an empty page — retryable,
+  the same shape a 500 already produces — while `{:refused, :not_listed}` stays exactly
+  where the venue actually says so: a 400/401/403/404 carrying a body, handled by
+  `refusal/2` on the HTTP status rather than on the shape of a 200. The other 27 of the 83
+  held refusals were genuine venue statements this way (`{:venue_error, 400, "Invalid
+  symbol: ALGO-USD"}`) and are unaffected. `get_top_of_book/3` and `quantization/3`, the
+  two callers, both change; `get_symbols/1`'s pagination walk never went through
+  `first_result/1` and was never affected. New tests in `rest_test.exs`,
+  `defensive_branches_test.exs` and `robinhood_test.exs` fail against the prior code and
+  pass against this one, including one that runs `Feed` end to end against a
+  perpetually-empty page and asserts no `{:refused, ...}` message ever reaches the
+  subscriber.
+
 ### Documentation
 
 - **`usage-rules.md`'s `time_in_force` section still taught the pre-C7 vocabulary after the

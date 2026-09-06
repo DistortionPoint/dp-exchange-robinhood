@@ -222,9 +222,10 @@ defmodule DpExchange.RobinhoodTest do
   end
 
   describe "market data without credentials refuses before any request" do
-    test "get_top_of_book and get_symbols both refuse" do
+    test "get_top_of_book, get_symbols and list_instruments all refuse" do
       assert Robinhood.get_top_of_book("BTC-USD") == {:error, {:missing_credentials, :robinhood}}
       assert Robinhood.get_symbols() == {:error, {:missing_credentials, :robinhood}}
+      assert Robinhood.list_instruments([]) == {:error, {:missing_credentials, :robinhood}}
     end
 
     test "get_price is unsupported regardless of credentials" do
@@ -267,6 +268,20 @@ defmodule DpExchange.RobinhoodTest do
     test "refuses market data without credentials, as the real venue does" do
       assert Fake.get_top_of_book("BTC-USD") == {:refused, :missing_credentials}
       assert Fake.get_symbols() == {:refused, :missing_credentials}
+      assert Fake.list_instruments([]) == {:refused, :missing_credentials}
+    end
+
+    test "list_instruments derives base and quote from the fake's own symbols" do
+      assert {:ok, instruments} = Fake.list_instruments(credentials: @credentials)
+
+      assert Enum.map(instruments, & &1.symbol) |> Enum.sort() ==
+               ~w(BTC-USD DOGE-USD ETH-USD)
+
+      for instrument <- instruments do
+        assert instrument.instrument == :spot
+        assert instrument.status == :tradable
+        assert instrument.symbol == "#{instrument.base}-#{instrument.quote}"
+      end
     end
 
     test "get_price is unsupported regardless of credentials, matching the real venue" do
@@ -361,7 +376,6 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.get_historical_prices("BTC-USD", "1d", [], []) == {:error, :not_supported}
       assert Fake.get_order_book("BTC-USD", []) == {:error, :not_supported}
       assert Fake.get_market_overview([]) == {:error, :not_supported}
-      assert Fake.list_instruments([]) == {:error, :not_supported}
       # The account, order and holdings surface landed on 2026-09-01. What refuses now is a
       # v2 call without the account number v2 requires, which is a different assertion and
       # a better one: it is the shape of the mistake a v1 habit produces.

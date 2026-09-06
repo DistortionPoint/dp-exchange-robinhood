@@ -195,9 +195,15 @@ defmodule DpExchange.Robinhood do
   # `get_trade_history/2` and `get_rate_limit_status/2` are absences of the venue —
   # Robinhood Crypto's documented surface is nine operations and none of them is a fee
   # schedule, a transfer ledger, a fills feed or a limit report.
+  #
+  # `list_instruments/1` used to sit here too, on the reasoning that `trading_pairs`
+  # carries the instrument metadata and this package read only the symbols. That reasoning
+  # stopped being true once DpCryptoManagement's issue #25 was investigated: `get_symbols/1`
+  # already walks every page of that same endpoint, and the rows it discards
+  # (`asset_code`, `quote_code`, `status`) are exactly what `Rest.list_instruments/2` now
+  # maps to a `Core.Instrument` — no new request, no new endpoint, no parsing a symbol
+  # string back apart.
   @not_ported [
-    # `trading_pairs` carries the instrument metadata; this package reads only the symbols.
-    {:list_instruments, 1},
     # Any signed endpoint answers it; nothing here calls one for the purpose.
     {:test_connection, 2}
   ]
@@ -329,8 +335,17 @@ defmodule DpExchange.Robinhood do
   @impl true
   def get_market_overview(_opts), do: Venue.not_supported()
 
+  @doc """
+  Every tradable pair as a `Core.Instrument` — base, quote, instrument type and status.
+
+  See `DpExchange.Robinhood.Rest.list_instruments/2`: it walks the same paginated
+  `trading_pairs` endpoint `get_symbols/2` already calls, reading `asset_code` and
+  `quote_code` off the same rows for base and quote rather than parsing them back out of
+  the canonical symbol string. Every row is `:spot`.
+  """
   @impl true
-  def list_instruments(_opts), do: Venue.not_supported()
+  def list_instruments(opts),
+    do: Rest.list_instruments(credentials(opts), with_limiter(opts))
 
   # --- account and trading -----------------------------------------------
 

@@ -27,11 +27,12 @@ defmodule DpExchange.Robinhood.Rest do
   discovering an empty series.
   """
 
-  alias DpExchange.Core.HttpClient
+  alias DpExchange.Core.{HttpClient, Instrument}
   alias DpExchange.Core.Types.{Balance, Order, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
   @base_url "https://trading.robinhood.com"
+  @trading_pairs_path "/api/v2/crypto/trading/trading_pairs/"
 
   # The vendor's own OpenAPI schema (`AddOrderV2.limit_order_config`,
   # `.stop_loss_order_config` and `.stop_limit_order_config` on the request side;
@@ -110,8 +111,55 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_symbols(map(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()} | {:refused, term()}
   def get_symbols(credentials, opts) do
-    walk("/api/v2/crypto/trading/trading_pairs/", credentials, opts, [], [])
+    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], []) do
+      {:ok,
+       rows
+       |> Enum.map(& &1["symbol"])
+       |> Enum.reject(&is_nil/1)
+       |> Enum.map(&SymbolFormat.to_canonical_symbol/1)
+       |> Enum.sort()}
+    end
   end
+
+  @doc """
+  Every tradable pair as a `Core.Instrument` — base, quote, instrument type and status —
+  from the same paginated `trading_pairs` endpoint `get_symbols/1` already walks.
+
+  `get_symbols/1` extracts only `symbol` and discards the rest; this reads `asset_code`
+  and `quote_code` off the same rows for base and quote, never parsed back out of the
+  canonical symbol string. Every row is `:spot` — Robinhood Crypto's trading-pairs
+  endpoint lists no other instrument type.
+  """
+  @spec list_instruments(map(), keyword()) ::
+          {:ok, [Instrument.t()]} | {:error, term()} | {:refused, term()}
+  def list_instruments(credentials, opts) do
+    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], []) do
+      {:ok,
+       rows
+       |> Enum.reject(&is_nil(&1["symbol"]))
+       |> Enum.map(&to_instrument/1)}
+    end
+  end
+
+  defp to_instrument(row) do
+    Instrument.new(
+      symbol: SymbolFormat.to_canonical_symbol(row["symbol"]),
+      base: row["asset_code"],
+      quote: row["quote_code"],
+      instrument: :spot,
+      status: instrument_status(row["status"])
+    )
+  end
+
+  # `Core.Instrument.status_from/1` recognises the vocabulary Coinbase and Gemini send
+  # (`online`, `open`, `closed`, ...); this venue's own `V2TradingPair` schema sends
+  # `"tradable"` for a listed pair — a different word for the same state, not a gap in
+  # `status_from/1`, so it is read directly here instead. Anything other than the one
+  # value this package has actually seen is `:unknown` rather than assumed `:delisted`:
+  # a status string never seen on this venue must not manufacture a delisting nothing
+  # said.
+  defp instrument_status("tradable"), do: :tradable
+  defp instrument_status(_other), do: :unknown
 
   # `seen` is a loop guard, and it is not defensive decoration.
   #
@@ -139,7 +187,7 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, map()} | {:error, term()} | {:refused, term()}
   def quantization(symbol, credentials, opts) do
     native = SymbolFormat.to_exchange_symbol(symbol)
-    path = "/api/v2/crypto/trading/trading_pairs/?symbol=" <> URI.encode(native)
+    path = @trading_pairs_path <> "?symbol=" <> URI.encode(native)
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- first_result(body) do
@@ -156,21 +204,20 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
+  # Collects raw `trading_pairs` rows across every page — `get_symbols/1` and
+  # `list_instruments/1` each map the same rows to what they need, rather than this
+  # walk deciding ahead of time which fields anyone wants.
   defp walk(path, credentials, opts, acc, seen) do
     if path in seen do
       {:error, {:pagination_loop, path}}
     else
       case get(path, credentials, opts) do
-        {:ok, %{"results" => results} = body} ->
-          symbols = results |> Enum.map(& &1["symbol"]) |> Enum.reject(&is_nil/1)
-          acc = acc ++ symbols
+        {:ok, %{"results" => results} = body} when is_list(results) ->
+          acc = acc ++ results
 
           case next_path(body) do
-            nil ->
-              {:ok, acc |> Enum.map(&SymbolFormat.to_canonical_symbol/1) |> Enum.sort()}
-
-            next ->
-              walk(next, credentials, opts, acc, [path | seen])
+            nil -> {:ok, acc}
+            next -> walk(next, credentials, opts, acc, [path | seen])
           end
 
         {:ok, _unexpected} ->
@@ -713,8 +760,22 @@ defmodule DpExchange.Robinhood.Rest do
 
   # --- decoding -----------------------------------------------------------
 
+  # An empty `results` array is NOT the venue stating the symbol does not exist — it is
+  # this specific request coming back with nothing, which a network blip, a transient
+  # venue hiccup or an as-yet-unindexed symbol can all produce just as easily as an
+  # actual absence from the catalog. `{:refused, _}` is reported once and never retried
+  # (`Core.PollingFeed`'s own contract), so mistaking silence for a statement here is
+  # permanent: DpCryptoManagement's issue #25 measured 56 of 83 held refusals as exactly
+  # this — `BTC-USD`, `ETH-USD`, `LTC-USD`, `LINK-USD`, `DOGE-USD` among them — pairs that
+  # answer normally on the very next call. Clearing only those 56 took one consumer's
+  # collection scope from 5 pairs to 63, 62 of them fresh within 60 seconds.
+  #
+  # `{:refused, :not_listed}` stays reserved for where the venue actually SAYS so: a 400,
+  # 401, 403 or 404 with a body, handled by `refusal/2` below on the HTTP status rather
+  # than on the shape of a 200. Those genuine statements (e.g. `{:venue_error, 400,
+  # "Invalid symbol: ALGO-USD"}`) were the other 27 of the 83 and are unaffected by this.
   defp first_result(%{"results" => [row | _rest]}) when is_map(row), do: {:ok, row}
-  defp first_result(%{"results" => []}), do: {:refused, :not_listed}
+  defp first_result(%{"results" => []}), do: {:error, :empty_result}
   defp first_result(_other), do: {:error, :unexpected_response_shape}
 
   defp venue_time(row) do

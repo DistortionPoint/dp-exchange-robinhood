@@ -207,12 +207,45 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       assert Feed.coverage_by_kind(feed) == %{top_of_book: %{"BTC-USD" => :internal_poll}}
     end
 
-    test "a refusal reaches the subscriber rather than being retried forever", %{limiter: limiter} do
+    test "a genuine refusal reaches the subscriber rather than being retried forever",
+         %{limiter: limiter} do
       # `PollingFeed` retries an error and reports a refusal once — only the adapter can
-      # tell a delisted symbol from a network blip, so only the adapter decides.
+      # tell a delisted symbol from a network blip, so only the adapter decides. The venue
+      # must actually SAY so (a 404 with a body) for this to fire — see
+      # `Rest.first_result/1`'s moduledoc note and DpCryptoManagement's issue #25: an empty
+      # `results` page is silence, not a statement, and must NOT reach this path (covered
+      # by "an empty page is retried, never reported as a refusal" below).
       {:ok, _feed} =
         Feed.start_link(
           name: :"refusal_feed_#{System.unique_integer([:positive])}",
+          symbols: ["NOPE-USD"],
+          credentials: @credentials,
+          subscriber: self(),
+          start_delay_ms: 0,
+          interval_ms: 50,
+          limiter: limiter,
+          plug: responding(%{"detail" => "Symbol not found"}, 404),
+          retry_attempts: 0
+        )
+
+      assert_receive {:dp_exchange, :robinhood,
+                      {:refused, "NOPE-USD", {:venue_error, 404, "Symbol not found"}}},
+                     3_000
+    end
+
+    test "an empty page is retried, never reported as a refusal — issue #25", %{
+      limiter: limiter
+    } do
+      # This is the exact defect DpCryptoManagement's issue #25 measured in production:
+      # an empty `results` array reaching this feed and being recorded as a permanent
+      # `{:refused, :not_listed}` verdict instead of a transient failure the feed keeps
+      # retrying. 56 of 83 held refusals were this — pairs that answered normally on the
+      # very next call. `NOPE-USD` here answers every poll with an empty page, so if it
+      # were still misclassified as a refusal the message below would arrive; the test
+      # asserts the coverage-change notice instead, and that no refusal notice ever comes.
+      {:ok, _feed} =
+        Feed.start_link(
+          name: :"empty_page_feed_#{System.unique_integer([:positive])}",
           symbols: ["NOPE-USD"],
           credentials: @credentials,
           subscriber: self(),
@@ -223,7 +256,10 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
           retry_attempts: 0
         )
 
-      assert_receive {:dp_exchange, :robinhood, {:refused, "NOPE-USD", :not_listed}}, 3_000
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Notice{kind: :coverage_change}},
+                     3_000
+
+      refute_receive {:dp_exchange, :robinhood, {:refused, "NOPE-USD", _reason}}, 200
     end
 
     test "update_symbols reaches the poller" do

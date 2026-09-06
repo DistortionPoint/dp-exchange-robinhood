@@ -30,7 +30,7 @@ defmodule DpExchange.Robinhood.Fake do
 
   @behaviour DpExchange.Core.Venue
 
-  alias DpExchange.Core.{Capabilities, FakeInjection, Types, Venue}
+  alias DpExchange.Core.{Capabilities, FakeInjection, Instrument, Types, Venue}
 
   @symbols ~w(BTC-USD ETH-USD DOGE-USD)
 
@@ -111,7 +111,20 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_market_overview(_opts), do: Venue.not_supported()
   @impl true
-  def list_instruments(_opts), do: Venue.not_supported()
+  def list_instruments(opts) do
+    with_injection(fn ->
+      with :ok <- authenticated(opts), do: {:ok, Enum.map(@symbols, &fake_instrument/1)}
+    end)
+  end
+
+  # Base and quote split trivially off the fake's own single-quote symbols — the same
+  # thing the real venue's `asset_code`/`quote_code` fields give directly, and the same
+  # reason `Core.Instrument`'s moduledoc calls this catalogue shape "ceremony" to require.
+  defp fake_instrument(symbol) do
+    [base, quote_asset] = String.split(symbol, "-", parts: 2)
+    Instrument.new(symbol: symbol, base: base, quote: quote_asset, instrument: :spot)
+  end
+
   @impl true
   def get_balances(_credentials, opts) do
     with_injection(fn ->

@@ -123,10 +123,28 @@ defmodule DpExchange.Robinhood.RestTest do
       assert top.venue_time == nil
     end
 
-    test "an empty results list is a refusal — the venue does not carry it" do
-      assert {:refused, :not_listed} =
+    test "an empty results list is a retryable error, NOT a refusal — DpCryptoManagement issue #25" do
+      # An empty page is this specific request coming back with nothing — it is not the
+      # venue stating the symbol does not exist. `{:refused, _}` is reported once and
+      # never retried (`Core.PollingFeed`'s own contract), so treating silence as a
+      # statement here is what turned 56 of 83 held refusals into a permanent verdict on
+      # pairs — BTC-USD, ETH-USD, LTC-USD, LINK-USD, DOGE-USD among them — that answer
+      # normally on the very next call.
+      assert {:error, :empty_result} =
                Rest.get_top_of_book("NOPE-USD", @credentials,
                  plug: responding(%{"results" => []}),
+                 retry_attempts: 0
+               )
+    end
+
+    test "a 404 with a venue-stated detail is still a genuine refusal" do
+      # The venue SAYING so — by status code and body — is the one case `{:refused, _}`
+      # remains correct for, and this must not regress alongside the empty-page fix above.
+      body = %{"detail" => "Symbol not found"}
+
+      assert {:refused, {:venue_error, 404, "Symbol not found"}} =
+               Rest.get_top_of_book("NOPE-USD", @credentials,
+                 plug: responding(body, 404),
                  retry_attempts: 0
                )
     end
@@ -251,6 +269,78 @@ defmodule DpExchange.Robinhood.RestTest do
     end
   end
 
+  describe "list_instruments/2" do
+    @row %{
+      "symbol" => "BTC-USD",
+      "asset_code" => "BTC",
+      "quote_code" => "USD",
+      "status" => "tradable"
+    }
+
+    test "reads base and quote from asset_code/quote_code, not the symbol string" do
+      body = %{"results" => [@row]}
+
+      assert {:ok, [instrument]} =
+               Rest.list_instruments(@credentials, plug: responding(body), retry_attempts: 0)
+
+      assert instrument.symbol == "BTC-USD"
+      assert instrument.base == "BTC"
+      assert instrument.quote == "USD"
+      assert instrument.instrument == :spot
+      assert instrument.status == :tradable
+    end
+
+    test "a status this package has not seen is :unknown, not assumed delisted" do
+      body = %{"results" => [%{@row | "status" => "trading_halted"}]}
+
+      assert {:ok, [instrument]} =
+               Rest.list_instruments(@credentials, plug: responding(body), retry_attempts: 0)
+
+      assert instrument.status == :unknown
+    end
+
+    test "walks every page, same as get_symbols/2" do
+      plug = fn conn ->
+        case conn.query_string do
+          "" ->
+            Req.Test.json(conn, %{
+              "results" => [@row],
+              "next" =>
+                "https://trading.robinhood.com/api/v1/crypto/trading/trading_pairs/?cursor=2"
+            })
+
+          _second_page ->
+            Req.Test.json(conn, %{
+              "results" => [%{@row | "symbol" => "ETH-USD", "asset_code" => "ETH"}],
+              "next" => nil
+            })
+        end
+      end
+
+      assert {:ok, instruments} =
+               Rest.list_instruments(@credentials, plug: plug, retry_attempts: 0)
+
+      assert Enum.map(instruments, & &1.symbol) == ["BTC-USD", "ETH-USD"]
+    end
+
+    test "rows with no symbol are skipped, same as get_symbols/2" do
+      body = %{"results" => [@row, %{"asset_code" => "no-symbol-here"}]}
+
+      assert {:ok, [instrument]} =
+               Rest.list_instruments(@credentials, plug: responding(body), retry_attempts: 0)
+
+      assert instrument.symbol == "BTC-USD"
+    end
+
+    test "a refusal propagates, same as get_symbols/2" do
+      assert {:refused, {:venue_error, 403, _detail}} =
+               Rest.list_instruments(@credentials,
+                 plug: responding(%{"detail" => "no access"}, 403),
+                 retry_attempts: 0
+               )
+    end
+  end
+
   describe "quantization/3" do
     @pair_row %{
       "symbol" => "BTC-USD",
@@ -292,10 +382,18 @@ defmodule DpExchange.Robinhood.RestTest do
       assert quantum.min_quantity == nil
     end
 
-    test "an unlisted symbol is refused rather than answered with an empty page" do
-      assert {:refused, :not_listed} =
+    test "an empty page is retryable, not a permanent not_listed verdict — issue #25" do
+      assert {:error, :empty_result} =
                Rest.quantization("NOPE-USD", @credentials,
                  plug: responding(%{"results" => []}),
+                 retry_attempts: 0
+               )
+    end
+
+    test "a venue-stated 404 is still refused" do
+      assert {:refused, {:venue_error, 404, "no such symbol"}} =
+               Rest.quantization("NOPE-USD", @credentials,
+                 plug: responding(%{"detail" => "no such symbol"}, 404),
                  retry_attempts: 0
                )
     end
