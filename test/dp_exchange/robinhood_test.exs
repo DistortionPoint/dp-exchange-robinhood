@@ -132,8 +132,8 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.coverage(feed: name) == %{}
     end
 
-    test "subscribe_notices always answers" do
-      assert Robinhood.subscribe_notices([]) == :ok
+    test "subscribe_notices registers against a running feed", %{name: name} do
+      assert Robinhood.subscribe_notices(feed: name) == :ok
     end
   end
 
@@ -151,6 +151,73 @@ defmodule DpExchange.RobinhoodTest do
 
     test "coverage is an empty map, not a crash" do
       assert Robinhood.coverage(feed: :no_such_feed) == %{}
+    end
+
+    test "subscribing to notices says so too, rather than answering :ok with nothing behind it" do
+      assert Robinhood.subscribe_notices(feed: :no_such_feed) == {:error, :feed_not_started}
+    end
+  end
+
+  # Regression for the defect this fix closes: `subscribe_notices/1` used to answer `:ok`
+  # unconditionally and never touch the feed at all — a caller registering a pid here got
+  # `:ok` back and then nothing, ever, because the only pid the feed would ever send a
+  # `Core.Notice` to was the fixed `:subscriber` named at `Feed.start_link/1`. Against the
+  # PRE-FIX facade, the second test below fails: `assert_receive` times out, because the
+  # old `subscribe_notices/1` discarded `to: self()` instead of registering it anywhere.
+  describe "subscribe_notices/1 registers through the facade, not just Feed.start_link/1's :subscriber" do
+    defp permissive_notice_limiter do
+      name = :"rh_notice_limiter_#{System.unique_integer([:positive])}"
+
+      {:ok, _pid} =
+        DpExchange.Core.DefaultRateLimiter.start_link(
+          name: name,
+          limits: %{default: %{limit: 1_000, per_ms: 1_000, burst: 1_000}}
+        )
+
+      name
+    end
+
+    defp responding_error do
+      fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(500, Jason.encode!(%{"detail" => "boom"}))
+      end
+    end
+
+    test "a pid registered ONLY through DpExchange.Robinhood.subscribe_notices/1 receives a coverage-outage notice" do
+      unique = System.unique_integer([:positive])
+      name = :"rh_notice_regression_feed_#{unique}"
+
+      # A live pid that relays nothing, ever — deliberately NOT this test process. If the
+      # notice below still reaches the test process, it can only have arrived through the
+      # facade's own registry, not through this feed's fixed `:subscriber`. Without this,
+      # omitting `:subscriber` would default it to whichever process happened to call
+      # `start_link/1` and make the test pass for the wrong reason.
+      inert_subscriber = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(inert_subscriber, :kill) end)
+
+      {:ok, _feed} =
+        Feed.start_link(
+          name: name,
+          subscriber: inert_subscriber,
+          credentials: @credentials,
+          symbols: ["BTC-USD"],
+          start_delay_ms: 0,
+          interval_ms: 40,
+          retry_attempts: 0,
+          limiter: permissive_notice_limiter(),
+          plug: responding_error()
+        )
+
+      assert Robinhood.subscribe_notices(to: self(), feed: name) == :ok
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Notice{kind: :coverage_change, severity: :warning} =
+                        notice},
+                     500
+
+      assert notice.message =~ "delivered nothing"
     end
   end
 

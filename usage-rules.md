@@ -24,6 +24,24 @@ The one visible difference is `coverage/1`, which reports **`:internal_poll`** r
 Do not build a poll of your own on top of this. The package already polls, paced against
 this venue's budget, and a second loop doubles the request count for no extra data.
 
+## A monitoring process can subscribe to notices separately from market data
+
+`subscribe/2` has no `to:` of its own — the `subscriber:` given to the supervision tree
+above is where quotes and refusals go, for the life of the process. `subscribe_notices/1`
+is different: it registers `opts[:to]` (default: the caller) for this feed's own
+`Core.Notice.t()` traffic — currently the coverage-outage pair fired when this poll starts
+or stops delivering anything at all — and that registration is additive, not exclusive.
+A monitoring process that never wants a book can register here without displacing whoever
+already gets the quotes:
+
+```elixir
+:ok = DpExchange.Robinhood.subscribe_notices(to: monitoring_pid)
+```
+
+Answers `{:error, :feed_not_started}` if the feed named in `opts[:feed]` (default: the
+one this venue's own supervision tree started) is not running — the same shape
+`subscribe/2` already answers, rather than a bare `:ok` that quietly registered nothing.
+
 ## Credentials are required for market data
 
 Every call is signed with an Ed25519 key, the book included. There is no anonymous

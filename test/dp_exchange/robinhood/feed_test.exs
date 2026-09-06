@@ -156,16 +156,16 @@ defmodule DpExchange.Robinhood.FeedTest do
   # DpCryptoManagement issue #21: this venue's feed delivered nothing for a whole
   # deployment and the only trace was `PollingFeed`'s own `Logger.warning` — a sentence
   # nobody was grepping for. `dp_exchange_core` 0.1.50 gives `PollingFeed.start_link/1`
-  # an `:on_notice` callback for exactly this, and `Feed.start_link/1` now forwards it to
-  # `subscriber` the same way `on_refusal` already is.
+  # an `:on_notice` callback for exactly this, and `Feed.start_link/1` now forwards it
+  # into this process, which fans it out to every registered notice subscriber.
   #
   # These tests prove that wiring, not `PollingFeed`'s own latching logic — that belongs
   # to `dp_exchange_core` and is covered there. What matters here is narrower and just as
   # load-bearing: a consumer that started this venue's supervision tree and is the
-  # `subscriber:` named in its child spec — the only kind of subscriber this
-  # single-fixed-subscriber venue has, since `subscribe_notices/1` is a documented no-op
-  # rather than a registry (see `DpExchange.Robinhood.subscribe_notices/1`) — actually
-  # receives the notice `PollingFeed` emits.
+  # `subscriber:` named in its child spec receives the notice `PollingFeed` emits. The
+  # describe block below this one proves the OTHER half — a pid registered through
+  # `Feed.subscribe_notices/2` (and, at the facade, `DpExchange.Robinhood.subscribe_notices/1`)
+  # rather than through `start_link/1`'s `:subscriber` receives it too.
   describe "on_notice — coverage outage escalation (DpCryptoManagement issue #21)" do
     test "a %Notice{kind: :coverage_change, severity: :warning} reaches the subscriber when the feed crosses into delivering nothing" do
       start_feed(interval_ms: 40, retry_attempts: 0, plug: responding_error())
@@ -204,6 +204,69 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert recovered.message =~ "has resumed delivering"
       assert recovered.message =~ "consecutive failures"
+    end
+  end
+
+  # This is the regression proper: before this change, `Feed` had no registry at all —
+  # `subscribe_notices/1` on the facade above it was a documented `:ok` no-op, and the
+  # ONLY pid that could ever receive a `Core.Notice` was whatever `:subscriber` was named
+  # at `start_link/1`. A second, independent process — the shape a monitoring process
+  # kept apart from the data consumer actually takes — registering through
+  # `Feed.subscribe_notices/2` got nothing, silently, forever.
+  describe "notice registry — a pid other than the fixed :subscriber can register" do
+    test "a subscriber added through subscribe_notices/2 receives a notice, and the fixed subscriber still does too" do
+      feed = start_feed(interval_ms: 40, retry_attempts: 0, plug: responding_error())
+
+      monitor = self()
+      task = Task.async(fn -> receive(do: (message -> {monitor, message})) end)
+
+      :ok = Feed.subscribe_notices(feed, to: task.pid)
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %Notice{kind: :coverage_change, severity: :warning}},
+                     500
+
+      assert {^monitor,
+              {:dp_exchange, :robinhood, %Notice{kind: :coverage_change, severity: :warning}}} =
+               Task.await(task, 500)
+    end
+
+    test "subscribe_notices/2 defaults :to to the caller" do
+      feed = start_feed(interval_ms: 40, retry_attempts: 0, plug: responding_error())
+
+      parent = self()
+
+      {:ok, registrant} =
+        Task.start(fn ->
+          :ok = Feed.subscribe_notices(feed)
+          send(parent, :registered)
+
+          receive do
+            {:dp_exchange, :robinhood, %Notice{}} = message -> send(parent, {:relayed, message})
+          end
+        end)
+
+      assert_receive :registered
+      assert Process.alive?(registrant)
+
+      assert_receive {:relayed,
+                      {:dp_exchange, :robinhood,
+                       %Notice{kind: :coverage_change, severity: :warning}}},
+                     500
+    end
+
+    test "a registered name that is not alive is skipped rather than crashing the feed" do
+      feed = start_feed(interval_ms: 40, retry_attempts: 0, plug: responding_error())
+
+      :ok = Feed.subscribe_notices(feed, to: :no_such_registered_process)
+
+      # The fixed subscriber (this test process) still gets the notice — a bad registrant
+      # costs nothing but its own delivery.
+      assert_receive {:dp_exchange, :robinhood,
+                      %Notice{kind: :coverage_change, severity: :warning}},
+                     500
+
+      assert Process.alive?(feed)
     end
   end
 end

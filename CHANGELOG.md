@@ -42,13 +42,14 @@ what was run against the live venue, and when.
   existing upstream was not itself a fix; a venue has to wire it.
 
   This package now does: `Feed.start_link/1` passes
-  `on_notice: fn notice -> send(subscriber, {:dp_exchange, :robinhood, notice}) end`,
+  `on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end`,
   the same shape and the same destination as the existing `on_refusal` wiring right next to
   it. The dependency floor moves to `~> 0.1.50` so this cannot compile against a Core that
-  lacks the option. This venue has one fixed subscriber, set at supervision-tree boot via
-  `subscriber:` — not a dynamic registry (`subscribe_notices/1` remains a documented no-op
-  for exactly that reason, see its own moduledoc) — so wiring `on_notice` to that same
-  subscriber is the whole integration; there was no separate fanout to build.
+  lacks the option. **Correction, below:** this entry originally said the fixed
+  `subscriber:` was the whole integration and that `subscribe_notices/1` was staying a
+  documented no-op "for exactly that reason" — that reasoning did not survive a closer
+  look at what a caller of `subscribe_notices/1` actually got, which was nothing, ever,
+  from a different pid than the one named at boot. See the entry below, same day.
 
   Three new tests in `feed_test.exs` prove the wiring end to end against a real `Feed`
   process and a forced-failing `plug:`, not against `PollingFeed` in isolation (its own
@@ -61,6 +62,49 @@ what was run against the live venue, and when.
   backoff (up to ~3s per failed attempt) would otherwise make the notice arrive well after
   a bounded `assert_receive`, for a reason having nothing to do with the behaviour under
   test.
+
+- **`subscribe_notices/1` registered a caller and threw the registration away — a
+  same-day defect in the `on_notice` wiring above, not a separate incident.** The facade
+  answered `:ok` unconditionally and never touched the feed at all: a consumer calling
+  `DpExchange.Robinhood.subscribe_notices(to: monitoring_pid)` got `:ok` back and then
+  nothing, ever, because the only pid the feed ever sent a `Core.Notice` to was the fixed
+  `:subscriber` named at `start_link/1`. That distinction matters more now that a real
+  notice — the coverage-outage pair above — actually travels this path: a monitoring
+  process kept separate from the data-consuming one, which is an ordinary shape for a
+  consumer to choose, silently received none of it.
+
+  `DpExchange.Robinhood.Feed` gained a genuine `notice_subscribers` registry — the same
+  shape `dp_exchange_schwab`'s own `Feed` already uses for its Streamer and
+  fallback-poll notices — rather than declaring the single-fixed-subscriber design
+  permanent. `Core.PollingFeed` was not changed and was not fought: it still injects
+  exactly one `sink`, one `on_refusal` and one `on_notice` function, by design (see its
+  own moduledoc on why that shape is deliberate); the fan-out that turns "one recipient"
+  into "a set of recipients" lives one layer up, in this module, which is the layer that
+  actually knows who is registered. Doing that required turning `Feed` into a `GenServer`
+  in its own right — it used to simply *be* the `PollingFeed` process, registered under
+  this module's name, with nowhere of its own to keep a set. `PollingFeed` now runs as an
+  unnamed child that `Feed` holds a reference to, the same relationship Schwab's own
+  `Feed` already has with its Streamer and fallback poll.
+
+  `DpExchange.Robinhood.subscribe_notices/1` now calls through to that registry and
+  answers `{:error, :feed_not_started}` when the feed is not running, matching
+  `subscribe/2` and `update_symbols/2` rather than the blanket `:ok` it answered before
+  regardless of whether anything was listening. Registration is additive: the fixed
+  `:subscriber` from `start_link/1` keeps receiving notices exactly as before, so an
+  existing consumer that never calls `subscribe_notices/1` sees no change.
+
+  A second, smaller fix rode along: `send/2` to an unregistered atom raises, so a
+  `to:` given as a registered name that later died would have crashed this feed on its
+  next notice. `fan_out/2` resolves every recipient — the fixed subscriber included —
+  before sending, and skips one that no longer resolves, the same fix already shipped in
+  `dp_exchange_schwab` and `dp_exchange_coinbase` for the identical shape
+  (DpCryptoManagement issue #15).
+
+  A new test in `robinhood_test.exs` registers a subscriber through the facade call
+  itself, not by passing `:subscriber` to `Feed.start_link/1` directly, drives the feed
+  into the same delivering-nothing state the `on_notice` tests above use, and asserts the
+  notice actually reaches that facade-registered pid — the exact call the false `:ok`
+  used to accept and discard.
 
 - **`coverage_by_kind/1` implemented — `dp_exchange_core` 0.1.48's optional callback,
   wired for family-wide consumer tooling even though this venue cannot reproduce the

@@ -565,10 +565,26 @@ defmodule DpExchange.Robinhood do
     if alive?(feed), do: Feed.coverage_by_kind(feed), else: %{top_of_book: %{}}
   end
 
-  # NOT `:unsupported`, and not a socket either. This venue's feed reports refusals
-  # through the same subscriber, so a caller registering here receives them.
+  @doc """
+  Registers `opts[:to]` (default: the caller) for this venue's own notices — what the
+  feed is doing and what is going wrong with it, distinct from `subscribe/2`'s market
+  data.
+
+  Backed by a real registry in `DpExchange.Robinhood.Feed`, not the single fixed
+  `:subscriber` given to the feed's `start_link/1` at supervision-tree boot. That fixed
+  pid keeps receiving notices exactly as before — this adds a second, independent
+  recipient rather than replacing it, so a monitoring process distinct from the
+  data-consuming one can subscribe without stealing delivery from it.
+
+  `{:error, :feed_not_started}` when this venue's feed is not running, matching
+  `subscribe/2` and `update_symbols/2` rather than silently discarding the registration.
+  """
   @impl true
-  def subscribe_notices(_opts \\ []), do: :ok
+  @spec subscribe_notices(keyword()) :: :ok | {:error, term()}
+  def subscribe_notices(opts \\ []) do
+    feed = feed(opts)
+    if alive?(feed), do: Feed.subscribe_notices(feed, opts), else: {:error, :feed_not_started}
+  end
 
   # --- health ------------------------------------------------------------
 
