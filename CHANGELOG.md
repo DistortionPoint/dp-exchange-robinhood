@@ -19,6 +19,27 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`child_spec/1` did not declare `type: :supervisor`, so OTP defaulted it to `:worker`**
+  — which also defaults `:shutdown` to `5_000`ms instead of `:infinity`. A consumer
+  terminating this child gave the whole nested tree (feed, rate limiter, and everything
+  under them) only five seconds to shut down gracefully before `:kill`, rather than
+  letting it unwind on its own terms. Invisible to any single-package review — nothing
+  crashes, no test fails — and found only by diffing `child_spec/1` across all five venue
+  packages against each other; `dp_exchange_schwab` was the only one that already declared
+  it.
+
+- **`authenticated_streamable` was `[]` on a venue where every call is signed, including
+  the quotes.** It reads as "no credential is needed to stream `:top_of_book`", which is
+  false here — there is no anonymous surface at all. `Capabilities.new/1` enforces
+  `authenticated_streamable` as a **subset** of `streamable` (which of the streamed kinds
+  needs a credential), not a superset naming extra kinds a credential unlocks —
+  `usage-rules/feeds.md` in `dp_exchange_core` currently states the direction the wrong
+  way round, worth flagging upstream. Now `[:top_of_book]`, matching the one kind this
+  venue streams. Found by a cross-package audit; `dp_exchange_webull` carried the
+  identical `[]` for the identical reason.
+
 ### Removed
 
 - **`SymbolFormat.mapping/0` — dead code, and a breaking change if anything outside this

@@ -214,7 +214,18 @@ defmodule DpExchange.Robinhood do
 
   @impl true
   def child_spec(opts) do
-    %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
+    # `type: :supervisor`: `start_link/1` starts an OTP `Supervisor`, and without this key
+    # OTP defaults `:type` to `:worker`, which also defaults `:shutdown` to `5_000`ms
+    # instead of `:infinity`. A consumer terminating this child would then give the whole
+    # nested tree — feed, rate limiter, and everything under them — only five seconds to
+    # shut down gracefully before `:kill`, instead of letting it unwind on its own terms.
+    # Found by a cross-package audit comparing `child_spec/1` across all five venues;
+    # `dp_exchange_schwab` was the only one that already declared this.
+    %{
+      id: Keyword.get(opts, :name, __MODULE__),
+      start: {__MODULE__, :start_link, [opts]},
+      type: :supervisor
+    }
   end
 
   @impl true
@@ -259,6 +270,15 @@ defmodule DpExchange.Robinhood do
       # What a consumer receives is identical to a streaming venue's; `coverage/1` reports
       # `:internal_poll` so the difference is visible as what is arriving rather than as how.
       streamable: [:top_of_book],
+
+      # Every call on this venue is signed, quotes included, so the one streamed kind
+      # needs a credential too. `Capabilities.new/1` enforces `authenticated_streamable`
+      # as a *subset* of `streamable` (which of the streamed kinds need one), not a
+      # superset — left at the default `[]` this read as "no credential is needed to
+      # stream `:top_of_book`", which is the opposite of what this venue does. Found by a
+      # cross-package audit; `dp_exchange_webull` carried the identical `[]` for the
+      # identical reason.
+      authenticated_streamable: [:top_of_book],
 
       # The venue publishes no candle endpoint at all, so there is no width to declare.
       # An empty list is the honest answer, and `get_historical_prices/4` is

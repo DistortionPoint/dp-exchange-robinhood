@@ -59,6 +59,15 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.capabilities().endpoints[{:subscribe, 2}] == :experimental
     end
 
+    test "top_of_book needs a credential too, because every call here is signed" do
+      # `Capabilities.new/1` enforces `authenticated_streamable` as a subset of
+      # `streamable` — which of the streamed kinds needs a credential, not which extra
+      # kinds a credential unlocks. Left at the default `[]` this read as "no credential
+      # needed to stream `:top_of_book`", which is false on a venue with no anonymous
+      # surface at all.
+      assert Robinhood.capabilities().authenticated_streamable == [:top_of_book]
+    end
+
     test "no trade volume is reported" do
       refute Robinhood.capabilities().reports_trade_volume
     end
@@ -261,6 +270,13 @@ defmodule DpExchange.RobinhoodTest do
     test "child_spec/1 takes its id from the name" do
       assert %{id: :custom} = Robinhood.child_spec(name: :custom)
       assert %{id: DpExchange.Robinhood} = Robinhood.child_spec([])
+    end
+
+    test "child_spec/1 declares :supervisor, not OTP's default :worker shutdown" do
+      # `start_link/1` starts a `Supervisor`. Without `type: :supervisor` OTP defaults
+      # `:shutdown` to 5_000ms instead of `:infinity`, giving the whole nested tree only
+      # five seconds to unwind gracefully before `:kill`.
+      assert %{type: :supervisor} = Robinhood.child_spec([])
     end
   end
 
