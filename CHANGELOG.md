@@ -21,6 +21,25 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **A crash of `Feed` printed the Ed25519 `private_key` seed — and the `api_key` — in
+  cleartext, in OTP's own crash report.** `Auth.headers/5`'s own moduledoc says this
+  package "signs one request, and keeps nothing", which is true of the signing call
+  itself, but `Feed` keeps a copy of `state.credentials` for its whole lifetime anyway:
+  `start_poller/1` closes over it to build the `fetch` callback `Core.PollingFeed` calls
+  on every tick, and a crash-restart needs the original value to rebuild that closure.
+  OTP's default crash report prints a `GenServer`'s state in full on termination, and a
+  plain map field prints every key including the raw key material — verified by
+  crashing an equivalent process holding `%{api_key: "...", private_key: "..."}` as a
+  bare state field and reading the resulting log line back.
+  `Process.flag(:sensitive, true)` was tried as an alternative and does not help: the
+  same crash, with the flag set, printed the same cleartext state. Now `Feed` wraps the
+  pair in `DpExchange.Robinhood.Credentials`, a struct whose `Inspect` is derived with
+  `except:` naming both fields, at the point credentials enter state. Nothing
+  downstream changes: a struct is a map, so `Auth.headers/5`'s
+  `%{api_key: k, private_key: p}` pattern still binds the real values inside the one
+  function that has to sign with them. Re-verified against a real crash of the new
+  shape: the log line now reads `credentials: #DpExchange.Robinhood.Credentials<...>`.
+
 - **A crashed poller took the whole `Feed` down with it, silently discarding every
   symbol added after boot.** `PollingFeed.start_link/1` runs inside `Feed`'s own
   `init/1`, which links the poller to `Feed` the way `start_link` always does. `Feed`

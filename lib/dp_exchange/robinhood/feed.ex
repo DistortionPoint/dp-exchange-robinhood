@@ -124,7 +124,7 @@ defmodule DpExchange.Robinhood.Feed do
   use GenServer
 
   alias DpExchange.Core.{Notice, PollingFeed}
-  alias DpExchange.Robinhood.Rest
+  alias DpExchange.Robinhood.{Credentials, Rest}
 
   # Matches the platform's collection cadence. Faster buys nothing on a venue whose quotes
   # are REST snapshots, and every symbol here costs one signed request.
@@ -195,7 +195,10 @@ defmodule DpExchange.Robinhood.Feed do
       # something to rebuild the poller FROM: the opts this process started with are
       # static and never carry an `update_symbols/2` call made after boot.
       symbols: Keyword.get(opts, :symbols, []),
-      credentials: Keyword.get(opts, :credentials, %{}),
+      # Wrapped immediately, before it reaches `state` — see `Credentials`'s moduledoc.
+      # `start_poller/1`'s `fetch` closure and `Rest.get_top_of_book/3`/`Auth.headers/5`
+      # keep working unchanged: a struct is a map.
+      credentials: opts |> Keyword.get(:credentials, %{}) |> Credentials.wrap(),
       interval_ms: Keyword.get(opts, :interval_ms, @interval_ms),
       start_delay_ms: Keyword.get(opts, :start_delay_ms),
       request_opts:

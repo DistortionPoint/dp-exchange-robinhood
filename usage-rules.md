@@ -61,6 +61,17 @@ If your consumer needs to survive a `Feed` restart unattended, monitor the `Feed
 (or the `DpExchange.Robinhood` pid it sits under) yourself and re-issue
 `update_symbols/2` on `:DOWN`.
 
+**Your `private_key` will not appear in the crash log.** `Feed` keeps the credentials you
+supplied at start for as long as it runs — it needs them to rebuild the poller's `fetch`
+callback after a restart — and a crash of `Feed` logs its state via OTP's default crash
+report, which is where you *would* see the key, because a crash report prints unredacted
+`Logger` metadata otherwise. The credential map is wrapped in a struct before it ever
+reaches state, so the crash line reads `credentials:
+#DpExchange.Robinhood.Credentials<...>` rather than the key pair itself. This is not a
+claim about your own code: if you read `state.credentials` yourself via
+`:sys.get_state/1` or similar, you get the same struct — call `Map.from_struct/1` on it
+to get the plain map back.
+
 ## Credentials are required for everything, market data included
 
 Every call is signed with an Ed25519 key — the book, the catalogue, accounts, holdings and
