@@ -38,6 +38,15 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **`FeedTest`'s notice-registry tests raced under load and failed intermittently on
+  certain random seeds** — five `assert_receive` calls waited only 500ms for a
+  `%Notice{kind: :coverage_change, severity: :warning}` that a 40ms-interval
+  `Core.PollingFeed` normally delivers well inside that window, but the margin was too
+  tight once this suite ran alongside its siblings under `async: true` with `max_cases:
+  20`. Widened to 2,000ms — the assertions still return as soon as the message arrives, so
+  this costs nothing on the passing path. Found by a cross-package audit running the full
+  suite on multiple explicit seeds, which this family's CI does not do by default.
+
 - **`Auth.headers/5` recomputed the signed payload with its own second copy of the
   concatenation `payload/5` already implements, rather than calling `payload/5`.** Also
   found by the "16. internal wiring" assertion: `payload/5` had no caller in `lib/`, only

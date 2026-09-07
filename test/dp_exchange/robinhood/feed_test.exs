@@ -164,7 +164,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning} = notice},
-                     500
+                     2_000
 
       assert notice.provider == "robinhood"
       assert notice.message =~ "delivered nothing"
@@ -175,7 +175,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     500
+                     2_000
 
       # At 40ms/tick this window spans several more failed attempts. `PollingFeed`
       # latches to `:dead` on the first crossing and does not re-fire until recovery, so
@@ -188,7 +188,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     500
+                     2_000
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :info} = recovered},
@@ -216,11 +216,11 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     500
+                     2_000
 
       assert {^monitor,
               {:dp_exchange, :robinhood, %Notice{kind: :coverage_change, severity: :warning}}} =
-               Task.await(task, 500)
+               Task.await(task, 2_000)
     end
 
     test "subscribe_notices/2 defaults :to to the caller" do
@@ -244,7 +244,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert_receive {:relayed,
                       {:dp_exchange, :robinhood,
                        %Notice{kind: :coverage_change, severity: :warning}}},
-                     500
+                     2_000
     end
 
     test "a registered name that is not alive is skipped rather than crashing the feed" do
@@ -256,7 +256,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # costs nothing but its own delivery.
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     500
+                     2_000
 
       assert Process.alive?(feed)
     end
