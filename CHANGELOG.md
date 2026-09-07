@@ -120,6 +120,69 @@ what was run against the live venue, and when.
   `quantization/2` (opts defaulting to `[]`, so the old arity-1 call still works),
   authenticated the same way its siblings are.
 
+- **`Fake` was differently capable than the real facade in six more ways, found by a
+  documentation-accuracy sweep on 2026-09-06 that deliberately touched no code first.**
+  All six are the same class as `quantization/1` above — a fake more, or differently,
+  capable than the venue it stands in for — and **each is a breaking change to a
+  consumer's existing test if that test pinned the old, wrong behaviour.**
+
+  - **`Fake.get_balances/2`, `get_accounts/2`, `place_order/3`, `cancel_order/3`,
+    `get_order/3` and `get_orders/2` never checked their `credentials` argument at all** —
+    `%{}`, `nil`, or any other value answered success as long as the account number
+    (where one is required) was present. This venue signs every request with no anonymous
+    endpoint, including these; only `get_top_of_book/2`, `get_symbols/1`,
+    `list_instruments/1` and `quantization/2` gated on it. All six now call the same
+    `authenticated/1`/`authenticated_credentials/1` check the market-data functions
+    already did, refusing with `{:error, {:missing_credentials, :robinhood}}` first
+    (after the account-number check, for the four calls that need one — matching
+    `Rest`'s own order of checks). **A consumer's existing test calling any of these six
+    with placeholder or absent credentials, expecting success, now gets a refusal.**
+
+  - **The credential refusal itself was the wrong shape: `{:refused, :missing_credentials}`
+    where the real facade answers `{:error, {:missing_credentials, :robinhood}}`.** Both
+    were tested side by side in `robinhood_test.exs` and never compared: the real venue's
+    test asserted the `:error` tuple three lines above the fake's test asserting the
+    `:refused` one, for the identical call. The two tags mean different things family-wide
+    — `DpExchange.Core.Venue`'s own moduledoc: `:refused` is the venue's permanent word
+    about a request it received; `:error` may be transient and is worth retrying. A missing
+    local credential never reaches the venue, so it was never the venue's word about
+    anything, and `Auth.headers/5` has always returned the `:error` shape. Now
+    `authenticated/1` and the new `authenticated_credentials/1` both do too, on every
+    function that checks either. **Breaking for a consumer's test matching the old
+    `{:refused, :missing_credentials}` tuple literally.**
+
+  - **`Fake.get_top_of_book/2` stamped `venue_time` with a fixed, non-`nil` datetime.**
+    The real `Rest.get_top_of_book/3` always decodes `venue_time: nil` on this venue — v2's
+    `best_bid_ask` schema has no `timestamp` property at all — so the fake was handing a
+    consumer's freshness check a value the real venue can never produce: the exact
+    "plausible value, wrong meaning" substitution this family exists to refuse. Now `nil`,
+    always, matching the real path. `observed_at` keeps its fixed value; that one is a
+    deliberate, documented testing convenience (freshness against a fixed clock is
+    testable at all only because it does not move), not a claim about what the venue
+    sends.
+
+  - **`Fake.subscribe/2` honoured `opts[:to]`, which the real
+    `c:DpExchange.Core.Venue.subscribe/2` has no notion of at all** — the real facade's
+    `subscribe/2` delivers to whichever process
+    this venue's feed was supervised with, fixed at boot, and silently ignores any `:to`
+    passed to it (only `subscribe_notices/2`'s own registry reads that key). A consumer's
+    tier-1 test redirecting delivery with `to:` passed tests behaviour the real venue does
+    not have. Now always delivers to the calling process, `opts[:to]` or not.
+
+  - **`Fake.subscribe_notices/1` answered a bare `:ok` unconditionally and was never wired
+    through `FakeInjection`, unlike every other real-success-path function** — this
+    module's own moduledoc already claimed the wiring ("every function below that has a
+    real success path... checks `FakeInjection.next_outcome/1` or `/2` first"), so the
+    code contradicted its own documentation. The real facade answers
+    `{:error, :feed_not_started}` when its feed is not running, and nothing on the fake
+    side could ever produce that shape for a consumer to test against. Routed through
+    `with_injection/2` now — `FakeInjection.fail_always(:robinhood, {:error,
+    :feed_not_started})` or `queue_failures/2,3` reaches it exactly as they reach
+    `get_symbols/1` or `market_status/1`; with nothing queued it still answers `:ok`.
+
+  Fixed in `lib/dp_exchange/robinhood/fake.ex`. Regression tests pinning all six live in
+  `robinhood_test.exs` and `fake_injection_test.exs`.
+
 ### Documentation
 
 - **A documentation-only sweep for claims the code contradicts, 2026-09-06.** Nine false

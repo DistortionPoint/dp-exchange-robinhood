@@ -42,10 +42,10 @@ Answers `{:error, :feed_not_started}` if the feed named in `opts[:feed]` (defaul
 one this venue's own supervision tree started) is not running — the same shape
 `subscribe/2` already answers, rather than a bare `:ok` that quietly registered nothing.
 
-## Credentials are required for market data
+## Credentials are required for everything, market data included
 
-Every call is signed with an Ed25519 key, the book included. There is no anonymous
-endpoint:
+Every call is signed with an Ed25519 key — the book, the catalogue, accounts, holdings and
+orders alike. There is no anonymous endpoint on this venue at all:
 
 ```elixir
 {:ok, book} = DpExchange.Robinhood.get_top_of_book("BTC-USD", credentials: %{
@@ -53,6 +53,17 @@ endpoint:
   private_key: "<base64 32-byte seed>"
 })
 ```
+
+Without credentials, every one of those calls returns
+`{:error, {:missing_credentials, :robinhood}}` before any request is built — an `:error`,
+not a `:refused`, because a missing local credential never reaches the venue and is never
+the venue's own word about anything. `DpExchange.Robinhood.Fake` — the in-process double
+your own tier-1 tests run against — answers the identical shape for the identical reason,
+on every function that reaches a real endpoint, not only the market-data ones. If your test
+suite pinned the fake's older answer here (`{:refused, :missing_credentials}`, or an
+account/order call that quietly succeeded with no credentials at all), that was the fake
+being *differently* capable than this venue rather than *less* capable than it, and your
+test was passing against behaviour this venue cannot produce.
 
 **The private key is the base64 32-byte seed Robinhood issues**, not a 64-byte secret key.
 Passing the wrong one is refused here with `{:invalid_private_key, {:expected_32_bytes, n}}`

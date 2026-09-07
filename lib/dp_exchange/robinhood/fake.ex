@@ -7,11 +7,28 @@ defmodule DpExchange.Robinhood.Fake do
 
   ## What it models that is specific to this venue
 
-  - **Credentials are required for market data**, because the real venue signs every call
-    and has no anonymous endpoint. Without them: `{:refused, :missing_credentials}`.
+  - **Credentials are required for every signed call**, because the real venue signs every
+    request — including market data — and has no anonymous endpoint at all. Without them:
+    `{:error, {:missing_credentials, :robinhood}}`, the exact shape
+    `DpExchange.Robinhood.Auth.headers/5` returns for a request that never reaches the
+    venue. Not `{:refused, ...}` — a refusal is the venue's own permanent word about a
+    request it received (see `DpExchange.Core.Venue`'s moduledoc on the two); a missing
+    local credential is never sent at all, and is `:error` for the same reason
+    `Auth.headers/5` is. Checked by every function below that reaches a real endpoint on
+    this venue, market data and trading alike — there is no venue-internal function this
+    venue leaves ungated, because there is no venue-internal function the real venue
+    leaves unsigned.
   - **Coverage is `:internal_poll`, not `:stream`** — the one place a consumer can see that
     this venue has no socket, and it shows up as *what is arriving*, never as *how*.
   - **No candles, no order book, no volume.** The venue serves none, so neither does this.
+  - **`subscribe/2` takes no `:to`.** The real venue's `c:DpExchange.Core.Venue.subscribe/2`
+    has no notion of a per-call recipient — data reaches whoever the feed was supervised
+    with, fixed at boot
+    — so this fake ignores it too and always delivers to the calling process, the same way
+    a caller of the real facade receives from whichever process it supervised the feed
+    under. `subscribe_notices/2` is the one call on this venue that legitimately takes
+    `:to` — `DpExchange.Robinhood.Feed`'s own per-call notice registry — and this fake
+    honours it there, correctly.
 
   ## Failure injection and anonymous mode
 
@@ -20,12 +37,16 @@ defmodule DpExchange.Robinhood.Fake do
   first — a queued or always-set outcome from `FakeInjection.queue_failures/2,3` or
   `fail_always/2,3` short-circuits the fake's normal logic and is returned as-is.
   `authenticated/1` also checks `FakeInjection.credentials_bypassed?/1` before its normal
-  `{:refused, :missing_credentials}` path. Neither changes anything for a test that never
-  calls `FakeInjection` — see that module for the full contract.
+  `{:error, {:missing_credentials, :robinhood}}` path. Neither changes anything for a test
+  that never calls `FakeInjection` — see that module for the full contract.
 
   `subscribe/2`, `unsubscribe/2` and `update_symbols/2` are NOT wired: each takes a list
   of symbols in one call, and "this one symbol in the batch fails, the rest succeed" is a
   case whole-call injection cannot express — see `FakeInjection`'s own moduledoc.
+  `subscribe_notices/1` IS wired, unlike those three: it takes no symbol list, so a queued
+  or always-set outcome (for example `{:error, :feed_not_started}`, which the real facade
+  answers when its feed is not running) applies to the whole call the same way it does for
+  `get_symbols/1` or `market_status/1`.
   """
 
   @behaviour DpExchange.Core.Venue
@@ -76,7 +97,12 @@ defmodule DpExchange.Robinhood.Fake do
                ask: Decimal.add(Decimal.new(price), Decimal.new("0.01")),
                bid_size: nil,
                ask_size: nil,
-               venue_time: @at,
+               # `nil`, always — matching `Rest.get_top_of_book/3` exactly. v2's
+               # `best_bid_ask` schema (`V2BestBidAsk`) has no `timestamp` property at
+               # all, so the real venue can never populate this field; a fake that filled
+               # it with `@at` would hand a consumer's freshness check a value the real
+               # venue can never produce. See this module's `Rest.get_top_of_book/3` doc.
+               venue_time: nil,
                observed_at: @at,
                provider: :robinhood
              }}
@@ -126,9 +152,10 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @impl true
-  def get_balances(_credentials, opts) do
+  def get_balances(credentials, opts) do
     with_injection(fn ->
-      with {:ok, _account} <- fake_account(opts) do
+      with {:ok, _account} <- fake_account(opts),
+           :ok <- authenticated_credentials(credentials) do
         # Total above available: the difference is a balance sitting in an open order, which
         # is the case a consumer reading only one of them gets wrong. `hold` stays nil, as in
         # the package — the venue publishes no such figure.
@@ -148,9 +175,11 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @impl true
-  def get_accounts(_credentials, _opts) do
+  def get_accounts(credentials, _opts) do
     with_injection(fn ->
-      {:ok, [%{"account_number" => "RH-1", "status" => "active", "buying_power" => "1000.00"}]}
+      with :ok <- authenticated_credentials(credentials) do
+        {:ok, [%{"account_number" => "RH-1", "status" => "active", "buying_power" => "1000.00"}]}
+      end
     end)
   end
 
@@ -160,9 +189,10 @@ defmodule DpExchange.Robinhood.Fake do
   def get_transfers(_credentials, _opts), do: Venue.not_supported()
 
   @impl true
-  def place_order(_credentials, request, opts) do
+  def place_order(credentials, request, opts) do
     with_injection(fn ->
-      with {:ok, _account} <- fake_account(opts) do
+      with {:ok, _account} <- fake_account(opts),
+           :ok <- authenticated_credentials(credentials) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
         {:ok,
@@ -206,7 +236,7 @@ defmodule DpExchange.Robinhood.Fake do
   def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
   @impl true
-  def cancel_order(_credentials, id, _opts) do
+  def cancel_order(credentials, id, _opts) do
     with_injection(fn ->
       # `:cancelled`, matching `Rest.cancel_order/3`: the v2 endpoint this venue calls
       # returns a full `V2CryptoOrder` reflecting the venue's real state, not a bare
@@ -214,23 +244,30 @@ defmodule DpExchange.Robinhood.Fake do
       # wrong one for the v2 endpoint this package actually calls — would be "differently
       # capable" than the real adapter for the ordinary case: a consumer's test would see a
       # cancel confirmed here that the real venue would report cancelled for.
-      {:ok,
-       %Types.Order{
-         id: id,
-         symbol: nil,
-         side: nil,
-         order_type: nil,
-         quantity: nil,
-         status: :cancelled,
-         provider: :robinhood
-       }}
+      #
+      # No account check, matching `Rest.cancel_order/3`: this is the one order call that
+      # takes no `account_number` — but it is still signed, so credentials are still
+      # required.
+      with :ok <- authenticated_credentials(credentials) do
+        {:ok,
+         %Types.Order{
+           id: id,
+           symbol: nil,
+           side: nil,
+           order_type: nil,
+           quantity: nil,
+           status: :cancelled,
+           provider: :robinhood
+         }}
+      end
     end)
   end
 
   @impl true
-  def get_order(_credentials, id, opts) do
+  def get_order(credentials, id, opts) do
     with_injection(fn ->
-      with {:ok, _account} <- fake_account(opts) do
+      with {:ok, _account} <- fake_account(opts),
+           :ok <- authenticated_credentials(credentials) do
         {:ok,
          %Types.Order{
            id: id,
@@ -252,9 +289,11 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @impl true
-  def get_orders(_credentials, opts) do
+  def get_orders(credentials, opts) do
     with_injection(fn ->
-      with {:ok, _account} <- fake_account(opts), do: {:ok, []}
+      with {:ok, _account} <- fake_account(opts),
+           :ok <- authenticated_credentials(credentials),
+           do: {:ok, []}
     end)
   end
 
@@ -314,11 +353,13 @@ defmodule DpExchange.Robinhood.Fake do
   # that only defined arity 1 could never be swapped in for a caller using the real facade's
   # own documented signature (`quantization(symbol, opts)`) — `Fake.quantization/2` would be
   # undefined — and even at arity 1 it answered success unconditionally, never checking
-  # `credentials:`, while the real `Rest.quantization/3` refuses without them. Both are the
+  # `credentials:`, while the real `Rest.quantization/3` fails without them. Both are the
   # "differently capable" defect `usage-rules/testing.md` warns about: less capable than the
   # real adapter is fine, differently capable is not. Matches `get_top_of_book/2`,
-  # `get_symbols/1` and `list_instruments/1` above now, all of which already gate on
-  # `authenticated/1`.
+  # `get_symbols/1` and `list_instruments/1` above, and — since this same audit found the
+  # account and trading surface below had the identical gap — `get_balances/2`,
+  # `get_accounts/2`, `place_order/3`, `cancel_order/3`, `get_order/3` and `get_orders/2`
+  # too: every one of them now gates on `authenticated/1` or `authenticated_credentials/1`.
   @impl true
   def quantization(symbol, opts \\ []) do
     with_injection(symbol, fn ->
@@ -342,12 +383,18 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @impl true
-  def subscribe(symbols, opts \\ []) do
-    target = Keyword.get(opts, :to, self())
+  def subscribe(symbols, _opts \\ []) do
+    # Always the caller — never `opts[:to]`. The real `c:subscribe/2` has no notion of a
+    # per-call recipient at all: delivery goes to whichever process this venue's feed was
+    # supervised with, fixed at boot, and a `:to` passed to the real facade's `subscribe/2`
+    # is silently ignored (only `subscribe_notices/2`'s own registry reads it). A fake that
+    # honoured it here would let a consumer redirect delivery in a way the real venue
+    # cannot, which is exactly the "differently capable" defect this fake exists to avoid.
+    caller = self()
 
     for symbol <- symbols, symbol in @symbols do
       case get_top_of_book(symbol, credentials: %{api_key: "fake", private_key: "fake"}) do
-        {:ok, book} -> send(target, {:dp_exchange, :robinhood, book})
+        {:ok, book} -> send(caller, {:dp_exchange, :robinhood, book})
         _refused -> :ok
       end
     end
@@ -385,18 +432,40 @@ defmodule DpExchange.Robinhood.Fake do
           %{Capabilities.data_kind() => %{Venue.symbol() => Venue.route()}}
   def coverage_by_kind(opts \\ []), do: %{top_of_book: coverage(opts)}
 
+  @doc """
+  Registers `opts[:to]` for this venue's own notices. Unlike `subscribe/2`, `:to` is
+  genuine here — see this module's moduledoc.
+
+  Routed through `with_injection/2`, unlike `subscribe/2`, `unsubscribe/2` and
+  `update_symbols/2`: this call carries no symbol list, so there is no "one symbol in the
+  batch" case for whole-call injection to fail at. That is what makes
+  `{:error, :feed_not_started}` — the real facade's answer when its feed is not running —
+  reachable here at all: `FakeInjection.fail_always(:robinhood, {:error, :feed_not_started})`
+  or `queue_failures/2,3` produces it, exactly as they produce any other queued outcome.
+  With nothing queued, this fake has no feed of its own to be down, so it answers `:ok`.
+  """
   @impl true
-  def subscribe_notices(_opts \\ []), do: :ok
+  def subscribe_notices(_opts \\ []) do
+    with_injection(fn -> :ok end)
+  end
 
   defp subscribed, do: Process.get(__MODULE__, MapSet.new())
 
-  defp authenticated(opts) do
+  # Every function that reaches a real endpoint on this venue is signed, market data
+  # included — there is no anonymous endpoint to fall back to. `{:error,
+  # {:missing_credentials, :robinhood}}` matches `DpExchange.Robinhood.Auth.headers/5`'s
+  # own refusal exactly: `:error`, not `:refused`, because a missing local credential never
+  # reaches the venue at all and is not the venue's word about anything — see
+  # `DpExchange.Core.Venue`'s moduledoc on the two, and this module's own moduledoc.
+  defp authenticated(opts), do: authenticated_credentials(Keyword.get(opts, :credentials))
+
+  defp authenticated_credentials(credentials) do
     if FakeInjection.credentials_bypassed?(:robinhood) do
       :ok
     else
-      case Keyword.get(opts, :credentials) do
+      case credentials do
         %{api_key: _key, private_key: _private} -> :ok
-        _absent -> {:refused, :missing_credentials}
+        _absent -> {:error, {:missing_credentials, :robinhood}}
       end
     end
   end

@@ -91,7 +91,7 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
 
   describe "bypass_credentials/1" do
     test "skips the venue-faithful credential refusal" do
-      assert Fake.get_symbols([]) == {:refused, :missing_credentials}
+      assert Fake.get_symbols([]) == {:error, {:missing_credentials, :robinhood}}
 
       FakeInjection.bypass_credentials(:robinhood)
 
@@ -99,7 +99,18 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
     end
 
     test "the default, without calling bypass_credentials/1, is still venue-faithful" do
-      assert Fake.get_top_of_book("BTC-USD", []) == {:refused, :missing_credentials}
+      assert Fake.get_top_of_book("BTC-USD", []) == {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "covers the account and trading surface too, not only market data" do
+      FakeInjection.bypass_credentials(:robinhood)
+
+      assert {:ok, _balances} = Fake.get_balances(%{}, account_number: "1")
+      assert {:ok, _accounts} = Fake.get_accounts(%{}, [])
+      assert {:ok, _order} = Fake.place_order(%{}, %{}, account_number: "1")
+      assert {:ok, _order} = Fake.cancel_order(%{}, "id", [])
+      assert {:ok, _order} = Fake.get_order(%{}, "id", account_number: "1")
+      assert {:ok, _orders} = Fake.get_orders(%{}, account_number: "1")
     end
   end
 
@@ -111,11 +122,11 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
     # code does would raise `UndefinedFunctionError` — and answering success with no
     # credentials at all would be "differently capable" on top of that.
     test "quantization/2 exists and refuses without credentials, same as get_top_of_book/2" do
-      assert Fake.quantization("BTC-USD", []) == {:refused, :missing_credentials}
+      assert Fake.quantization("BTC-USD", []) == {:error, {:missing_credentials, :robinhood}}
     end
 
     test "quantization/1 still works — opts defaults to [], which is still no credentials" do
-      assert Fake.quantization("BTC-USD") == {:refused, :missing_credentials}
+      assert Fake.quantization("BTC-USD") == {:error, {:missing_credentials, :robinhood}}
     end
 
     test "quantization/2 succeeds once credentials are given" do
@@ -126,6 +137,42 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
       FakeInjection.bypass_credentials(:robinhood)
 
       assert {:ok, _quantum} = Fake.quantization("BTC-USD", [])
+    end
+  end
+
+  describe "the account and trading surface gates on credentials, same as market data" do
+    # `get_balances/2`, `get_accounts/2`, `place_order/3`, `cancel_order/3`, `get_order/3`
+    # and `get_orders/2` used to ignore their `credentials` argument entirely: any value,
+    # including `%{}`, answered success as long as an account number (where one is
+    # required) was present. The real venue signs every one of these calls with no
+    # anonymous endpoint, so that let a consumer's test pass with no credentials at all
+    # against behaviour the real venue cannot produce.
+    test "get_balances/2" do
+      assert Fake.get_balances(%{}, account_number: "1") ==
+               {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "get_accounts/2" do
+      assert Fake.get_accounts(%{}, []) == {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "place_order/3" do
+      assert Fake.place_order(%{}, %{}, account_number: "1") ==
+               {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "cancel_order/3 — the one order call with no account number, but still signed" do
+      assert Fake.cancel_order(%{}, "id", []) == {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "get_order/3" do
+      assert Fake.get_order(%{}, "id", account_number: "1") ==
+               {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "get_orders/2" do
+      assert Fake.get_orders(%{}, account_number: "1") ==
+               {:error, {:missing_credentials, :robinhood}}
     end
   end
 end

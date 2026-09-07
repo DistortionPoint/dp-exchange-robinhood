@@ -265,10 +265,46 @@ defmodule DpExchange.RobinhoodTest do
   end
 
   describe "the fake" do
-    test "refuses market data without credentials, as the real venue does" do
-      assert Fake.get_top_of_book("BTC-USD") == {:refused, :missing_credentials}
-      assert Fake.get_symbols() == {:refused, :missing_credentials}
-      assert Fake.list_instruments([]) == {:refused, :missing_credentials}
+    test "refuses market data without credentials, matching the real venue's own shape" do
+      # `{:error, {:missing_credentials, :robinhood}}`, not `{:refused, ...}`: a missing
+      # local credential never reaches the venue, so it is never the venue's own permanent
+      # word about anything. This used to be `{:refused, :missing_credentials}` here —
+      # the wrong tag AND the wrong payload, next to `Robinhood.get_top_of_book/2` in this
+      # very file answering `{:error, {:missing_credentials, :robinhood}}` for the
+      # identical call. See `DpExchange.Robinhood.Auth.headers/5` and this fake's
+      # moduledoc.
+      assert Fake.get_top_of_book("BTC-USD") == {:error, {:missing_credentials, :robinhood}}
+      assert Fake.get_symbols() == {:error, {:missing_credentials, :robinhood}}
+      assert Fake.list_instruments([]) == {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "the account and trading surface refuses without credentials too" do
+      # `get_balances/2`, `get_accounts/2`, `place_order/3`, `cancel_order/3`, `get_order/3`
+      # and `get_orders/2` used to ignore their `credentials` argument entirely and answer
+      # success regardless — the same "differently capable" defect `quantization/2` was
+      # fixed for, just on the account and trading surface rather than market data.
+      account = [account_number: "RH-1"]
+
+      assert Fake.get_balances(%{}, account) == {:error, {:missing_credentials, :robinhood}}
+      assert Fake.get_accounts(%{}, []) == {:error, {:missing_credentials, :robinhood}}
+
+      assert Fake.place_order(%{}, %{}, account) ==
+               {:error, {:missing_credentials, :robinhood}}
+
+      assert Fake.cancel_order(%{}, "id", []) == {:error, {:missing_credentials, :robinhood}}
+
+      assert Fake.get_order(%{}, "id", account) ==
+               {:error, {:missing_credentials, :robinhood}}
+
+      assert Fake.get_orders(%{}, account) == {:error, {:missing_credentials, :robinhood}}
+
+      # And they all succeed once credentials are actually given.
+      assert {:ok, _balances} = Fake.get_balances(@credentials, account)
+      assert {:ok, _accounts} = Fake.get_accounts(@credentials, [])
+      assert {:ok, _order} = Fake.place_order(@credentials, %{}, account)
+      assert {:ok, _order} = Fake.cancel_order(@credentials, "id", [])
+      assert {:ok, _order} = Fake.get_order(@credentials, "id", account)
+      assert {:ok, _orders} = Fake.get_orders(@credentials, account)
     end
 
     test "list_instruments derives base and quote from the fake's own symbols" do
@@ -300,12 +336,33 @@ defmodule DpExchange.RobinhoodTest do
       assert Decimal.lt?(top.bid, top.ask)
     end
 
+    test "venue_time is always nil, matching Rest.get_top_of_book/3 exactly" do
+      # v2's `best_bid_ask` schema has no `timestamp` property at all, so the real venue
+      # can never populate this field. This fake used to stamp a fixed non-nil datetime
+      # here — a value the real venue can never produce, which is exactly the "plausible
+      # value, wrong meaning" substitution this family refuses.
+      assert {:ok, top} = Fake.get_top_of_book("BTC-USD", credentials: @credentials)
+      assert top.venue_time == nil
+    end
+
     test "coverage reports :internal_poll, never :stream" do
       # The one place a consumer can see this venue has no socket — and it is visible as
       # what is arriving, not as how.
-      :ok = Fake.subscribe(["BTC-USD"], to: self())
+      :ok = Fake.subscribe(["BTC-USD"])
 
       assert Fake.coverage() == %{"BTC-USD" => :internal_poll}
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
+    end
+
+    test "subscribe/2 ignores opts[:to] — unlike the real venue, this fake never had a :to to honour" do
+      # The real `c:subscribe/2` has no notion of a per-call recipient at all; only
+      # `subscribe_notices/2` does. This fake used to read `opts[:to]` here and redirect
+      # delivery to it — a capability the real venue's `subscribe/2` does not have.
+      other = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(other, :kill) end)
+
+      :ok = Fake.subscribe(["BTC-USD"], to: other)
+
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
     end
 
@@ -313,7 +370,7 @@ defmodule DpExchange.RobinhoodTest do
       # This fake's `get_top_of_book/2` produces exclusively `Types.TopOfBook`, so a
       # symbol that delivers a quote must appear under `:top_of_book` here — the same
       # struct-derived fact `coverage/1` already reports, split by kind.
-      :ok = Fake.subscribe(["BTC-USD"], to: self())
+      :ok = Fake.subscribe(["BTC-USD"])
 
       assert Fake.coverage_by_kind() == %{top_of_book: %{"BTC-USD" => :internal_poll}}
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
@@ -323,7 +380,7 @@ defmodule DpExchange.RobinhoodTest do
       # The family-wide invariant: whatever `coverage/1` reports, `coverage_by_kind/1`'s
       # values must union back to precisely the same symbol set — never more, never
       # fewer.
-      :ok = Fake.subscribe(["BTC-USD", "ETH-USD"], to: self())
+      :ok = Fake.subscribe(["BTC-USD", "ETH-USD"])
 
       coverage_symbols = Fake.coverage() |> Map.keys() |> MapSet.new()
 
@@ -337,7 +394,7 @@ defmodule DpExchange.RobinhoodTest do
     end
 
     test "the one kind reported is declared streamable" do
-      :ok = Fake.subscribe(["BTC-USD"], to: self())
+      :ok = Fake.subscribe(["BTC-USD"])
 
       reported_kinds = Fake.coverage_by_kind() |> Map.keys() |> MapSet.new()
       declared = MapSet.new(Robinhood.capabilities().streamable)
@@ -349,13 +406,13 @@ defmodule DpExchange.RobinhoodTest do
       # Robinhood streams only one kind, delivered by poll. Documenting the map's shape
       # directly: this is the honest, structurally-derived answer for a venue with one
       # delivery path, not an accident of only writing one branch.
-      :ok = Fake.subscribe(["BTC-USD"], to: self())
+      :ok = Fake.subscribe(["BTC-USD"])
 
       assert Map.keys(Fake.coverage_by_kind()) == [:top_of_book]
     end
 
     test "unsubscribe and update_symbols narrow coverage" do
-      :ok = Fake.subscribe(["BTC-USD", "ETH-USD"], to: self())
+      :ok = Fake.subscribe(["BTC-USD", "ETH-USD"])
       :ok = Fake.update_symbols(["BTC-USD"])
       assert Fake.coverage() == %{"BTC-USD" => :internal_poll}
 
@@ -367,7 +424,7 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.get_top_of_book("NOPE-USD", credentials: @credentials) ==
                {:refused, :not_listed}
 
-      :ok = Fake.subscribe(["NOPE-USD"], to: self())
+      :ok = Fake.subscribe(["NOPE-USD"])
       assert Fake.coverage() == %{}
       refute_receive {:dp_exchange, :robinhood, _anything}, 50
     end
@@ -411,6 +468,18 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.asset_classes() == [:crypto]
       assert Fake.market_status([]) == {:ok, :open}
       assert Fake.subscribe_notices([]) == :ok
+    end
+
+    test "subscribe_notices/1 can answer {:error, :feed_not_started}, the real facade's own refusal" do
+      # This used to be an unconditional `:ok` with no way to reach the real facade's other
+      # answer at all. Wired through the same `FakeInjection` mechanism every other
+      # real-success-path function uses, so a consumer can test its handling of a feed
+      # that never started without needing an actual feed process.
+      on_exit(fn -> DpExchange.Core.FakeInjection.reset(:robinhood) end)
+
+      DpExchange.Core.FakeInjection.fail_always(:robinhood, {:error, :feed_not_started})
+
+      assert Fake.subscribe_notices(to: self()) == {:error, :feed_not_started}
     end
   end
 

@@ -771,7 +771,7 @@ defmodule DpExchange.Robinhood.TradingTest do
 
   describe "the fake and the facade" do
     test "the fake's holdings show a balance held in an open order" do
-      assert {:ok, [balance]} = Fake.get_balances(%{}, account_number: "RH-1")
+      assert {:ok, [balance]} = Fake.get_balances(@credentials, account_number: "RH-1")
       refute Decimal.equal?(balance.balance, balance.available_balance)
       assert balance.hold == nil
     end
@@ -779,7 +779,7 @@ defmodule DpExchange.Robinhood.TradingTest do
     test "the fake's placed order is open, not filled" do
       assert {:ok, order} =
                Fake.place_order(
-                 %{},
+                 @credentials,
                  %{
                    symbol: "BTC-USD",
                    side: :buy,
