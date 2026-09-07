@@ -42,6 +42,25 @@ Answers `{:error, :feed_not_started}` if the feed named in `opts[:feed]` (defaul
 one this venue's own supervision tree started) is not running — the same shape
 `subscribe/2` already answers, rather than a bare `:ok` that quietly registered nothing.
 
+## A crashed poller costs one restart, never your whole symbol set
+
+The poll is a **linked** child of `Feed` — not a supervised sibling you can restart
+independently. `Feed` traps exits, so the poller dying abnormally does not take `Feed`
+down with it: `coverage/1` and `coverage_by_kind/1` clear (the fresh poller starts with
+nothing delivered yet), you get a `:link_down` `Core.Notice`, and this package restarts
+the poll with the symbols this feed actually had — including any added afterward via
+`update_symbols/2` — without you calling anything again.
+
+**What still costs you your whole symbol set: `Feed` itself crashing** — a bug outside
+the poller-crash path, or anything that kills the `Feed` pid directly.
+`DpExchange.Robinhood.Supervisor` restarts `Feed` under `:one_for_one`, but from the
+*static* `opts` your supervision tree started it with; every `update_symbols/2` and
+`subscribe_notices/1` call you made afterward is gone. Nothing inside this package can
+replay those calls — it never held onto the functions or the process that made them.
+If your consumer needs to survive a `Feed` restart unattended, monitor the `Feed` pid
+(or the `DpExchange.Robinhood` pid it sits under) yourself and re-issue
+`update_symbols/2` on `:DOWN`.
+
 ## Credentials are required for everything, market data included
 
 Every call is signed with an Ed25519 key — the book, the catalogue, accounts, holdings and

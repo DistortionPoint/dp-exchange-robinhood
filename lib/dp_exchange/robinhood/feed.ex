@@ -105,6 +105,20 @@ defmodule DpExchange.Robinhood.Feed do
   `GenServer` in its own right — where it used to simply *be* the `PollingFeed` process,
   registered under this module's name — is the smallest change that gives it somewhere to
   keep that set.
+
+  ## A crashed poller used to be Feed's crash too — and now it is caught
+
+  `PollingFeed.start_link/1` runs inside `init/1`, which links the poller to this
+  process the way `start_link` always does. Before this fix, nothing here trapped exits,
+  so an abnormal poller exit — this venue has no socket to crash instead, so the poller
+  is the only linked child there is — sent an untrappable `EXIT` signal along that link
+  and crashed `Feed` too, restarted by `DpExchange.Robinhood.Supervisor` from the
+  *static* `opts` it was given at tree-start: any symbols added since boot via
+  `update_symbols/2`, and every `subscribe_notices/1` registration, silently reverted.
+  `Feed` traps exits now, restarts the poller with the symbol set it actually had —
+  tracked in `state.symbols`, updated on every `update_symbols/2` call, precisely so a
+  crash-restart has something truer to rebuild from than the opts this process started
+  with — and reports a `:link_down` `Core.Notice` rather than leaving the crash silent.
   """
 
   use GenServer
@@ -164,40 +178,42 @@ defmodule DpExchange.Robinhood.Feed do
 
   @impl true
   def init(opts) do
-    credentials = Keyword.get(opts, :credentials, %{})
+    # `PollingFeed.start_link/1` below runs inside this callback, which links the
+    # poller to `Feed` — see the moduledoc's "A crashed poller used to be Feed's crash
+    # too" section. Without this flag an abnormal poller exit is an untrappable EXIT
+    # along that link and takes `Feed` down with it; `handle_info({:EXIT, pid, reason},
+    # state)` below is what this flag makes reachable at all.
+    Process.flag(:trap_exit, true)
+
     subscriber = Keyword.get(opts, :subscriber, self())
-    parent = self()
 
-    request_opts =
-      opts
-      |> Keyword.take([
-        :limiter,
-        :plug,
-        :req_adapter,
-        :base_url,
-        :retry_attempts,
-        :rate_limit_blocking
-      ])
-      |> Keyword.put_new(:rate_limit_blocking, true)
+    state = %{
+      poller: nil,
+      subscriber: subscriber,
+      notice_subscribers: MapSet.new([subscriber]),
+      # Tracked here, not only inside `PollingFeed`'s own state, so a crash-restart has
+      # something to rebuild the poller FROM: the opts this process started with are
+      # static and never carry an `update_symbols/2` call made after boot.
+      symbols: Keyword.get(opts, :symbols, []),
+      credentials: Keyword.get(opts, :credentials, %{}),
+      interval_ms: Keyword.get(opts, :interval_ms, @interval_ms),
+      start_delay_ms: Keyword.get(opts, :start_delay_ms),
+      request_opts:
+        opts
+        |> Keyword.take([
+          :limiter,
+          :plug,
+          :req_adapter,
+          :base_url,
+          :retry_attempts,
+          :rate_limit_blocking
+        ])
+        |> Keyword.put_new(:rate_limit_blocking, true)
+    }
 
-    poller =
-      PollingFeed.start_link(
-        label: "robinhood",
-        symbols: Keyword.get(opts, :symbols, []),
-        interval_ms: Keyword.get(opts, :interval_ms, @interval_ms),
-        start_delay_ms: Keyword.get(opts, :start_delay_ms),
-        sink: fn book -> send(parent, {:dp_exchange, :robinhood, book}) end,
-        on_refusal: fn symbol, reason ->
-          send(parent, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
-        end,
-        on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
-        fetch: fn symbol -> Rest.get_top_of_book(symbol, credentials, request_opts) end
-      )
-
-    case poller do
+    case start_poller(state) do
       {:ok, pid} ->
-        {:ok,
-         %{poller: pid, subscriber: subscriber, notice_subscribers: MapSet.new([subscriber])}}
+        {:ok, %{state | poller: pid}}
 
       # `PollingFeed` refuses to start without a fetcher, which cannot happen here — `fetch`
       # is always supplied above — but a feed that ran forever delivering nothing is
@@ -206,9 +222,32 @@ defmodule DpExchange.Robinhood.Feed do
       {:error, :no_fetcher} ->
         {:stop, {:feed_misconfigured, :no_fetcher}}
 
-      other ->
+      {:error, other} ->
         {:stop, other}
     end
+  end
+
+  # `state.credentials`/`state.request_opts`/`state.interval_ms`/`state.start_delay_ms`
+  # never change after `init/1`; only `state.symbols` does, via `update_symbols/2` — so
+  # this is the one place a fresh `PollingFeed` gets built, called from `init/1` for the
+  # first one and from the crash handler for every one after.
+  defp start_poller(state) do
+    parent = self()
+    credentials = state.credentials
+    request_opts = state.request_opts
+
+    PollingFeed.start_link(
+      label: "robinhood",
+      symbols: state.symbols,
+      interval_ms: state.interval_ms,
+      start_delay_ms: state.start_delay_ms,
+      sink: fn book -> send(parent, {:dp_exchange, :robinhood, book}) end,
+      on_refusal: fn symbol, reason ->
+        send(parent, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
+      end,
+      on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
+      fetch: fn symbol -> Rest.get_top_of_book(symbol, credentials, request_opts) end
+    )
   end
 
   @impl true
@@ -217,6 +256,7 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call({:update_symbols, symbols}, _from, state) do
+    state = %{state | symbols: symbols}
     {:reply, PollingFeed.update_symbols(state.poller, symbols), state}
   end
 
@@ -237,7 +277,44 @@ defmodule DpExchange.Robinhood.Feed do
     {:noreply, state}
   end
 
+  # The other half of `init/1`'s `Process.flag(:trap_exit, true)` — see the moduledoc's
+  # "A crashed poller used to be Feed's crash too" section. Matching on `state.poller` is
+  # what tells a real crash apart from an `EXIT` this feed cannot attribute to anything
+  # it started; a stale `EXIT` for an already-replaced poller falls through to the
+  # catch-all below and is correctly ignored.
+  def handle_info({:EXIT, pid, reason}, %{poller: pid} = state) do
+    notify_poller_crashed(state, reason)
+
+    case start_poller(state) do
+      {:ok, new_poller} ->
+        {:noreply, %{state | poller: new_poller}}
+
+      # As unreachable in practice as `init/1`'s own `{:error, other}` branch — `fetch`
+      # is always supplied — but this feed has no lesser fallback the way a socket-based
+      # venue's `ensure_route/1` falls back to a poll: a poll IS this venue's only
+      # route. Stopping hands the failure to `DpExchange.Robinhood.Supervisor`, the same
+      # outcome `init/1` reaches for the identical error.
+      {:error, other} ->
+        {:stop, other, state}
+    end
+  end
+
   def handle_info(_other, state), do: {:noreply, state}
+
+  # Reports a crashed poller the same way a socket-based venue reports a crashed shard
+  # or connection — without this, it is exactly the "silent half-dead feed" this
+  # family's incidents are about: `Feed` recovers on its own, but a consumer watching
+  # only `coverage/1` would see a gap with no notice explaining it.
+  defp notify_poller_crashed(state, reason) do
+    notice =
+      Notice.new(:link_down, :robinhood,
+        severity: :warning,
+        message: "poll crashed (#{inspect(reason)}) — restarting now",
+        details: %{reason: inspect(reason)}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+  end
 
   # A dead subscriber stops delivery rather than crashing it. A subscriber may be a raw
   # pid or a registered name — `subscribe_notices/2`'s `to:` accepts either, matching

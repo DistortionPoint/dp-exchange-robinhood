@@ -86,6 +86,21 @@ defmodule DpExchange.Robinhood.FeedTest do
     ]
 
     {:ok, pid} = Feed.start_link(Keyword.merge(defaults, opts))
+
+    # `Feed` traps exits (added for the crash-isolation fix), so it no longer dies
+    # automatically when this test process does — before that fix, the implicit link
+    # `start_link/1` creates was this suite's only cleanup, relied on silently. Stopped
+    # explicitly now, and `:noproc` is swallowed rather than asserted on: `on_exit`
+    # callbacks run after the test process itself has already exited, so `pid` may
+    # already be gone by the time this runs regardless.
+    on_exit(fn ->
+      try do
+        GenServer.stop(pid, :normal)
+      catch
+        :exit, _reason -> :ok
+      end
+    end)
+
     pid
   end
 
@@ -259,6 +274,97 @@ defmodule DpExchange.Robinhood.FeedTest do
                      2_000
 
       assert Process.alive?(feed)
+    end
+  end
+
+  describe "a crashed poller is isolated, not fatal" do
+    # `PollingFeed.start_link/1` runs inside `Feed`'s own `init/1`, which links the
+    # poller to `Feed` the way `start_link` always does — the real relationship this
+    # test recreates by linking `crash_pid` into a RUNNING `Feed` via `:sys.replace_
+    # state/2`, which runs the given function INSIDE the target process, so `Process.
+    # link/1` inside it creates a link owned by `feed`, not by this test.
+    defp link_poller_into_feed(feed, poller) do
+      :sys.replace_state(feed, fn state ->
+        Process.link(poller)
+        state
+      end)
+    end
+
+    test "the feed survives its linked poller being killed" do
+      feed = start_feed()
+      poller = :sys.get_state(feed).poller
+
+      crash_pid = spawn(fn -> Process.sleep(:infinity) end)
+      link_poller_into_feed(feed, crash_pid)
+
+      # `:kill`, not `:normal` — a non-trapping process ignores a peer's normal exit,
+      # which would prove nothing about the trap_exit flag this test exists to check.
+      # `crash_pid`, not the real `poller`, is what gets killed: killing the real one
+      # would also be a fine proof, but this isolates the claim under test (does `Feed`
+      # survive ANY linked EXIT) from `PollingFeed`'s own shutdown behaviour.
+      ref = Process.monitor(feed)
+      Process.exit(crash_pid, :kill)
+      refute_receive {:DOWN, ^ref, :process, ^feed, _reason}, 500
+      assert Process.alive?(feed)
+      # The real poller, never touched, is still the one `Feed` is using.
+      assert :sys.get_state(feed).poller == poller
+    end
+
+    test "a :link_down notice fires, the poller restarts, and coverage recovers" do
+      feed = start_feed()
+      old_poller = :sys.get_state(feed).poller
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     3_000
+
+      assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
+
+      :ok = Feed.subscribe_notices(feed, to: self())
+      link_poller_into_feed(feed, old_poller)
+
+      Process.exit(old_poller, :kill)
+
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 500
+      assert Process.alive?(feed)
+
+      new_poller = :sys.get_state(feed).poller
+      assert is_pid(new_poller)
+      refute new_poller == old_poller
+      assert Process.alive?(new_poller)
+
+      # The fresh poller starts with nothing delivered yet — proving `coverage/1`
+      # reports the truth right after a crash rather than the stale `:internal_poll`
+      # a leftover cache would keep reporting.
+      assert Feed.coverage(feed) == %{}
+
+      # And it recovers on its own — restarted with `state.symbols`, not an empty set,
+      # so this needs no `subscribe/2`-equivalent call from this test.
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     3_000
+
+      assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
+    end
+
+    test "a symbol added after boot survives the crash, because Feed tracks it too" do
+      feed = start_feed(symbols: [])
+      :ok = Feed.update_symbols(feed, ["BTC-USD"])
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     3_000
+
+      poller = :sys.get_state(feed).poller
+      link_poller_into_feed(feed, poller)
+      Process.exit(poller, :kill)
+
+      # Recovers with "BTC-USD" — never in this feed's ORIGINAL start opts, only added
+      # afterward via `update_symbols/2` — proving the restart rebuilds from `state.
+      # symbols`, not from the static opts `start_link/1` was given.
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     3_000
     end
   end
 end

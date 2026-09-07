@@ -21,6 +21,25 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **A crashed poller took the whole `Feed` down with it, silently discarding every
+  symbol added after boot.** `PollingFeed.start_link/1` runs inside `Feed`'s own
+  `init/1`, which links the poller to `Feed` the way `start_link` always does. `Feed`
+  never called `Process.flag(:trap_exit, true)`, so an abnormal poller exit sent an
+  untrappable `EXIT` signal along that link and crashed `Feed` too — restarted by
+  `DpExchange.Robinhood.Supervisor` from the *static* `opts` it was given at
+  tree-start, which never carry a consumer's later `update_symbols/2` calls or
+  `subscribe_notices/1` registrations. Found by a 2026-09-07 supervision audit —
+  proven by linking a real process into a running `Feed` and killing it with
+  `Process.exit(pid, :kill)` (not `:normal`, which a non-trapping process ignores).
+
+  `Feed` now traps exits and tracks its own `symbols` set (updated on every
+  `update_symbols/2` call, since the static start `opts` alone are not enough to
+  rebuild from), so a crashed poller restarts with the symbols this feed actually had
+  rather than the ones it started with. `coverage/1` and `coverage_by_kind/1`
+  correctly read empty immediately after the crash (the fresh poller starts with
+  nothing delivered) rather than a stale `:internal_poll`, and a `:link_down`
+  `Core.Notice` reports the crash — previously silent.
+
 - **BREAKING: `supported_order_types` was `[]` while `place_order/3` was `:experimental`
   and `Rest.order_config/2` built four real order types** — market, limit, stop and
   stop-limit, from `AddOrderV2`'s own `market_order_config`, `limit_order_config`,
