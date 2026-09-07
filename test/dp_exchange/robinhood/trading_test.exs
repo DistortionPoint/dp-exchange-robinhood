@@ -341,6 +341,36 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert Jason.decode!(raw)["stop_loss_order_config"]["time_in_force"] == "gfd"
     end
 
+    # `:stop` is the atom `capabilities().supported_order_types` declares and the one a
+    # consumer moving from another venue in this family passes. It was refused with
+    # `{:unsupported_order_type, :stop}` until 2026-09-07 — only the venue's own
+    # `:stop_loss` spelling was accepted — so the shared vocabulary did not reach a venue
+    # that serves the type. Both spellings build the same `stop_loss_order_config`.
+    test "the contract's :stop and the venue's :stop_loss build the same config" do
+      me = self()
+
+      for order_type <- [:stop, :stop_loss] do
+        assert {:ok, _order} =
+                 Rest.place_order(
+                   @credentials,
+                   %{
+                     symbol: "BTC-USD",
+                     side: :buy,
+                     order_type: order_type,
+                     quantity: Decimal.new("1"),
+                     stop_price: Decimal.new("50000")
+                   },
+                   account_number: "RH-1",
+                   plug: capturing(%{"id" => "o-5"}, me),
+                   retry_attempts: 0
+                 )
+
+        assert_receive {:request, "POST", _path, _query, raw}
+        body = Jason.decode!(raw)
+        assert body["stop_loss_order_config"]["stop_price"] == "50000"
+      end
+    end
+
     test "no time_in_force means no key at all, not a default" do
       me = self()
 

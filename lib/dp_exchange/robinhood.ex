@@ -254,6 +254,23 @@ defmodule DpExchange.Robinhood do
       supported_instrument_types: [:spot],
       supports_short_selling: false,
 
+      # **The four types `Rest.order_config/2` actually builds**, from `AddOrderV2`'s own
+      # `market_order_config`, `limit_order_config`, `stop_loss_order_config` and
+      # `stop_limit_order_config`. This defaulted to `[]` until 2026-09-07 — "this venue
+      # accepts no order type at all" — while `{:place_order, 3}` was declared
+      # `:experimental` and the comment directly below named three of the four config
+      # objects. `Capabilities.new/1` validates the *contents* of this list but never that
+      # a venue with an active `place_order/3` declared anything, so an empty list passes
+      # every check; a cross-package audit found `dp_exchange_coinbase` defaulting the same
+      # field the same way for the same reason.
+      #
+      # `:stop`, not `:stop_loss`: `:stop` is the shared vocabulary's atom, and
+      # `Rest.order_config/2` now accepts it alongside the venue's own spelling. Declaring
+      # `:stop` while only `:stop_loss` was accepted would have turned an under-declaration
+      # into an over-declaration — the caller would be refused by the very atom this list
+      # told it to send.
+      supported_order_types: [:market, :limit, :stop, :stop_limit],
+
       # Real vendor values (`AddOrderV2`'s `limit_order_config`, `.stop_loss_order_config`
       # and `.stop_limit_order_config`, enum `["gtc", "gfd", "gfw", "gfm"]`), not the empty
       # list this used to default to. All four are declared now: `:gtc`, `:day` (the venue's

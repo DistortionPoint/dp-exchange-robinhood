@@ -514,16 +514,30 @@ defmodule DpExchange.Robinhood.Rest do
          {:ok, side} <- order_field(request, :side),
          {:ok, type} <- order_field(request, :order_type),
          {:ok, config} <- order_config(type, request) do
+      wire_type = wire_order_type(type)
+
       {:ok,
        %{
          "client_order_id" => Keyword.get(opts, :client_order_id, generate_client_order_id()),
          "side" => to_string(side),
-         "type" => to_string(type),
+         "type" => wire_type,
          "symbol" => SymbolFormat.to_exchange_symbol(symbol),
-         "#{type}_order_config" => config
+         "#{wire_type}_order_config" => config
        }}
     end
   end
+
+  # The wire's own spelling for the `"type"` field and the `"#{type}_order_config"` key it
+  # selects — never the raw, interpolated `type` the caller passed. `order_config/2` below
+  # accepts both `:stop` (this contract's shared atom) and `:stop_loss` (the venue's own),
+  # but the venue itself answers to exactly one spelling, `"stop_loss"`, on both the `type`
+  # field and the config key. Interpolating the caller's atom directly produced
+  # `"stop_order_config"` for a caller that passed `:stop` — the very atom
+  # `capabilities().supported_order_types` declares — which the venue does not recognise
+  # and silently drops, so the order shipped with no config object at all rather than
+  # refusing.
+  defp wire_order_type(:stop), do: "stop_loss"
+  defp wire_order_type(type), do: to_string(type)
 
   defp order_field(request, key) do
     case Map.get(request, key) do
@@ -555,7 +569,13 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
-  defp order_config(type, request) when type in [:stop_loss, "stop_loss"] do
+  # `:stop` is the shared contract's atom for this order type and is what a consumer moving
+  # between venues passes; `:stop_loss` is this venue's own wire name for the same thing.
+  # Only the second was accepted until 2026-09-07, so a caller passing the atom
+  # `capabilities/0` now declares — and that `DpExchange.Webull` already maps the same way,
+  # `:stop` -> `"STOP_LOSS"` — was refused with `{:unsupported_order_type, :stop}` on a
+  # venue that serves it. Both are accepted; the venue's own spelling is not withdrawn.
+  defp order_config(type, request) when type in [:stop, :stop_loss, "stop_loss"] do
     with {:ok, quantity} <- order_field(request, :quantity),
          {:ok, stop} <- order_field(request, :stop_price),
          {:ok, tif} <- order_time_in_force(request) do

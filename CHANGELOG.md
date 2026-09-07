@@ -21,6 +21,31 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **BREAKING: `supported_order_types` was `[]` while `place_order/3` was `:experimental`
+  and `Rest.order_config/2` built four real order types** — market, limit, stop and
+  stop-limit, from `AddOrderV2`'s own `market_order_config`, `limit_order_config`,
+  `stop_loss_order_config` and `stop_limit_order_config`. `Capabilities.new/1` validates
+  the *contents* of this list but never that a venue with an active `place_order/3`
+  declared anything, so the empty list passed every check. Now
+  `[:market, :limit, :stop, :stop_limit]`. Found by a cross-package audit;
+  `dp_exchange_coinbase` defaulted the same field the same way for the same reason.
+
+  Declaring `:stop` — the shared contract's atom, not this venue's own `:stop_loss` —
+  surfaced two bugs in the code that had to accept it:
+
+  - `Rest.order_config/2` only matched `:stop_loss`/`"stop_loss"`, so a caller passing the
+    atom this package's own new declaration names was refused with
+    `{:unsupported_order_type, :stop}` on a venue that serves the type. Now accepts `:stop`
+    too, alongside the venue's own spelling — `dp_exchange_webull` already maps `:stop ->
+    "STOP_LOSS"` the same way.
+  - **The wire's `"type"` field and the `"#{type}_order_config"` key were built by
+    interpolating the caller's raw atom**, not the venue's own spelling. A caller passing
+    `:stop` therefore produced `"stop_order_config"`, a key the venue does not recognise —
+    the order shipped with `type: "stop"` and no config object the venue could read at all,
+    rather than being refused where the mistake could be seen. `wire_order_type/1` now maps
+    `:stop -> "stop_loss"` explicitly for both the `type` field and the config key; every
+    other type's wire spelling is unchanged.
+
 - **`child_spec/1` did not declare `type: :supervisor`, so OTP defaulted it to `:worker`**
   — which also defaults `:shutdown` to `5_000`ms instead of `:infinity`. A consumer
   terminating this child gave the whole nested tree (feed, rate limiter, and everything

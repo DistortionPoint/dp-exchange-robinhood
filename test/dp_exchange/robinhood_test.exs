@@ -68,6 +68,15 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.capabilities().authenticated_streamable == [:top_of_book]
     end
 
+    test "the four order types place_order actually builds are declared" do
+      # This defaulted to `[]` — "accepts no order type at all" — while `place_order/3`
+      # was `:experimental` and `Rest.order_config/2` built four. `Capabilities.new/1`
+      # validates the contents of this list but never that an active `place_order/3`
+      # declared anything, so the empty list passed every check.
+      assert Robinhood.capabilities().supported_order_types ==
+               [:market, :limit, :stop, :stop_limit]
+    end
+
     test "no trade volume is reported" do
       refute Robinhood.capabilities().reports_trade_volume
     end
