@@ -377,6 +377,9 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
+  # Matches the real facade — see `DpExchange.Robinhood.market_status/1`'s own doc for
+  # why `:open` is the complete answer here rather than a guess: this venue's only asset
+  # class is crypto, which has no exchange-mandated session to answer about.
   @impl true
   def market_status(_opts) do
     with_injection(fn -> {:ok, :open} end)

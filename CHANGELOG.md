@@ -19,6 +19,35 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Documentation
+
+- **`market_status/1` gained a stated reason for its `{:ok, :open}` answer — no behaviour
+  change.** `dp_exchange_core` 0.1.66's widened assertion 17 flagged this callback for
+  answering `{:ok, _}` with no credential on a `credential_benefit: :required` venue,
+  identically to `dp_exchange_webull`'s. Unlike Webull's, this venue's answer was already
+  correct: `asset_classes/0` is `[:crypto]`, this package's only asset class here, and
+  crypto has no exchange-mandated trading session for the literal to lie about. It was an
+  undocumented bare literal rather than an evidenced decision, though, and "defensible"
+  is not "recorded".
+
+  Now documented in `DpExchange.Robinhood.market_status/1`'s own doc: why the answer is
+  correct without a venue call (checked against the vendor's own documentation —
+  `docs/reference/robinhood/endpoint-inventory.md` records that all 9 of Robinhood's
+  documented operations are implemented here and none is a market-status or
+  trading-calendar call, so there is nothing to fetch even if this answer needed one),
+  and what would make it wrong: this package ever serving a second asset class here, or
+  a genuine trading suspension this package has no endpoint to observe (a different
+  question from the one this callback answers, and one it does not claim to cover).
+  `docs/reference/robinhood/negative-claims.md` records the same check.
+
+  Resolved in `dp_exchange_core` by a narrow addition to assertion 17's credential gate
+  rather than here: the gate now also skips `market_status/1` when a venue's own
+  `asset_classes/0` is exactly `[:crypto]`, grounded in the callback's own contract doc
+  ("crypto venues answer `:open`") — not a blanket exemption, since `dp_exchange_schwab`
+  (not crypto-only) stays gated on the identical callback. Regression tests added in
+  `robinhood_test.exs` (`describe "market_status/1"`) pin both the answer and the
+  crypto-only condition the exemption relies on.
+
 ### Fixed
 
 - **A crash of `Feed` printed the Ed25519 `private_key` seed — and the `api_key` — in

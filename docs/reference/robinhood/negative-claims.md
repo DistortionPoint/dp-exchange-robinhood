@@ -37,6 +37,23 @@ what makes the negatives here stronger than they would be for a venue with a hun
 | No `hold` figure on a balance | holdings publish total and available; the difference is not itself published | 2026-09-01 | ✅ |
 | ~~`get_fees`, `get_transfers`, `get_trade_history`, `get_rate_limit_status` are "not ported"~~ | **wrong label.** None of the nine operations is any of these — they are the venue's absence, not this package's backlog | 2026-09-01 | ❌ **corrected** |
 
+## A checked absence that is NOT `:unsupported` — `market_status/1`
+
+Not in the table above because it does not fit its shape: this package answers
+`market_status/1` with `{:ok, :open}`, not `{:error, :not_supported}`, so it is not a
+negative in the sense this file otherwise tracks. It is recorded here anyway because the
+reasoning starts the same way every negative above does — checking the vendor before
+concluding this package cannot do better.
+
+**Checked, 2026-09-07: Robinhood publishes no market-status, trading-hours or
+trading-calendar endpoint.** None of the nine documented operations is one. That confirms
+this package cannot *fetch* a market-status fact from the venue — but unlike every row
+above, the absence does not produce `:unsupported`, because `asset_classes/0` is `[:crypto]`
+and crypto trades continuously: `:open` is complete domain knowledge about the one asset
+class this venue serves, not a value fetched from (or guessed about) the venue. See
+`DpExchange.Robinhood.market_status/1`'s own doc for the full argument, including what
+would make this answer wrong.
+
 ## The one that was wrong, and why it is the interesting one
 
 Four callbacks sat in `@not_ported` — the list that means *the venue serves this and we have

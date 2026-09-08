@@ -116,8 +116,31 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.runtime_id() == :robinhood
       assert Robinhood.provider_name() == "Robinhood"
       assert Robinhood.asset_classes() == [:crypto]
-      assert Robinhood.market_status([]) == {:ok, :open}
       assert "USD" in Robinhood.quotes()
+    end
+  end
+
+  describe "market_status/1" do
+    # Pins the reasoning recorded in `Robinhood.market_status/1`'s own doc, not just the
+    # return value: `:open` is correct here BECAUSE this venue's asset_classes/0 is
+    # exactly [:crypto], not because it happens to be a plausible default. If this venue
+    # ever grows a second asset class, this test forces a re-look the same way
+    # `dp_exchange_webull`'s identical literal was wrong for four of its five classes.
+    test "answers :open, and that is coupled to being crypto-only" do
+      assert Robinhood.asset_classes() == [:crypto]
+      assert Robinhood.market_status([]) == {:ok, :open}
+      assert Fake.market_status([]) == {:ok, :open}
+    end
+
+    # `dp_exchange_core`'s assertion 17 (the credential gate) skips this callback only
+    # when `asset_classes/0` is exactly `[:crypto]` — the condition this test asserts
+    # directly is the same one that keeps this venue's fake conformant despite answering
+    # `{:ok, :open}` with no credential on a `credential_benefit: :required` venue. See
+    # `DpExchange.Core.Venue.market_status/1` and `AdapterContract`'s "17. credential
+    # gate" comment for the argument.
+    test "the crypto-only condition the credential gate's exemption relies on holds" do
+      assert Robinhood.asset_classes() == [:crypto]
+      assert Robinhood.capabilities().credential_benefit == :required
     end
   end
 

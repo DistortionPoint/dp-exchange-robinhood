@@ -649,6 +649,50 @@ defmodule DpExchange.Robinhood do
   @impl true
   def get_rate_limit_status(_credentials, _opts), do: Venue.not_supported()
 
+  @doc """
+  Always `:open`. This venue's ONLY asset class trades continuously.
+
+  ## Why this is answered locally, not fetched
+
+  `asset_classes/0` is `[:crypto]` — the only asset class this package ever serves on
+  this venue — and crypto has no exchange-mandated trading session for `market_status/1`
+  to report on: there is no open, no close, no pre- or post-market, because there is no
+  market bell to ring in the first place. `:open` is therefore not this package's guess
+  at the venue's calendar, the substitution the family's own "fail closed" rule forbids —
+  it is the true and complete answer for the one asset class in scope, independent of
+  whatever the venue's API can or cannot tell this package.
+
+  **Checked, not assumed.** Robinhood publishes no market-status or trading-hours
+  endpoint at all — `docs/reference/robinhood/endpoint-inventory.md` records that every
+  one of the vendor's 9 documented operations is implemented here, and none of them is a
+  status or calendar call. There is nothing to call even if this answer needed one.
+
+  ## What would make this answer wrong
+
+  Two things, neither observable from this package today:
+
+    * **This package ever serves a second asset class on this venue.** The day
+      `asset_classes/0` stops being exactly `[:crypto]`, this unconditional `:open` stops
+      being a complete answer and must be revisited — see `dp_exchange_webull`, whose
+      identical literal was wrong for four of its five asset classes.
+    * **A genuine trading suspension** — the closest real-world analogue to a "closed"
+      market on a venue with no session calendar. Robinhood's crypto trading API
+      publishes no status feed this package could observe one on, so a live suspension
+      would surface here as failed order calls or a stalled poll, not as `market_status/1`
+      answering `:closed` — this callback cannot and does not claim to detect that. That
+      is a different question from the one this callback answers (`test_connection/2` and
+      `get_rate_limit_status/2` are the reachability ones), and conflating the two would
+      be inventing a capability this package does not have.
+
+  ## Exempt from `AdapterContract`'s credential gate, and why that is not special pleading
+
+  `dp_exchange_core`'s assertion 17 skips this callback's credential check only when a
+  venue's `asset_classes/0` is exactly `[:crypto]` — grounded in this callback's own
+  contract doc ("crypto venues answer `:open`"), not carved out per venue. See
+  `DpExchange.Core.Venue`'s `market_status/1` callback doc and `AdapterContract`'s "17.
+  credential gate" comment for the argument, including why `dp_exchange_schwab` (not
+  crypto-only) stays gated on the identical callback.
+  """
   @impl true
   def market_status(_opts), do: {:ok, :open}
 
