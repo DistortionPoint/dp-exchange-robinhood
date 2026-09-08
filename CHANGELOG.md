@@ -21,6 +21,20 @@ what was run against the live venue, and when.
 
 ### Documentation
 
+- **`capabilities/0`'s `measured_against` now says what would settle its unprobed rate
+  ceilings, not just that they are unprobed.** Family-wide sweep for the constant class
+  behind `dp_exchange_coinbase`'s `@pairs_per_socket` incident: a venue fact carried
+  unverified into a place a verified one belongs. `public_ceiling`/`authenticated_ceiling`
+  (`limit: 10, per_ms: 1_000`) were already honestly flagged "ceilings NOT probed" and no
+  number changed — Robinhood's documentation (`docs/reference/robinhood/endpoint-
+  inventory.md`) publishes no rate-limit figures and every endpoint is signed, so nothing
+  here can be ramped anonymously from this repository. Added the probe that would settle
+  it: a credentialed consumer deliberately ramping request rate against one read endpoint
+  and recording the first `429`, by hand. No other venue-fact constant in this package
+  needed a label — `@interval_ms` in `Feed` is this package's own poll cadence, not a
+  venue-published number, and price/quantity increments are read per-pair from the venue
+  rather than hardcoded.
+
 - **`market_status/1` gained a stated reason for its `{:ok, :open}` answer — no behaviour
   change.** `dp_exchange_core` 0.1.66's widened assertion 17 flagged this callback for
   answering `{:ok, _}` with no credential on a `credential_benefit: :required` venue,

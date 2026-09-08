@@ -317,7 +317,11 @@ defmodule DpExchange.Robinhood do
           "volume endpoints read from the venue's Crypto Trading API documentation; the " <>
           "86-symbol USD-only catalogue is INHERITED from the prior adapter's 2026-08-05 " <>
           "walk and NOT re-measured here, since every endpoint requires credentials this " <>
-          "repo does not hold; ceilings NOT probed"
+          "repo does not hold; ceilings NOT probed — Robinhood's own documentation " <>
+          "publishes no rate-limit numbers (see docs/reference/robinhood/endpoint-" <>
+          "inventory.md), and every endpoint is signed, so nothing here can be ramped " <>
+          "anonymously; settling this needs a credentialed consumer deliberately ramping " <>
+          "request rate against one read endpoint and recording the first 429, by hand"
     )
   end
 
