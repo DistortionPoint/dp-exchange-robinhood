@@ -126,8 +126,19 @@ defmodule DpExchange.Robinhood.Feed do
   alias DpExchange.Core.{Notice, PollingFeed}
   alias DpExchange.Robinhood.{Credentials, Rest}
 
-  # Matches the platform's collection cadence. Faster buys nothing on a venue whose quotes
-  # are REST snapshots, and every symbol here costs one signed request.
+  # Matches the platform's collection cadence — an internal/operational choice, not
+  # derived from any Robinhood-published rate limit. Faster buys nothing on a venue whose
+  # quotes are REST snapshots, and every symbol here costs one signed request.
+  #
+  # NOT chosen against `Capabilities.public_ceiling`/`authenticated_ceiling` (currently
+  # 10 req/s, and itself honestly unmeasured — see `robinhood.ex`'s own
+  # `measured_against`; Robinhood's docs publish no rate-limit numbers, and every
+  # endpoint is signed so nothing here can be ramped anonymously to find one). Noted for
+  # a reader doing the arithmetic: `PollingFeed` spreads each tick's fetches evenly
+  # across `interval_ms` (see its own moduledoc), so at the ~86-symbol catalogue this
+  # package inherited (`robinhood.ex`'s `measured_against`) this cadence produces roughly
+  # 2.9 req/s — comfortably under the declared ceiling, but that is a coincidence of the
+  # two numbers, not a derivation of one from the other.
   @interval_ms 30_000
 
   @spec start_link(keyword()) :: GenServer.on_start()

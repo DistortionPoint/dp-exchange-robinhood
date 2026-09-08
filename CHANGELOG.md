@@ -30,10 +30,19 @@ what was run against the live venue, and when.
   inventory.md`) publishes no rate-limit figures and every endpoint is signed, so nothing
   here can be ramped anonymously from this repository. Added the probe that would settle
   it: a credentialed consumer deliberately ramping request rate against one read endpoint
-  and recording the first `429`, by hand. No other venue-fact constant in this package
-  needed a label — `@interval_ms` in `Feed` is this package's own poll cadence, not a
-  venue-published number, and price/quantity increments are read per-pair from the venue
-  rather than hardcoded.
+  and recording the first `429`, by hand. Price/quantity increments are read per-pair
+  from the venue rather than hardcoded.
+
+- **`Feed.@interval_ms` (30s) gained a comment distinguishing "matches the platform's
+  cadence" from "derived from the venue's rate ceiling" — no behaviour change.** A closer
+  read of the sweep above found this one worth a second pass: the prior comment justified
+  the interval by the host platform's own convention, without saying whether that
+  happened to respect `public_ceiling`/`authenticated_ceiling` above or was chosen
+  independently of them. It is the latter — `PollingFeed` spreads each tick's fetches
+  evenly across `interval_ms`, so at the ~86-symbol catalogue this package inherited this
+  cadence produces roughly 2.9 req/s, comfortably under the declared (and itself
+  unverified) 10 req/s ceiling, but that headroom was never stated and is a coincidence
+  of the two numbers rather than one derived from the other. Said so in place.
 
 - **`market_status/1` gained a stated reason for its `{:ok, :open}` answer — no behaviour
   change.** `dp_exchange_core` 0.1.66's widened assertion 17 flagged this callback for
