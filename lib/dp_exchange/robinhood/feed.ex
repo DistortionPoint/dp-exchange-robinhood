@@ -183,7 +183,13 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
+  # `Credentials.wrap_opt/1` for the same reason the venue module's own `child_spec/1` does
+  # it (dp-exchange-core issue #29): whatever supervises this child stores these args and
+  # OTP prints them on any termination. Reached here on the documented path already wrapped
+  # — this covers a consumer that supervises the feed directly.
   def child_spec(opts) do
+    opts = DpExchange.Robinhood.Credentials.wrap_opt(opts)
+
     %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
   end
 
@@ -360,7 +366,7 @@ defmodule DpExchange.Robinhood.Feed do
 
   @impl true
   def handle_call(:coverage, _from, state) do
-    {:reply, PollingFeed.coverage(state.poller), state}
+    {:reply, poller_coverage(state), state}
   end
 
   def handle_call({:update_symbols, symbols}, _from, state) do
@@ -408,6 +414,55 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  # `coverage/1` is a READ, and a read must never be able to kill the thing it reads.
+  #
+  # dp-exchange-core issue #28. This was a bare `PollingFeed.coverage(state.poller)` — a
+  # `GenServer.call/2` carrying the default five-second timeout, into a process that (before
+  # the matching fix in `Core.PollingFeed`) blocked for the whole of its `:fetch_timeout_ms`
+  # while a fetch was in flight. That floor is 30 seconds against a 5-second call, so a
+  # coverage call landing during an ordinary poll was not unlucky, it was a guaranteed
+  # timeout: the exit propagated out of this `handle_call/3` and killed `Feed`. It restarted
+  # from the STATIC opts the supervisor holds, which never carry a consumer's later
+  # `subscribe/3` calls, so coverage went 61 pairs to 0 and stayed there — with the process
+  # alive, idle and passing every liveness probe. Asking whether the venue was healthy is
+  # what made it unhealthy.
+  #
+  # `Core.PollingFeed` no longer blocks on its fetch, which removes that cause. This catch
+  # stays regardless, and it is not belt-and-braces: a poller that is mid-restart, wedged by
+  # something else, or simply gone is a condition this `Feed` has to survive, and no fix
+  # inside `PollingFeed` can promise it is always answerable.
+  #
+  # `%{}` is the honest fallback and the contract permits no other — `c:DpExchange.Core.
+  # Venue.coverage/1` returns a map, so `{:error, :busy}` is not sayable here, and an absent
+  # symbol already means `:not_covered`. Replying with a REMEMBERED coverage instead would
+  # assert arrivals nobody confirmed, which is the "nearby substitute where an error belongs"
+  # failure this family keeps paying for. The notice carries what `%{}` cannot: **"we could
+  # not ask" is not "nothing arrived"**, and only the notice tells a consumer which one it
+  # is looking at.
+  defp poller_coverage(state) do
+    PollingFeed.coverage(state.poller)
+  catch
+    :exit, reason ->
+      notify_poller_unresponsive(state, reason)
+      %{}
+  end
+
+  # The counterpart to `notify_poller_crashed/2`: that one reports a poller that died, this
+  # one a poller that is alive and did not answer. Both would otherwise be the same silent
+  # gap in `coverage/1` with nothing explaining it.
+  defp notify_poller_unresponsive(state, reason) do
+    notice =
+      Notice.new(:link_down, :robinhood,
+        severity: :warning,
+        message:
+          "poll did not answer a coverage read (#{inspect(reason)}) — reporting no " <>
+            "coverage for this read only; the feed is still running",
+        details: %{reason: inspect(reason)}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+  end
 
   # Reports a crashed poller the same way a socket-based venue reports a crashed shard
   # or connection — without this, it is exactly the "silent half-dead feed" this

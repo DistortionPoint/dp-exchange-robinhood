@@ -626,4 +626,44 @@ defmodule DpExchange.Robinhood.FeedTest do
                      3_000
     end
   end
+
+  describe "a coverage read cannot kill the feed (dp-exchange-core #28)" do
+    test "an unresponsive poller yields %{} and a notice, and the Feed survives" do
+      # The reported outage: `handle_call(:coverage, ...)` delegated straight into the
+      # poller with `GenServer.call/2`'s default 5s timeout, the poller could not answer
+      # while a fetch was in flight, and the resulting exit propagated out of `handle_call`
+      # and killed `Feed`. It restarted from static opts that never carry a consumer's
+      # later `subscribe/3`, so the venue went to zero coverage and stayed there while
+      # every liveness probe passed.
+      #
+      # The poller is swapped for a dead pid rather than suspended, so the exit is an
+      # immediate `:noproc` instead of a five-second timeout — same `catch :exit` path,
+      # deterministic, and it does not add five seconds to the suite. `:sys.replace_state/2`
+      # is the seam because `Feed` starts its own poller inside `init/1` and takes no
+      # injection point for one.
+      feed = start_feed()
+      Feed.subscribe_notices(feed, to: self())
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 500
+
+      :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
+
+      # Before the fix this call did not return a value at all — it exited, taking `Feed`
+      # with it.
+      assert Feed.coverage(feed) == %{}
+      assert Process.alive?(feed)
+
+      # `%{}` alone would be indistinguishable from a venue that is simply delivering
+      # nothing. The notice is what says "we could not ask", which is a different fact.
+      assert_receive {:dp_exchange, :robinhood, notice}, 500
+      assert notice.kind == :link_down
+      assert notice.severity == :warning
+      assert notice.message =~ "did not answer a coverage read"
+
+      # Still serving: the Feed is not merely alive, it still answers.
+      assert is_map(Feed.coverage(feed))
+    end
+  end
 end
