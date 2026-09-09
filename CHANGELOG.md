@@ -21,6 +21,40 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **The `trading_pairs` pagination walk had no page bound, and the cycle guard could not
+  substitute for one.** `walk/5` refused a `next` pointing at a path it had already
+  fetched, which catches a venue that loops back — and cannot catch one that hands back a
+  **new** path every time (`?cursor=1`, `?cursor=2`, …), because no path ever repeats. A
+  venue-side defect of that shape would have walked forever, holding the caller and
+  spending a signed request per page until something else broke. This was the only venue
+  in the family walking a cursor with no bound; `dp_exchange_coinbase` and
+  `dp_exchange_webull` both already had one.
+
+  Bounded at 50 pages, failing closed with `{:error, :too_many_trading_pair_pages}` rather
+  than returning what it had — a truncated catalogue answered as `{:ok, rows}` is a partial
+  list presented as complete, which is the "nearby substitute where an error belongs"
+  failure this family keeps paying for, and it is how every other venue's bound already
+  behaves. Robinhood Crypto lists on the order of a hundred pairs, so 50 pages is roughly
+  two orders of magnitude of headroom.
+
+### Changed
+
+- **The same walk is now linear rather than quadratic.** It accumulated with
+  `acc ++ results` per page, copying the whole accumulator every time. Pages are now
+  collected as a list of pages and concatenated once. Measured on the shapes that matter:
+  50 pages × 250 rows is 1.1 ms quadratic against 63 µs linear.
+  **At the bound that is ~0.02% of a walk dominated by 50 HTTP round trips** — this came
+  along with the bound above rather than standing on its own, and the same pattern is
+  deliberately left alone elsewhere in the family, where it is bounded and the
+  measurement says it does not matter.
+
+  The cycle guard's `seen` stays a plain list. A `MapSet` was tried and reverted: with
+  the page bound in place the scan is over at most 50 entries, so it buys nothing
+  measurable, and it cost a dialyzer opacity warning — a worse trade than the scan it
+  removed.
+
+### Fixed
+
 - **Reads now carry `@call_timeout` explicitly, exactly as writes already did.**
   `coverage/1`, `coverage_by_kind/1`, `status/1` and `wanted/1` took `GenServer.call/2`'s
   implicit **five seconds** while every write named a generous one, and that asymmetry is

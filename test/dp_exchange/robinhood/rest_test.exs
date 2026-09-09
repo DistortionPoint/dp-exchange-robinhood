@@ -251,6 +251,35 @@ defmodule DpExchange.Robinhood.RestTest do
                Rest.get_symbols(@credentials, plug: plug, retry_attempts: 0)
     end
 
+    test "a cursor that never repeats a page is bounded, not walked forever" do
+      # The hang the cycle guard above CANNOT catch, and the reason a page bound exists
+      # alongside it. `seen` only fires when the venue hands back a path it already gave
+      # us; a venue handing back a NEW path every time — `?cursor=1`, `?cursor=2`, … —
+      # never repeats one, so nothing stops the walk. It would hold the caller and spend a
+      # signed request per page until something else broke.
+      #
+      # Every other venue in this family already bounded its pagination; Robinhood was the
+      # one walking a cursor with no bound at all.
+      counter = :atomics.new(1, signed: false)
+
+      plug = fn conn ->
+        n = :atomics.add_get(counter, 1, 1)
+
+        Req.Test.json(conn, %{
+          "results" => [%{"symbol" => "BTC-USD"}],
+          "next" =>
+            "https://trading.robinhood.com/api/v1/crypto/trading/trading_pairs/?cursor=#{n}"
+        })
+      end
+
+      assert {:error, :too_many_trading_pair_pages} =
+               Rest.get_symbols(@credentials, plug: plug, retry_attempts: 0)
+
+      # Bounded, and bounded where it says it is: the walk stopped at the page limit rather
+      # than at whatever the test's patience happened to be.
+      assert :atomics.get(counter, 1) <= 50
+    end
+
     test "a single page needs no cursor" do
       body = %{"results" => [%{"symbol" => "BTC-USD"}]}
 

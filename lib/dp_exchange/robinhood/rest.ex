@@ -203,7 +203,7 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_symbols(map(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()} | {:refused, term()}
   def get_symbols(credentials, opts) do
-    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], []) do
+    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], 0, []) do
       {:ok,
        rows
        |> Enum.map(& &1["symbol"])
@@ -225,7 +225,7 @@ defmodule DpExchange.Robinhood.Rest do
   @spec list_instruments(map(), keyword()) ::
           {:ok, [Instrument.t()]} | {:error, term()} | {:refused, term()}
   def list_instruments(credentials, opts) do
-    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], []) do
+    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], 0, []) do
       {:ok,
        rows
        |> Enum.reject(&is_nil(&1["symbol"]))
@@ -296,20 +296,47 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
+  # Bounds the `trading_pairs` pagination walk, matching `dp_exchange_coinbase`'s
+  # `@max_account_pages`/`@max_fill_pages` and `dp_exchange_webull`'s `@max_pages` — this
+  # was the one venue in the family walking a cursor with no page bound at all.
+  #
+  # **The cycle guard below does not cover this, and that is the whole point.** `seen`
+  # catches a venue that hands back a path it already gave us; it cannot catch one that
+  # hands back a NEW path every time (`?cursor=1`, `?cursor=2`, …), because no path ever
+  # repeats. A venue-side defect of that shape would walk forever, holding a caller and a
+  # rate-limit budget with it. Fifty pages is the family's figure, not a measured one for
+  # this venue — Robinhood Crypto lists on the order of a hundred pairs, so this is roughly
+  # two orders of magnitude of headroom.
+  @max_pages 50
+
   # Collects raw `trading_pairs` rows across every page — `get_symbols/2` and
   # `list_instruments/2` each map the same rows to what they need, rather than this
   # walk deciding ahead of time which fields anyone wants.
-  defp walk(path, credentials, opts, acc, seen) do
+  #
+  # Fails closed on the bound rather than returning what it has: a truncated catalogue
+  # answered as `{:ok, rows}` is a partial list presented as complete, which is the
+  # "nearby substitute where an error belongs" failure this family keeps paying for. Every
+  # other venue's pagination bound in this family answers the same way.
+  defp walk(_path, _credentials, _opts, _pages, page, _seen) when page >= @max_pages,
+    do: {:error, :too_many_trading_pair_pages}
+
+  defp walk(path, credentials, opts, pages, page, seen) do
     if path in seen do
       {:error, {:pagination_loop, path}}
     else
       case get(path, credentials, opts) do
         {:ok, %{"results" => results} = body} when is_list(results) ->
-          acc = acc ++ results
+          # Pages are accumulated as a list OF PAGES and concatenated once at the end.
+          # This was `acc ++ results`, which copies the whole accumulator on every page —
+          # quadratic in the number of rows, for a walk whose entire job is to grow a list.
+          # `seen` stays a plain list: the scan is linear, but @max_pages now bounds it at
+          # 50 entries, so a MapSet buys nothing measurable — and it cost a dialyzer opacity
+          # warning, which is a worse trade than the scan it removed.
+          pages = [results | pages]
 
           case next_path(body) do
-            nil -> {:ok, acc}
-            next -> walk(next, credentials, opts, acc, [path | seen])
+            nil -> {:ok, pages |> Enum.reverse() |> Enum.concat()}
+            next -> walk(next, credentials, opts, pages, page + 1, [path | seen])
           end
 
         {:ok, _unexpected} ->
