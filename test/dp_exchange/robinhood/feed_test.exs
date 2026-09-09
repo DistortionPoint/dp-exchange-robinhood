@@ -23,6 +23,18 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  # Every `symbol` value on a query string, in the order sent — a repeated key, which
+  # `Plug.Conn`'s own parsed query params collapse to the LAST value only. This is how the
+  # tests below tell a bulk request (more than one `symbol`) apart from a per-symbol
+  # fallback request (exactly one), the same distinction `Rest.get_top_of_book_bulk/3` and
+  # `Rest.get_top_of_book/3` themselves produce on the wire.
+  defp query_symbols(query_string) do
+    query_string
+    |> URI.query_decoder()
+    |> Enum.filter(fn {key, _value} -> key == "symbol" end)
+    |> Enum.map(fn {_key, value} -> value end)
+  end
+
   # Any status outside 200..299 and outside [400, 401, 403, 404] falls to `Rest`'s
   # `{:error, {:exchange_error, ...}}` branch rather than `{:refused, ...}` — an ordinary
   # fetch failure `PollingFeed` retries next tick, exactly what a real outage looks like.
@@ -157,6 +169,220 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert book.symbol == "BTC-USD"
       assert Decimal.equal?(book.bid, Decimal.new("0.99"))
       assert Decimal.equal?(book.ask, Decimal.new("1.01"))
+    end
+  end
+
+  # `docs/design/ideas/bulk-best-bid-ask-fetch.md`: `best_bid_ask`'s `symbol` query
+  # parameter is documented as repeatable, and `Core.PollingFeed` gained an `on_refusal`
+  # path for its own `:fetch_all` mode — the second of the idea's two blocking conditions.
+  # This venue's feed now polls in bulk, and these tests prove the design that makes the
+  # FIRST condition (the vendor's document never says what a partial-bad batch does) not
+  # matter: no single bad symbol can permanently deny the rest.
+  describe "bulk fetch — one signed request per cycle, not one per symbol" do
+    test "every symbol arrives from ONE request" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"},
+          %{"symbol" => "ETH-USD", "bid" => "3", "ask" => "4"}
+        ]
+      }
+
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(body))
+      end
+
+      start_feed(symbols: ["BTC-USD", "ETH-USD"], plug: plug)
+
+      assert_receive {:request, symbols}, 1_000
+      assert Enum.sort(symbols) == ["BTC-USD", "ETH-USD"]
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     1_000
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "ETH-USD"}},
+                     1_000
+
+      # `interval_ms` defaults to 60s in `start_feed/1` — a second request inside this
+      # window would mean this venue fell back to per-symbol calls with nothing wrong.
+      refute_receive {:request, _second_request}, 200
+    end
+
+    test "a symbol absent from every bulk response is uncovered and retried, never refused" do
+      # The vendor's document does not say a delisted/unlisted symbol is DROPPED from
+      # `results` rather than causing a whole-batch refusal — this venue's feed must not
+      # assume it is, and must not manufacture a refusal from the assumption either. A row
+      # simply missing is silence, and `PollingFeed` already treats silence as
+      # uncovered-and-retried on its own (see `publish_and_record/2`); this proves this
+      # venue's own wiring does not undo that.
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}]}
+
+      feed =
+        start_feed(
+          symbols: ["BTC-USD", "ETH-USD"],
+          interval_ms: 50,
+          retry_attempts: 0,
+          plug: responding(body)
+        )
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     1_000
+
+      # Several more ticks pass at 50ms — long enough to prove ETH-USD's absence never
+      # becomes a refusal, not just that it wasn't one on the very first attempt.
+      refute_receive {:dp_exchange, :robinhood, {:refused, "ETH-USD", _reason}}, 300
+
+      assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
+    end
+
+    test "a bulk refusal falls back per symbol: the bad one is refused once, the good ones publish the same cycle" do
+      # The shape this venue's rate-limit history (issues #16, #25) makes plausible: one
+      # bad symbol mixed into a live batch. The vendor's document never says whether the
+      # venue drops that row and 200s the rest or 400s the whole request — this plug
+      # simulates the WORSE of the two (whole-batch 400) precisely because that is the
+      # case a naive `:fetch_all` would have no safe answer for.
+      bad_symbol = "LTC-USD"
+      test_pid = self()
+
+      plug = fn conn ->
+        symbols = query_symbols(conn.query_string)
+        send(test_pid, {:request, symbols})
+
+        conn = Plug.Conn.put_resp_content_type(conn, "application/json")
+
+        case symbols do
+          [_one, _two | _rest] ->
+            Plug.Conn.resp(
+              conn,
+              400,
+              Jason.encode!(%{"detail" => "Invalid symbol: #{bad_symbol}"})
+            )
+
+          [^bad_symbol] ->
+            Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
+
+          [symbol] ->
+            body = %{"results" => [%{"symbol" => symbol, "bid" => "1", "ask" => "2"}]}
+            Plug.Conn.resp(conn, 200, Jason.encode!(body))
+        end
+      end
+
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD", bad_symbol],
+        interval_ms: 500,
+        retry_attempts: 0,
+        plug: plug
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 1_000
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     1_000
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "ETH-USD"}},
+                     1_000
+    end
+
+    test "dropping the refused symbol restores the one-request bulk cost on the next cycle" do
+      bad_symbol = "LTC-USD"
+      test_pid = self()
+
+      plug = fn conn ->
+        symbols = query_symbols(conn.query_string)
+        send(test_pid, {:request, symbols})
+
+        conn = Plug.Conn.put_resp_content_type(conn, "application/json")
+
+        case symbols do
+          [_one, _two | _rest] ->
+            Plug.Conn.resp(
+              conn,
+              400,
+              Jason.encode!(%{"detail" => "Invalid symbol: #{bad_symbol}"})
+            )
+
+          [^bad_symbol] ->
+            Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
+
+          [symbol] ->
+            body = %{"results" => [%{"symbol" => symbol, "bid" => "1", "ask" => "2"}]}
+            Plug.Conn.resp(conn, 200, Jason.encode!(body))
+        end
+      end
+
+      feed =
+        start_feed(
+          symbols: ["BTC-USD", "ETH-USD", bad_symbol],
+          interval_ms: 300,
+          retry_attempts: 0,
+          plug: plug
+        )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 1_000
+      :ok = Feed.update_symbols(feed, ["BTC-USD", "ETH-USD"])
+
+      assert_bulk_request_for(["BTC-USD", "ETH-USD"])
+    end
+
+    test "a bulk request that merely errors (a 5xx) is retried plainly, never fanned out per symbol" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(500, Jason.encode!(%{"detail" => "boom"}))
+      end
+
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD"],
+        interval_ms: 60,
+        retry_attempts: 0,
+        plug: plug
+      )
+
+      assert_receive {:request, symbols}, 1_000
+      assert Enum.sort(symbols) == ["BTC-USD", "ETH-USD"]
+
+      # A second bulk-shaped request on the next tick — never a per-symbol fallback pair —
+      # is what proves an ordinary outage was left to `PollingFeed`'s own retry rather than
+      # multiplied into 86 requests for no gain.
+      assert_receive {:request, next_symbols}, 1_000
+      assert Enum.sort(next_symbols) == ["BTC-USD", "ETH-USD"]
+    end
+
+    # Drains `{:request, _}` messages already queued (e.g. from a fallback cycle sent
+    # before a symbol was dropped) until one matches the wanted set, rather than asserting
+    # on the very next message — the next tick after `update_symbols/2` is not
+    # necessarily the next message already in this process's mailbox.
+    defp assert_bulk_request_for(wanted, attempts \\ 20)
+
+    defp assert_bulk_request_for(wanted, 0) do
+      flunk("no request for #{inspect(wanted)} arrived — wanted: #{inspect(wanted)}")
+    end
+
+    defp assert_bulk_request_for(wanted, attempts) do
+      receive do
+        {:request, symbols} ->
+          if Enum.sort(symbols) == Enum.sort(wanted) do
+            :ok
+          else
+            assert_bulk_request_for(wanted, attempts - 1)
+          end
+      after
+        2_000 -> flunk("no request arrived at all — wanted: #{inspect(wanted)}")
+      end
     end
   end
 

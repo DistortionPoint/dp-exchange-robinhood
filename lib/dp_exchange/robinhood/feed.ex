@@ -22,29 +22,65 @@ defmodule DpExchange.Robinhood.Feed do
   moduledoc on `get_price/2`. Bid and ask are both genuine, so that is what this polls and
   delivers.
 
-  ## Per symbol, for now — not because there is no bulk endpoint
+  ## One request per cycle, not one per symbol
 
-  This runs `Core.PollingFeed` in its per-symbol `:fetch` mode, each symbol on its own
-  schedule — spread across the interval rather than swept in a burst. With 86 pairs, a
-  burst would put 86 signed requests into one instant of a budget this venue has already
-  proven sensitive to.
+  This runs `Core.PollingFeed` in its bulk `:fetch_all` mode: every tick sends ONE signed
+  request carrying every symbol in scope, via `Rest.get_top_of_book_bulk/3`, rather than one
+  signed request per symbol. At the ~86-pair catalogue this package inherited, that is the
+  difference between roughly 86 requests a cycle and 1.
 
   **Correction, 2026-09-06:** an earlier version of this note said the venue "publishes no
   bulk-stats endpoint" and left it there. That is not quite what the vendor's own OpenAPI
   document says. `best_bid_ask` genuinely carries no 24-hour statistics — that part holds —
   but its `symbol` query parameter is documented as repeatable: `?symbol=BTC-USD&symbol=
   ETH-USD` returns a `results` array covering every symbol asked for in ONE signed request.
+  This module ran per-symbol for a time after that correction, recorded as
+  `docs/design/ideas/bulk-best-bid-ask-fetch.md`, because two things were true:
   `Core.PollingFeed`'s own moduledoc names Robinhood as the intended user of its
-  `:fetch_all` mode for exactly this shape. This module does not use it yet: the vendor's
-  document does not say what a batched call does when one symbol in it is unlisted or
-  malformed, and `PollingFeed`'s `fetch_all` path has no `on_refusal`-equivalent — a
-  `{:refused, _}` returned from `:fetch_all` does not match either clause
-  `fetch_all_and_publish/1` handles and would crash this feed's process instead of
-  recording one refused symbol, which is a worse failure than today's per-symbol design for
-  the one case (a delisted symbol mixed into a live batch) this venue's rate limit already
-  makes likely. Adopting `:fetch_all` needs that answered against the live venue first —
-  which is tier-2 work, done by hand, never on a schedule — or a `Core` change giving
-  `:fetch_all` its own refusal path. Recorded as an idea, not implemented as a guess.
+  `:fetch_all` mode for exactly this shape, but the vendor's document never says what a
+  batched call does when one symbol in it is unlisted or malformed — drop that row and 200
+  the rest, or 400 the whole request — and `PollingFeed`'s `fetch_all` path had no
+  `on_refusal`-equivalent, so a `{:refused, _}` from a bulk fetcher would crash this feed's
+  process instead of recording one refused symbol. `dp_exchange_core` gained that handling
+  (`fetch_all_and_publish/1`'s `{:refused, refusals}` clause), which closed the second
+  condition, but the first — what the venue actually does on a partial-bad batch — is
+  still not stated anywhere this package can read.
+
+  **So this does not guess.** `fetch_all/3` below sends the bulk request and reads
+  whatever comes back:
+
+  - A `results` array with every row filled: published, same as before, at 1/86th the
+    request cost.
+  - A `results` array SHORTER than what was asked for: also published, as-is. A missing
+    row is silence — the venue not answering for that symbol on THIS request — not a
+    venue statement that the symbol does not exist, and `PollingFeed` already treats a
+    symbol absent from a bulk response as uncovered-and-retried, never as refused (see its
+    own `publish_and_record/2`). Turning silence into a refusal is the exact defect
+    DpCryptoManagement issue #25 fixed on the single-symbol path (`Rest.first_result/1`'s
+    own moduledoc), and this path must not reintroduce it on the bulk one.
+  - The WHOLE request refused (400/401/403/404) — the shape a single bad symbol could
+    plausibly produce, and the one this module used to have no safe answer for.
+    `fetch_all/4` falls back to one signed request per symbol, **for this cycle only**, via
+    the same `Rest.get_top_of_book/3` the old per-symbol design used. That fallback reports
+    every refusal it finds by CALLING the same `on_refusal` function `PollingFeed` itself
+    would have called, directly, rather than by returning `{:refused, refusals}` — see
+    `fetch_all/4` and `fallback_per_symbol/5` for why the return channel cannot carry both
+    the refusal and the other symbols' events in one outcome. So the bad symbol is reported
+    (once per cycle it stays in scope, same as the venue's own per-symbol refusal already
+    behaves when a consumer never drops it) AND every other symbol that answers fine
+    publishes in the SAME cycle — no data withheld, no cycle lost. The unavoidable cost is
+    real but different: this cycle spends one request per symbol instead of one for the
+    whole batch, for as long as the refused symbol stays in scope. Once a consumer reacts
+    to the refusal and drops the symbol, the very next tick is back to one request.
+  - The whole request merely erroring (a 5xx, a network failure) is left alone: retried
+    next tick the ordinary way, at the ordinary one-request cost. Falling back per symbol
+    here would not identify anything — an outage affects every symbol on either path
+    alike — and would spend 86 requests to learn nothing a plain retry does not already
+    cover.
+
+  No single bad symbol can make this feed deliver nothing indefinitely: the worst case is
+  one degraded cycle before the offending symbol is out of scope, never a permanent
+  whole-batch failure.
 
   ## `acquire`, not `check`
 
@@ -250,18 +286,76 @@ defmodule DpExchange.Robinhood.Feed do
     credentials = state.credentials
     request_opts = state.request_opts
 
+    # Named so it can be handed to `PollingFeed` for its own per-symbol refusal channel
+    # AND reused inside `fetch_all/4`'s bulk-fallback path below — one function, one
+    # meaning ("the venue just said so"), used from both places rather than reimplemented.
+    on_refusal = fn symbol, reason ->
+      send(parent, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
+    end
+
     PollingFeed.start_link(
       label: "robinhood",
       symbols: state.symbols,
       interval_ms: state.interval_ms,
       start_delay_ms: state.start_delay_ms,
       sink: fn book -> send(parent, {:dp_exchange, :robinhood, book}) end,
-      on_refusal: fn symbol, reason ->
-        send(parent, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
-      end,
+      on_refusal: on_refusal,
       on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
-      fetch: fn symbol -> Rest.get_top_of_book(symbol, credentials, request_opts) end
+      fetch_all: fn symbols -> fetch_all(symbols, credentials, request_opts, on_refusal) end
     )
+  end
+
+  # The `:fetch_all` this feed hands to `PollingFeed` — see the moduledoc's "This does not
+  # guess" section for why each branch below is shaped the way it is. `on_refusal` is the
+  # SAME function `start_poller/1` gives `PollingFeed` for its own per-symbol path — reused
+  # here rather than reported through this function's return value, for a reason specific
+  # to the fallback below.
+  defp fetch_all(symbols, credentials, request_opts, on_refusal) do
+    case Rest.get_top_of_book_bulk(symbols, credentials, request_opts) do
+      {:ok, events} ->
+        {:ok, events}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:refused, reason} ->
+        fallback_per_symbol(symbols, credentials, request_opts, reason, on_refusal)
+    end
+  end
+
+  # Reached only when the BULK call itself was refused (400/401/403/404) — a shape the
+  # vendor's document never disambiguates between "one bad symbol" and "the whole request
+  # was malformed". One signed request per symbol, for this cycle only, turns that
+  # ambiguity into an answer: which symbol (if any) the venue actually named.
+  #
+  # Every refusal found is reported by CALLING `on_refusal` directly, not by returning
+  # `{:refused, refusals}` for `PollingFeed` to report on this function's behalf. That
+  # matters: `PollingFeed`'s own `fetch_all` contract can carry only ONE outcome per call,
+  # and this cycle has two true things to say — which symbol (if any) the venue actually
+  # refused, AND the events every other symbol still answered with. Returning
+  # `{:refused, refusals}` would say the first and silently drop the second, which is
+  # exactly the "86 good symbols wait behind 1 bad one" failure this fallback exists to
+  # prevent — so the refusal is reported through the side channel `on_refusal` always was,
+  # and `{:ok, events}` is still returned whenever there is anything to publish, so the
+  # other symbols keep flowing in the SAME cycle the bad one is identified in. The
+  # unavoidable cost is real but different: this cycle spends one signed request per
+  # symbol instead of one for the whole batch, for as long as the refused symbol stays in
+  # scope — never a lost cycle, never a permanent one.
+  defp fallback_per_symbol(symbols, credentials, request_opts, bulk_reason, on_refusal) do
+    outcomes =
+      Enum.map(symbols, fn symbol ->
+        {symbol, Rest.get_top_of_book(symbol, credentials, request_opts)}
+      end)
+
+    Enum.each(outcomes, fn
+      {symbol, {:refused, reason}} -> on_refusal.(symbol, reason)
+      _fetched_or_errored -> :ok
+    end)
+
+    case for({_symbol, {:ok, event}} <- outcomes, do: event) do
+      [] -> {:error, bulk_reason}
+      events -> {:ok, events}
+    end
   end
 
   @impl true

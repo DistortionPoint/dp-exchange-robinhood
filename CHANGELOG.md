@@ -19,6 +19,33 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- **The feed polls `best_bid_ask` in bulk now — one signed request a cycle, not one per
+  symbol.** At the ~86-pair catalogue this package inherited, that is roughly 86 signed
+  requests a cycle before this change, 1 after — a consumer watching their rate limiter
+  will see the drop. `Rest.get_top_of_book_bulk/3` uses the endpoint's own repeatable
+  `symbol` query parameter (`?symbol=BTC-USD&symbol=ETH-USD`, confirmed against the
+  vendor's OpenAPI document, 2026-09-06) to ask for every symbol in one request, and
+  `Feed` now runs `Core.PollingFeed` in its bulk `:fetch_all` mode instead of per-symbol
+  `:fetch`. Recorded as `docs/design/ideas/bulk-best-bid-ask-fetch.md` and deferred at the
+  time because the vendor's document does not say what a batched call does when one
+  symbol in it is bad, and `PollingFeed`'s `:fetch_all` path had no refusal handling —
+  `dp_exchange_core` has since closed the second gap, and this change closes the first by
+  not needing to guess: see the idea doc and `Feed`'s own moduledoc ("This does not
+  guess") for the full reasoning.
+
+  A `results` array shorter than what was asked for is published as-is — the venue not
+  answering for a symbol on one request is silence, not a statement that the symbol does
+  not exist, and turning it into a permanent refusal is the exact defect
+  DpCryptoManagement issue #25 already fixed on the single-symbol path. A batch that is
+  refused outright (400/401/403/404) falls back to one signed request per symbol, for
+  that cycle only: the offending symbol is identified and reported through `on_refusal`
+  (once, the correct refusal contract), and every symbol that answers fine still
+  publishes in the SAME cycle rather than waiting behind the bad one. No single bad
+  symbol can deny the feed permanently; the worst case is one degraded cycle — back to
+  86 requests — for as long as the refused symbol stays in scope.
+
 ### Documentation
 
 - **`capabilities/0`'s `measured_against` now says what would settle its unprobed rate

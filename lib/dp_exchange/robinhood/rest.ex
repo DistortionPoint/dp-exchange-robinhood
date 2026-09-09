@@ -93,6 +93,10 @@ defmodule DpExchange.Robinhood.Rest do
   This is the whole of what `best_bid_ask` gives: no trade price. See the moduledoc on why
   there is no `get_price/3` reading this same payload, and on the v1/v2 field-name defect
   this function used to carry.
+
+  One symbol, one signed request. See `get_top_of_book_bulk/3` for the repeatable-`symbol`
+  form this endpoint also serves, which `Feed` uses as its normal path and falls back to
+  this function per symbol only when the bulk call is itself refused.
   """
   @spec get_top_of_book(String.t(), map(), keyword()) ::
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
@@ -102,18 +106,73 @@ defmodule DpExchange.Robinhood.Rest do
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- first_result(body) do
-      {:ok,
-       %TopOfBook{
-         symbol: SymbolFormat.to_canonical_symbol(native),
-         bid: decimal(row["bid"]),
-         ask: decimal(row["ask"]),
-         bid_size: nil,
-         ask_size: nil,
-         venue_time: top_of_book_time(row),
-         observed_at: DateTime.utc_now(),
-         provider: :robinhood
-       }}
+      {:ok, to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)}
     end
+  end
+
+  @doc """
+  Best bid and ask for every symbol in `symbols` — **one signed request**, not one per
+  symbol.
+
+  `best_bid_ask`'s `symbol` query parameter is documented as repeatable —
+  `?symbol=BTC-USD&symbol=ETH-USD` — and `V2BestBidAskResponse.results` is a plain array of
+  `V2BestBidAsk` rows, one per symbol the venue answered for. Confirmed against the
+  vendor's own OpenAPI document, `docs.robinhood.com/crypto/trading/`, 2026-09-06. See
+  `docs/design/ideas/bulk-best-bid-ask-fetch.md` for why this package did not use it
+  sooner, and `Feed` for how a whole-batch refusal is handled without guessing at venue
+  semantics the vendor's document never states.
+
+  **A `results` array shorter than `symbols` is not this function's problem to solve.**
+  Every row present is mapped; every symbol absent from `results` simply is not in the
+  returned list — the caller (`Core.PollingFeed`, via `Feed`) already treats "asked for but
+  not in the response" as uncovered-and-retried, never as a refusal, and this function does
+  nothing that would turn silence into a statement (see `first_result/1` below for the same
+  principle on the single-symbol path, and DpCryptoManagement issue #25 for what mistaking
+  the two costs).
+
+  An empty `symbols` list returns `{:ok, []}` without a network call: the venue's own
+  document does not say what a `best_bid_ask` request carrying no `symbol` parameter at all
+  does, and there is nothing to ask for.
+  """
+  @spec get_top_of_book_bulk([String.t()], map(), keyword()) ::
+          {:ok, [TopOfBook.t()]} | {:error, term()} | {:refused, term()}
+  def get_top_of_book_bulk([], _credentials, _opts), do: {:ok, []}
+
+  def get_top_of_book_bulk(symbols, credentials, opts) do
+    query = Enum.map(symbols, &{"symbol", SymbolFormat.to_exchange_symbol(&1)})
+    path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string(query)
+
+    with {:ok, body} <- get(path, credentials, opts),
+         {:ok, rows} <- bulk_rows(body) do
+      {:ok, rows |> Enum.map(&row_to_top_of_book/1) |> Enum.reject(&is_nil/1)}
+    end
+  end
+
+  defp bulk_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
+  defp bulk_rows(_other), do: {:error, :unexpected_response_shape}
+
+  # Every row this venue actually returns from `V2BestBidAskResponse` carries its own
+  # `symbol` — read from the ROW, not from the request order, because a `results` array
+  # shorter than (or reordered against) what was asked for is exactly the shape this
+  # function has to tolerate. A row missing `symbol` entirely is dropped rather than
+  # published under a fabricated one: `Core.Types.TopOfBook.symbol` is how every consumer
+  # keys coverage, and a nil key there is worse than one fewer row this cycle.
+  defp row_to_top_of_book(%{"symbol" => symbol} = row) when is_binary(symbol),
+    do: to_top_of_book(SymbolFormat.to_canonical_symbol(symbol), row)
+
+  defp row_to_top_of_book(_row), do: nil
+
+  defp to_top_of_book(symbol, row) do
+    %TopOfBook{
+      symbol: symbol,
+      bid: decimal(row["bid"]),
+      ask: decimal(row["ask"]),
+      bid_size: nil,
+      ask_size: nil,
+      venue_time: top_of_book_time(row),
+      observed_at: DateTime.utc_now(),
+      provider: :robinhood
+    }
   end
 
   # `V2BestBidAsk` — the schema the venue's own OpenAPI document names for this response —

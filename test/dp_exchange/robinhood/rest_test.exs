@@ -421,6 +421,108 @@ defmodule DpExchange.Robinhood.RestTest do
     end
   end
 
+  describe "get_top_of_book_bulk/3 — the repeatable-symbol bulk form of best_bid_ask" do
+    test "one signed request carries every symbol, via a repeated symbol param" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "bid" => "77840.00", "ask" => "77850.00"},
+          %{"symbol" => "ETH-USD", "bid" => "3200.00", "ask" => "3201.00"}
+        ]
+      }
+
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:query, conn.query_string})
+        Req.Test.json(conn, body)
+      end
+
+      assert {:ok, [top1, top2]} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD"], @credentials,
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert_receive {:query, query}
+      assert query =~ "symbol=BTC-USD"
+      assert query =~ "symbol=ETH-USD"
+      # Exactly one request for both symbols — not one per symbol.
+      refute_receive {:query, _second_request}, 100
+
+      assert top1.symbol == "BTC-USD"
+      assert Decimal.equal?(top1.bid, Decimal.new("77840.00"))
+      assert top2.symbol == "ETH-USD"
+      assert Decimal.equal?(top2.ask, Decimal.new("3201.00"))
+    end
+
+    test "a results array shorter than requested is not an error and not a refusal" do
+      # The vendor's document does not say what happens when one symbol in a batch is
+      # delisted, unlisted or malformed. A `results` row simply absent for one of the
+      # symbols asked for is silence about THAT symbol on THIS request, not a statement
+      # the symbol does not exist — the same principle `first_result/1` already applies
+      # on the single-symbol path (DpCryptoManagement issue #25). This function must not
+      # turn that silence into either an `:error` or a `:refused`.
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}]}
+
+      assert {:ok, [top]} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD", "LTC-USD"], @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert top.symbol == "BTC-USD"
+    end
+
+    test "a 400 on the bulk request is a refusal, same status handling as the single-symbol path" do
+      body = %{"detail" => "Invalid symbol: NOPE-USD"}
+
+      assert {:refused, {:venue_error, 400, "Invalid symbol: NOPE-USD"}} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "NOPE-USD"], @credentials,
+                 plug: responding(body, 400),
+                 retry_attempts: 0
+               )
+    end
+
+    test "a 5xx on the bulk request is an ordinary retryable error" do
+      assert {:error, _reason} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD"], @credentials,
+                 plug: responding(%{}, 500),
+                 retry_attempts: 0
+               )
+    end
+
+    test "a row with no symbol is dropped rather than published under a fabricated key" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"},
+          %{"bid" => "3", "ask" => "4"}
+        ]
+      }
+
+      assert {:ok, [top]} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD"], @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert top.symbol == "BTC-USD"
+    end
+
+    test "a body with no results key is unreadable, same as the single-symbol path" do
+      assert {:error, :unexpected_response_shape} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD"], @credentials,
+                 plug: responding(%{}),
+                 retry_attempts: 0
+               )
+    end
+
+    test "an empty symbol list returns {:ok, []} without a network call" do
+      plug = fn _conn -> raise "no request should have been sent" end
+
+      assert {:ok, []} = Rest.get_top_of_book_bulk([], @credentials, plug: plug)
+    end
+  end
+
   describe "rate_limit_blocking — DpCryptoManagement issue #16" do
     defmodule RecordingLimiter do
       @moduledoc false
