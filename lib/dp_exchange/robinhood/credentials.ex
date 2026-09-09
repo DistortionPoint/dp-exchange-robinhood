@@ -23,6 +23,25 @@ defmodule DpExchange.Robinhood.Credentials do
   `Rest.get_top_of_book/3` and `Auth.headers/5` working unchanged: a struct is a map, and
   `Auth.decode_seed/1` reads `credentials.private_key` the same way whether the struct or
   the original map is behind it.
+
+  ## The wrap lives in `child_spec/1`, so bypassing it bypasses the redaction
+
+  `child_spec/1` is where `wrap_opt/1` is applied, because a supervisor captures the
+  `{module, :start_link, [opts]}` MFA before `start_link/1` or `init/1` ever runs — see
+  `wrap_opt/1`'s own doc. A consumer who uses the supported `{DpExchange.X, credentials:
+  ...}` child form gets the redaction for free.
+
+  **A consumer who builds the child spec themselves does not**, and upgrading this package
+  will not change that: their supervisor stores the raw map and OTP renders it on the next
+  crash, with nothing from this package on that path to intervene. It is a real path with a
+  real reason — a caller needing a delivery target other than the supervisor has to reach
+  `start_link/1` directly — so `wrap/1` and `wrap_opt/1` are **public** for it. Reported by
+  a consumer who went looking for their canary in supervisor state after upgrading and
+  found it; the natural assumption, "upgraded, therefore redacted", is wrong there.
+
+  The same applies to a host that *reshapes* a credential before handing it over — mapping
+  its own key names into this venue's and returning a bare map re-introduces the leak
+  downstream of anything this package can reach.
   """
 
   @derive {Inspect, except: [:api_key, :private_key]}
