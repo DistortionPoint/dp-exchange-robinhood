@@ -177,6 +177,21 @@ defmodule DpExchange.Robinhood.Feed do
   # two numbers, not a derivation of one from the other.
   @interval_ms 30_000
 
+  # Every call INTO this Feed carries this explicitly, reads included, rather than taking
+  # `GenServer.call/2`'s implicit five seconds.
+  #
+  # The asymmetry it replaces is what turned a bounded delay into a dead caller in
+  # dp-exchange-core issue #28: writes named a generous timeout while reads — `coverage/1`,
+  # the call a consumer's health check actually makes — silently took the 5s default. Any
+  # moment this process was busy for longer than that (and `Core.PollingFeed`'s fetch
+  # timeout floors at 30 seconds) turned a read into an EXIT, which killed the consumer's
+  # own process when it read from inside its own `handle_call/3`.
+  #
+  # The blocking is fixed at its source — `Core.PollingFeed` no longer waits on its fetch —
+  # so this is the second line of defence rather than the fix: a read that has to queue
+  # behind something should WAIT for it, never die of it.
+  @call_timeout 15_000
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -195,7 +210,7 @@ defmodule DpExchange.Robinhood.Feed do
 
   @doc "Which symbols are actually arriving. Observed, never intended."
   @spec coverage(GenServer.server()) :: %{String.t() => :internal_poll}
-  def coverage(feed), do: GenServer.call(feed, :coverage)
+  def coverage(feed), do: GenServer.call(feed, :coverage, @call_timeout)
 
   @doc """
   `coverage/1`, split by kind — see `DpExchange.Robinhood.coverage_by_kind/1` for why
@@ -213,7 +228,8 @@ defmodule DpExchange.Robinhood.Feed do
 
   @doc "Replaces the polled set."
   @spec update_symbols(GenServer.server(), [String.t()]) :: :ok
-  def update_symbols(feed, symbols), do: GenServer.call(feed, {:update_symbols, symbols})
+  def update_symbols(feed, symbols),
+    do: GenServer.call(feed, {:update_symbols, symbols}, @call_timeout)
 
   @doc """
   Registers `opts[:to]` (default: the caller) to receive this feed's own `Core.Notice`
