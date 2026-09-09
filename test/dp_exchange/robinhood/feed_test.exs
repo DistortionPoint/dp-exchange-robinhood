@@ -537,7 +537,33 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
 
     test "a :link_down notice fires, the poller restarts, and coverage recovers" do
-      feed = start_feed()
+      # The plug serves or fails according to a flag this test flips. That is not
+      # ceremony — it is what makes the `coverage/1 == %{}` assertion below deterministic.
+      #
+      # This test used to kill the poller and then assert coverage was empty. The feed
+      # restarts its poller immediately and that poller polls immediately, so the
+      # assertion raced the very thing it had just restarted: win, and coverage is `%{}`;
+      # lose by a scheduler slice, and the replacement has already delivered and coverage
+      # reads `%{"BTC-USD" => :internal_poll}`. It passed because the race was usually
+      # won — the worst kind of passing test, proving its claim only on the runs where it
+      # happens to look before the answer changes.
+      #
+      # Blocking the fetch instead was tried and is WRONG here: `coverage/1` is served by
+      # the poller, so a poller held inside the plug cannot answer, and the query times
+      # out. Failing the fetch is the non-blocking equivalent — with the replacement's
+      # fetches erroring, coverage is empty whether or not it has polled yet, so the
+      # assertion is true by construction rather than by timing.
+      gate = :atomics.new(1, signed: false)
+      :atomics.put(gate, 1, 1)
+
+      gated_plug = fn conn ->
+        case :atomics.get(gate, 1) do
+          1 -> responding(@good_book).(conn)
+          0 -> Plug.Conn.resp(conn, 500, ~s({"error":"gated"}))
+        end
+      end
+
+      feed = start_feed(plug: gated_plug)
       old_poller = :sys.get_state(feed).poller
 
       assert_receive {:dp_exchange, :robinhood,
@@ -549,6 +575,10 @@ defmodule DpExchange.Robinhood.FeedTest do
       :ok = Feed.subscribe_notices(feed, to: self())
       link_poller_into_feed(feed, old_poller)
 
+      # Close the gate BEFORE the crash, so the replacement poller cannot deliver
+      # anything no matter how promptly it starts polling.
+      :atomics.put(gate, 1, 0)
+
       Process.exit(old_poller, :kill)
 
       assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 500
@@ -559,13 +589,16 @@ defmodule DpExchange.Robinhood.FeedTest do
       refute new_poller == old_poller
       assert Process.alive?(new_poller)
 
-      # The fresh poller starts with nothing delivered yet — proving `coverage/1`
-      # reports the truth right after a crash rather than the stale `:internal_poll`
-      # a leftover cache would keep reporting.
+      # Coverage being empty here is the claim this test exists for — `coverage/1`
+      # reports the truth right after a crash rather than the stale `:internal_poll` a
+      # leftover cache would keep reporting. With the gate closed the replacement cannot
+      # have delivered, so the other answer is impossible rather than merely unlikely.
       assert Feed.coverage(feed) == %{}
 
       # And it recovers on its own — restarted with `state.symbols`, not an empty set,
       # so this needs no `subscribe/2`-equivalent call from this test.
+      :atomics.put(gate, 1, 1)
+
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
                      3_000
