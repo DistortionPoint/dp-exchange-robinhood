@@ -6,7 +6,7 @@ defmodule DpExchangeRobinhood.MixProject do
   # change is signalled. The bump script matches the attribute assignment below by its
   # exact literal form — do not reformat it, and do not repeat that form anywhere else
   # in this file, comments included, or the script will rewrite the wrong line.
-  @version "0.2.27"
+  @version "0.3.0"
   @source_url "https://github.com/DistortionPoint/dp-exchange-robinhood"
 
   def project do
@@ -48,7 +48,7 @@ defmodule DpExchangeRobinhood.MixProject do
     [
       # The contract. Three-part pin: while Core is 0.x a minor bump may break us, and
       # that is the signal it is meant to send.
-      {:dp_exchange_core, "~> 0.1.50"},
+      {:dp_exchange_core, "~> 0.2.1"},
 
       # a venue that speaks WebSocket ships what it needs to speak it.
       # No `websockex`. **This venue has no streaming API at all** — its feed is a REST

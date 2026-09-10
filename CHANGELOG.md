@@ -19,6 +19,28 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`Core.Types.Quote` and `Core.Types.OrderBook` no longer carry `:timestamp`.** They carry
+  **`:venue_time`** (the venue's own, `nil` where the venue publishes none) and
+  **`:observed_at`** (when this package read it, always present). Requires
+  `dp_exchange_core ~> 0.2.1`; this package's own version takes a minor bump to signal it.
+
+  `:timestamp` was documented as the venue's own and "never invented", and two packages in
+  this family could not keep that promise, because the frames they decode carry no venue time
+  at all. With one field their only options were to lie or drop real data, and they lied.
+
+  **This package constructs neither type** — it delivers `Core.Types.TopOfBook`, which has
+  had this shape from the start. Nothing here changed but the `dp_exchange_core` floor, and
+  it moves in the same batch for a reason worth stating: a consumer pairing a `~> 0.1` venue
+  with a `~> 0.2` one could not resolve them together, so the family moves as one or not at
+  all.
+
+  The full reasoning, the three options weighed and the consumer's own argument for this one
+  are in `dp_exchange_core`'s
+  `docs/design/closed/2026-09-09_venue-time-and-observed-time.md`, announced and answered as
+  dp-exchange-core issue #31. `Trade`, `Fill`, `Balance` and `OrderBookDelta` are unchanged.
+
 ### Fixed
 
 - **The `trading_pairs` pagination walk had no page bound, and the cycle guard could not
