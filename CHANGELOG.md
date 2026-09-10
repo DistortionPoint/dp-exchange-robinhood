@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-10
+
 ### Fixed
 
 - **No published version was attributable to a changelog entry (dp-exchange-core issue
