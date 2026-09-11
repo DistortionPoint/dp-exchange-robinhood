@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-09-11
+
 ### Fixed
 
 - **`subscribe_notices/2` could kill the caller for asking during trouble.** It was the one
