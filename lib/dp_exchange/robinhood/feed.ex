@@ -260,6 +260,17 @@ defmodule DpExchange.Robinhood.Feed do
       poller: nil,
       subscriber: subscriber,
       notice_subscribers: MapSet.new([subscriber]),
+      # Monitor references for pid entries in `notice_subscribers`, so a dead one is dropped
+      # rather than walked on every notice for the life of this feed — see the `:DOWN`
+      # clause below and `Core.Fanout.watch/2`.
+      #
+      # `state.subscriber` above is deliberately absent from this, and the distinction is
+      # the point: it is CONFIGURATION, not a subscription. It arrives in `start_link/1`'s
+      # opts, no call can change it, and `notice_subscribers` is the only set here that
+      # grows. Pruning it when its holder dies would leave a feed that can never deliver
+      # again with no call able to repair it — and it cannot leak either, being one pid
+      # rather than a set that accumulates.
+      monitors: %{},
       # Back-pressure, per `Core.Venue`'s `subscribe/2` doc and implemented by
       # `Core.Fanout`. This venue polls rather than streams, so the rate is its own
       # `interval_ms` and not a venue firehose — but a consumer stalled for long enough
@@ -398,12 +409,40 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call({:subscribe_notices, subscriber}, _from, state) do
-    {:reply, :ok, %{state | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber)}}
+    state = %{
+      state
+      | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
+        monitors: Fanout.watch(subscriber, state.monitors)
+    }
+
+    {:reply, :ok, state}
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, :unknown_call}, state}
 
+  # A notice subscriber that died. Dropped, and its monitor forgotten.
+  #
+  # Without this, nothing ever removed one: `Core.Fanout.resolve/1` skips a dead subscriber
+  # at send time, so no NOTICES accumulated for it — but the pid stayed for the life of this
+  # feed, and every notice walked it. Measured in Core 0.3.3 on the streaming venues, where
+  # the same set is on the data path: 0.095 us per fan-out against a clean set, 22.8 us
+  # against one carrying a thousand dead pids.
+  #
+  # `state.subscriber` is untouched here on purpose — see `init/1`. It is configuration
+  # rather than a subscription, and removing it would leave a feed nothing could repair.
+  # Only pids arrive here; a registered-name subscriber is never monitored, because a name
+  # outlives the process holding it (`Core.Fanout.watch/2`).
   @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    state = %{
+      state
+      | notice_subscribers: MapSet.delete(state.notice_subscribers, pid),
+        monitors: Fanout.forget(pid, state.monitors)
+    }
+
+    {:noreply, state}
+  end
+
   def handle_info({:dp_exchange, :robinhood, %Notice{}} = message, state) do
     fan_out(state.notice_subscribers, message)
     {:noreply, state}

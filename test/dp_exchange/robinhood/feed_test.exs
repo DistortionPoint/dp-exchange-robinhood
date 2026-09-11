@@ -158,6 +158,70 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  describe "a dead notice subscriber is dropped, not walked forever" do
+    # `Core.Fanout.resolve/1` already skipped a dead subscriber at send time, so no NOTICES
+    # accumulated — but nothing removed the pid, so a supervised watcher that restarts left
+    # one behind on every restart, for the life of this feed. Measured in Core 0.3.3 on the
+    # streaming venues, where the same set is on the data path: 0.095 us per fan-out against
+    # a clean set, 22.8 us against one carrying a thousand dead pids.
+    test "a notice subscriber that dies is removed" do
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+      watcher = spawn(fn -> Process.sleep(:infinity) end)
+
+      :ok = Feed.subscribe_notices(feed, to: watcher)
+      assert MapSet.member?(:sys.get_state(feed).notice_subscribers, watcher)
+
+      ref = Process.monitor(watcher)
+      Process.exit(watcher, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^watcher, _reason}
+
+      # A call is answered only after the feed's own `:DOWN` has been handled.
+      _settled = :sys.get_state(feed)
+
+      state = :sys.get_state(feed)
+      refute MapSet.member?(state.notice_subscribers, watcher)
+      refute Map.has_key?(state.monitors, watcher)
+    end
+
+    test "the configured :subscriber is never pruned, even when its holder dies" do
+      # The half that must NOT be pruned, and this venue is where the distinction bites.
+      # `state.subscriber` is configuration: it arrives in `start_link/1`'s opts and no call
+      # can change it. Dropping it would leave a feed that can never deliver again with
+      # nothing able to repair it short of restarting the tree. It cannot leak either, being
+      # one pid rather than a set that accumulates.
+      consumer = spawn(fn -> Process.sleep(:infinity) end)
+      feed = start_feed(subscriber: consumer, symbols: [], start_delay_ms: 60_000)
+
+      ref = Process.monitor(consumer)
+      Process.exit(consumer, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^consumer, _reason}
+      _settled = :sys.get_state(feed)
+
+      assert :sys.get_state(feed).subscriber == consumer
+      assert Process.alive?(feed)
+    end
+
+    test "a REGISTERED NAME is never monitored" do
+      # A name is not a process: it outlives the process holding it, and pruning on that
+      # holder's death would silently unsubscribe a consumer its supervisor is about to
+      # restart under the same name.
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+      name = :"named_watcher_#{System.unique_integer([:positive])}"
+      holder = spawn(fn -> Process.sleep(:infinity) end)
+      Process.register(holder, name)
+
+      :ok = Feed.subscribe_notices(feed, to: name)
+      assert :sys.get_state(feed).monitors == %{}
+
+      ref = Process.monitor(holder)
+      Process.exit(holder, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^holder, _reason}
+      _settled = :sys.get_state(feed)
+
+      assert MapSet.member?(:sys.get_state(feed).notice_subscribers, name)
+    end
+  end
+
   describe "back-pressure — a slow subscriber does not get an unbounded mailbox" do
     # `Core.Venue`'s `subscribe/2` doc promised this from the day the contract was written,
     # and no venue in this family implemented any of it: every one fanned out with a bare
