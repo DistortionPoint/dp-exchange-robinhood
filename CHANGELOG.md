@@ -23,6 +23,40 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **A response that was not an order came back as an empty order, reported as success.**
+  `to_order/1`'s fallback clause built a `%Types.Order{}` with `id`, `symbol`, `side`,
+  `order_type`, `quantity` and `status` all `nil` and handed it back as `{:ok, order}` from
+  `get_order/3`, `place_order/3` and `cancel_order/3`. Nothing about that value said the
+  venue had not sent an order: `Types.Order` deliberately permits `nil` in each of those
+  fields — this venue's own cancel acknowledgement, which carries an id and nothing else, is
+  the case the type was widened for — so the struct could not carry the distinction. Only the
+  decoder could, and it was discarding it.
+
+  `place_order/3` is where that cost the most, because it moves funds: a caller was told the
+  call succeeded and told nothing about whether an order exists, which is the one thing it
+  asked. `get_orders/2` had the list form of the same defect, where one malformed element
+  became one blank order among real ones.
+
+  Now `{:error, :unexpected_response_shape}`, the same refusal
+  `DpExchange.Gemini.Private.to_order/1` returns for the identical condition, and one bad row
+  refuses the whole list rather than seeding it with a blank order.
+
+- **A `200` this package could not decode became an empty object, and then an empty
+  everything.** `decode/1` collapsed any unparseable body to `%{}`. `%{}` is a map, so it
+  passed straight through the order, balance and top-of-book readers and came out as a
+  well-formed struct with every field `nil`, returned as `{:ok, value}` — two substitutions in
+  sequence, where catching either one alone would have been enough.
+
+  The realistic source is not malformed JSON from Robinhood. It is a `200` that never reached
+  Robinhood: an interstitial, a captive portal or a CDN maintenance page, each of which
+  answers `200 text/html`. A caller polling balances through one of those was told,
+  truthfully-looking, that it held nothing.
+
+  Success bodies now refuse with `{:error, {:undecodable_response, :robinhood}}`. Refusal
+  bodies keep the lenient decode on purpose — a `4xx` is read for a human-readable reason,
+  the status code has already established the refusal, and `{:venue_error, status}` stays
+  true whether or not there was a reason in the body.
+
 - **`"NaN"` and `"Inf"` from a venue became real `Decimal` prices and flowed through
   untouched.** Every numeric field in this package funnels through a `decimal/1` helper whose
   binary clause uses `Decimal.parse/1` and requires the whole string be consumed — the

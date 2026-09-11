@@ -510,7 +510,7 @@ defmodule DpExchange.Robinhood.Rest do
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
 
       with {:ok, body} <- get(path, credentials, opts) do
-        {:ok, body |> account_rows() |> Enum.map(&to_order/1)}
+        body |> account_rows() |> to_orders()
       end
     end
   end
@@ -528,7 +528,7 @@ defmodule DpExchange.Robinhood.Rest do
         "/api/v2/crypto/trading/orders/" <>
           URI.encode(order_id) <> "/" <> query_string([{"account_number", account}])
 
-      with {:ok, body} <- get(path, credentials, opts), do: {:ok, to_order(body)}
+      with {:ok, body} <- get(path, credentials, opts), do: to_order(body)
     end
   end
 
@@ -555,7 +555,7 @@ defmodule DpExchange.Robinhood.Rest do
          {:ok, body} <- order_body(request, opts) do
       path = "/api/v2/crypto/trading/orders/" <> query_string([{"account_number", account}])
 
-      with {:ok, response} <- post(path, body, credentials, opts), do: {:ok, to_order(response)}
+      with {:ok, response} <- post(path, body, credentials, opts), do: to_order(response)
     end
   end
 
@@ -582,7 +582,7 @@ defmodule DpExchange.Robinhood.Rest do
   def cancel_order(credentials, order_id, opts) when is_binary(order_id) do
     path = "/api/v2/crypto/trading/orders/" <> URI.encode(order_id) <> "/cancel/"
 
-    with {:ok, body} <- post(path, %{}, credentials, opts), do: {:ok, to_order(body)}
+    with {:ok, body} <- post(path, %{}, credentials, opts), do: to_order(body)
   end
 
   defp required_account(opts) do
@@ -729,7 +729,44 @@ defmodule DpExchange.Robinhood.Rest do
     |> to_string()
   end
 
-  defp to_order(row) when is_map(row) do
+  # Refuses a body that is not an order object, rather than answering with an empty one.
+  #
+  # This used to fall through to a hand-built `%Order{}` with `id`, `symbol`, `side`,
+  # `order_type`, `quantity` and `status` all `nil`, returned as `{:ok, order}` from
+  # `get_order/3`, `place_order/3` and `cancel_order/3`. A caller that placed an order and
+  # got that back could not tell it apart from a real order the venue had declined to
+  # describe: every field was plausible-looking `nil` and the tuple said success. For
+  # `place_order/3` in particular that is the worst possible answer to "did my money move?"
+  # — the request may well have been accepted, and the reply asserts nothing about it while
+  # claiming to have worked.
+  #
+  # `Types.Order` genuinely does allow each of those fields to be `nil` (see its "Why the
+  # enforced keys still admit `nil`" — Robinhood's own cancel acknowledgement is the case it
+  # was widened for), so the struct itself cannot distinguish "the venue said nothing about
+  # this field" from "there was no order object at all". That distinction has to be made
+  # here, where the shape is still visible. `{:error, :unexpected_response_shape}` is the
+  # same refusal `DpExchange.Gemini.Private.to_order/1` returns for the same condition.
+  defp to_order(row) when is_map(row), do: {:ok, order_struct(row)}
+  defp to_order(_row), do: {:error, :unexpected_response_shape}
+
+  # One bad row refuses the whole list rather than seeding it with a blank order among real
+  # ones — the hardest version of this to notice, and the reason `get_orders/2` does not
+  # simply `Enum.map/2` here.
+  defp to_orders(rows) do
+    rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+      case to_order(row) do
+        {:ok, order} -> {:cont, {:ok, [order | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, orders} -> {:ok, Enum.reverse(orders)}
+      error -> error
+    end
+  end
+
+  defp order_struct(row) do
     %Order{
       id: row["id"],
       symbol: order_canonical(row["symbol"]),
@@ -752,18 +789,6 @@ defmodule DpExchange.Robinhood.Rest do
       fee: decimal(row["fee_charged"]),
       fee_currency: nil,
       created_at: order_time(row["created_at"]),
-      provider: :robinhood
-    }
-  end
-
-  defp to_order(_row) do
-    %Order{
-      id: nil,
-      symbol: nil,
-      side: nil,
-      order_type: nil,
-      quantity: nil,
-      status: nil,
       provider: :robinhood
     }
   end
@@ -845,7 +870,7 @@ defmodule DpExchange.Robinhood.Rest do
 
       case HttpClient.request(:post, url, headers, encoded, request_opts(opts)) do
         {:ok, %{status: status, body: response}} when status in 200..299 ->
-          {:ok, decode(response)}
+          decoded_body(response)
 
         {:ok, %{status: status, body: response}} when status in [400, 401, 403, 404] ->
           {:refused, refusal(status, response)}
@@ -867,7 +892,7 @@ defmodule DpExchange.Robinhood.Rest do
 
       case HttpClient.request(:get, url, headers, nil, request_opts(opts)) do
         {:ok, %{status: status, body: body}} when status in 200..299 ->
-          {:ok, decode(body)}
+          decoded_body(body)
 
         # Permanent for the request as sent. A caller whose key was rotated signs again
         # with the new one, which is a different request rather than a retry of this.
@@ -947,21 +972,48 @@ defmodule DpExchange.Robinhood.Rest do
   defp from_epoch(value), do: DateTime.from_unix(value)
 
   defp refusal(status, body) do
-    case decode(body) do
+    case refusal_body(body) do
       %{"detail" => detail} when is_binary(detail) -> {:venue_error, status, detail}
       %{"errors" => [%{"detail" => detail} | _rest]} -> {:venue_error, status, detail}
       _other -> {:venue_error, status}
     end
   end
 
-  defp decode(body) when is_binary(body) do
+  # A 2xx body this package cannot decode is NOT an empty object.
+  #
+  # This used to collapse any unparseable body to `%{}` and hand it on as success. Nothing
+  # downstream could tell that apart from a real but sparse response: `%{}` flows into
+  # `order_struct/1`, `to_balance/2` and `to_top_of_book/2` and comes out as a well-formed
+  # struct with every field `nil`, returned as `{:ok, value}`. The realistic way to get
+  # there is not malformed JSON from the venue but a `200` that is not the venue at all —
+  # an interstitial, a captive portal, or a CDN maintenance page, all of which answer `200`
+  # with HTML. A caller polling balances through one of those was told, truthfully-looking,
+  # that it held nothing.
+  #
+  # Refuse instead. `refusal_body/1` below stays lenient on purpose, for a body being read
+  # for a different reason.
+  defp decoded_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> {:ok, decoded}
+      {:error, _reason} -> {:error, {:undecodable_response, :robinhood}}
+    end
+  end
+
+  defp decoded_body(body), do: {:ok, body}
+
+  # Deliberately lenient, unlike `decoded_body/1`. A refusal's body is read for a
+  # human-readable reason and "there wasn't one in it" is an honest answer — the refusal
+  # itself is already established by the status code, so collapsing an unparseable body to
+  # `%{}` here loses nothing and `{:venue_error, status}` remains true. On a 2xx body the
+  # identical collapse invents a success, which is the whole difference.
+  defp refusal_body(body) when is_binary(body) do
     case Jason.decode(body) do
       {:ok, decoded} -> decoded
       {:error, _reason} -> %{}
     end
   end
 
-  defp decode(body), do: body
+  defp refusal_body(body), do: body
 
   defp decimal(nil), do: nil
   defp decimal(""), do: nil
