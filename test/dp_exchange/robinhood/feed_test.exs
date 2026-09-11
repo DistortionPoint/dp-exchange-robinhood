@@ -158,6 +158,94 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  describe "back-pressure — a slow subscriber does not get an unbounded mailbox" do
+    # `Core.Venue`'s `subscribe/2` doc promised this from the day the contract was written,
+    # and no venue in this family implemented any of it: every one fanned out with a bare
+    # `send/2` and had never looked at a subscriber's mailbox. Implemented in `Core.Fanout`
+    # 0.2.6 and wired here.
+    #
+    # This venue polls rather than streams, so its rate is its own `interval_ms` and not a
+    # venue firehose. The bound still belongs here: a consumer stalled for long enough still
+    # grows an unbounded mailbox, and a guarantee that holds only on the venues where it is
+    # most obviously needed is a contract guarantee with holes in it.
+
+    # A subscriber that never consumes, so everything sent to it stays queued.
+    defp stalled_subscriber do
+      pid = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(pid, :kill) end)
+      pid
+    end
+
+    defp queued(pid) do
+      {:message_queue_len, len} = Process.info(pid, :message_queue_len)
+      len
+    end
+
+    test "past its bound, a subscriber stops being sent to and its mailbox stops growing" do
+      slow = stalled_subscriber()
+      feed = start_feed(subscriber: slow, max_queue_len: 3, symbols: [], start_delay_ms: 60_000)
+
+      for _each <- 1..10, do: send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
+      # A call is answered only after every send above has been handled.
+      _settled = :sys.get_state(feed)
+
+      # Three payloads got through, then the bound stopped it — not ten, and, the point,
+      # not unbounded. The fourth message is the `:degraded` notice announcing the drop:
+      # this venue puts its data subscriber in `notice_subscribers` at `init/1`, so the
+      # same pid gets both. That it arrives at all is the property, not an accident —
+      # notices are deliberately NOT subject to the bound, because the notice saying a
+      # subscriber is being dropped must not be the first casualty of that same
+      # subscriber being dropped.
+      assert queued(slow) == 4
+    end
+
+    test "a stalled subscriber is reported once, not once per dropped message" do
+      slow = stalled_subscriber()
+      feed = start_feed(subscriber: slow, max_queue_len: 1, symbols: [], start_delay_ms: 60_000)
+      :ok = Feed.subscribe_notices(feed, to: self())
+
+      for _each <- 1..2, do: send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
+      _settled = :sys.get_state(feed)
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %Notice{kind: :degraded, severity: :warning, details: details}}
+
+      assert details.bound == 1
+      assert details.dropping == :newest
+      assert details.subscriber == inspect(slow)
+
+      for _each <- 1..5, do: send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
+      _settled = :sys.get_state(feed)
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :degraded}}, 100
+    end
+
+    test "an invalid bound fails at init, loudly, rather than falling back to the default" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {%ArgumentError{message: message}, _stack}} =
+               Feed.start_link(
+                 name: :"bad_bound_#{System.unique_integer([:positive])}",
+                 credentials: @credentials,
+                 symbols: [],
+                 max_queue_len: "3"
+               )
+
+      assert message =~ ":robinhood"
+      assert message =~ ":max_queue_len"
+    end
+
+    defp book_for(symbol) do
+      %DpExchange.Core.Types.TopOfBook{
+        symbol: symbol,
+        bid: Decimal.new("1"),
+        ask: Decimal.new("2"),
+        venue_time: ~U[2026-09-10 00:00:00Z],
+        observed_at: ~U[2026-09-10 00:00:00Z],
+        provider: :robinhood
+      }
+    end
+  end
+
   describe "delivery" do
     test "a book reaches the subscriber with real bid/ask, not nils from a field-name mismatch" do
       # Matching only on `symbol` here would pass even if `Rest.get_top_of_book/3` decoded

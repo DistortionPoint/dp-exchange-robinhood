@@ -159,7 +159,7 @@ defmodule DpExchange.Robinhood.Feed do
 
   use GenServer
 
-  alias DpExchange.Core.{Notice, PollingFeed}
+  alias DpExchange.Core.{Fanout, Notice, PollingFeed}
   alias DpExchange.Robinhood.{Credentials, Rest}
 
   # Matches the platform's collection cadence — an internal/operational choice, not
@@ -260,6 +260,13 @@ defmodule DpExchange.Robinhood.Feed do
       poller: nil,
       subscriber: subscriber,
       notice_subscribers: MapSet.new([subscriber]),
+      # Back-pressure, per `Core.Venue`'s `subscribe/2` doc and implemented by
+      # `Core.Fanout`. This venue polls rather than streams, so the rate is its own
+      # `interval_ms` and not a venue firehose — but a consumer stalled for long enough
+      # still grows an unbounded mailbox, and a bound that only exists on the venues where
+      # it is most obviously needed is a contract guarantee with holes in it.
+      dropping: MapSet.new(),
+      max_queue_len: Fanout.max_queue_len!(opts, :robinhood),
       # Tracked here, not only inside `PollingFeed`'s own state, so a crash-restart has
       # something to rebuild the poller FROM: the opts this process started with are
       # static and never carry an `update_symbols/2` call made after boot.
@@ -403,8 +410,7 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_info({:dp_exchange, :robinhood, _payload} = message, state) do
-    fan_out([state.subscriber], message)
-    {:noreply, state}
+    {:noreply, deliver(state, message)}
   end
 
   # The other half of `init/1`'s `Process.flag(:trap_exit, true)` — see the moduledoc's
@@ -495,6 +501,32 @@ defmodule DpExchange.Robinhood.Feed do
     fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
   end
 
+  # The venue's data stream, bounded — see `Core.Fanout`. Only a subscriber under its
+  # mailbox bound is sent to; one past it is skipped and reported once, in a `:degraded`
+  # notice, and reported again when it catches up.
+  #
+  # Notices keep going through `fan_out/2` unbounded, and must: the notice saying a
+  # subscriber is being dropped cannot be the first casualty of that same subscriber being
+  # dropped.
+  defp deliver(state, message) do
+    {_sent, dropping, transitions} =
+      Fanout.deliver([state.subscriber], message, state.dropping,
+        max_queue_len: state.max_queue_len
+      )
+
+    Enum.each(transitions, fn transition ->
+      fan_out(
+        state.notice_subscribers,
+        {:dp_exchange, :robinhood, Fanout.notice_for(transition, :robinhood, state.max_queue_len)}
+      )
+    end)
+
+    %{state | dropping: dropping}
+  end
+
+  # The UNBOUNDED path — notices only. See `deliver/2` above for why the data stream does
+  # not come through here and why notices deliberately still do.
+  #
   # A dead subscriber stops delivery rather than crashing it. A subscriber may be a raw
   # pid or a registered name — `subscribe_notices/2`'s `to:` accepts either, matching
   # ordinary OTP practice — and `send/2` to an unregistered atom RAISES, which would take
@@ -504,16 +536,10 @@ defmodule DpExchange.Robinhood.Feed do
   # only to what resolved to a live pid.
   defp fan_out(subscribers, message) do
     Enum.each(subscribers, fn subscriber ->
-      case resolve_subscriber(subscriber) do
+      case Fanout.resolve(subscriber) do
         pid when is_pid(pid) -> send(pid, message)
         nil -> :ok
       end
     end)
   end
-
-  defp resolve_subscriber(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: pid
-  end
-
-  defp resolve_subscriber(name) when is_atom(name), do: Process.whereis(name)
 end
