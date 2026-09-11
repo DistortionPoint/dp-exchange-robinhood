@@ -19,6 +19,42 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Added
+
+- **This package now reports a link on the telemetry channel, where before it would have
+  read as permanently disconnected.** `Core.Telemetry` said `[:dp_exchange, :link, …]` are
+  the events "every venue package emits"; there was not one `:telemetry.execute/3` call
+  anywhere in the family for as long as the spec existed. `:telemetry.attach/4` against a
+  name nobody emits **succeeds** — so a consumer wired a dashboard to it, got no error, and
+  saw an empty panel, which reads as a venue with no traffic rather than as an unimplemented
+  spec.
+
+  **This venue holds no socket — its link is the poller** — so the events come from
+  `Core.PollingFeed` 0.2.8 rather than from anything here: `:link, :event` per delivered
+  payload, and `:link, :up` / `:link, :down` mapped onto the delivering-nothing latch that
+  already existed, so they inherit its once-per-crossing property and cannot storm on a long
+  outage. What carries the route is package-internal; a consumer should not have to know
+  which venues in the family hold a socket.
+
+  `:bytes` is **absent** from this venue's `:link, :event`, not zero. A poll has no frame, so
+  there is no point at which a byte count means what it does on a socket — and a consumer
+  summing `:bytes` across a mixed fleet must get the streaming venues' throughput, not a
+  total silently depressed by every poller reporting a confident zero.
+
+  The request and rate-limit events come free with the same Core release, since this
+  package's REST goes through `Core.HttpClient` and its metered calls through
+  `Core.DefaultRateLimiter`.
+
+  **The metrics channel is alongside the notice channel, never instead of it.** A
+  `Core.Notice` is a condition a consumer must ACT on; telemetry is aggregate and lossy by
+  design.
+
+### Changed
+
+- **`dp_exchange_core` floor raised to `~> 0.2.8`**, the release that both emits these events
+  from the shared modules and adds `Core.Telemetry.link_event/2` for a route with no wire
+  size to report.
+
 ## [0.3.4] - 2026-09-11
 
 ### Added

@@ -754,4 +754,46 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert is_map(Feed.coverage(feed))
     end
   end
+
+  describe "the link reports itself on the metrics channel too" do
+    # This venue holds no socket — its link is the poller — and `Core.PollingFeed` 0.2.8
+    # emits `[:dp_exchange, :link, …]` for it. Without that, a fleet dashboard reading those
+    # events would show this package disconnected forever, which is the same failure as an
+    # unimplemented spec wearing the shape of a dead venue. What carries the route is
+    # package-internal; a consumer should not have to know which venues hold a socket.
+    test "a delivered payload is a link event, with NO bytes rather than a fake zero" do
+      # A poll has no frame, so there is no point at which a byte count means what it does
+      # on a socket. Absent and zero are different claims and only one is true: a consumer
+      # summing `:bytes` across a mixed fleet must get the streaming venues' throughput, not
+      # a total depressed by every poller reporting a confident zero.
+      test_pid = self()
+      handler_id = "rh-link-#{System.unique_integer([:positive])}"
+      # This feed hardcodes its PollingFeed label, so the handler scopes to that rather than
+      # a unique one. Safe here because the assertion is positive: a stray event from another
+      # concurrent robinhood test satisfies the same three properties being asserted.
+      label = "robinhood"
+
+      :telemetry.attach(
+        handler_id,
+        [:dp_exchange, :link, :event],
+        fn event, measurements, metadata, _config ->
+          # Scoped by provider: `:telemetry` handlers are global to the VM.
+          if metadata.provider == label do
+            send(test_pid, {:telemetry, event, measurements, metadata})
+          end
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      start_feed([])
+
+      assert_receive {:telemetry, [:dp_exchange, :link, :event], measurements, metadata}, 2_000
+      assert measurements.count == 1
+      refute Map.has_key?(measurements, :bytes)
+      # The struct names its own kind — never a channel name, never a subscription intent.
+      assert metadata.type == "TopOfBook"
+    end
+  end
 end
