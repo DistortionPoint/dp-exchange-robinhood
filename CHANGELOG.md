@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-09-11
+
 ### Fixed
 
 - **`"NaN"` and `"Inf"` from a venue became real `Decimal` prices and flowed through
