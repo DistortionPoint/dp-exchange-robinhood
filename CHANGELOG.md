@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-09-11
+
 ### Added
 
 - **`script/check_doc_sources.sh` now reports the age and provenance of this package's own
