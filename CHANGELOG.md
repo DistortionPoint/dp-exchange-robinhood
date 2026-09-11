@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-09-11
+
 ### Fixed
 
 - **A dead subscriber's pid was never removed, and the fan-out walked it on every message
