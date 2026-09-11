@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-09-11
+
 ### Fixed
 
 - **A balance the venue did not attribute to an asset was returned as success.**
