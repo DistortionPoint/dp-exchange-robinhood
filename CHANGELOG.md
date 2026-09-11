@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-09-11
+
 ### Added
 
 - **`check_doc_sources.sh` now checks whether its own manifest is COMPLETE.** Everything it
