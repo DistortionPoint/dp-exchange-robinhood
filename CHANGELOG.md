@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-09-11
+
 ### Changed
 
 - **CI runs `mix test --cover --warnings-as-errors`.** `mix compile --warnings-as-errors`
