@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-11
+
 ### Added
 
 - **Back-pressure: a slow subscriber no longer gets an unbounded mailbox.** `Core.Venue`'s
