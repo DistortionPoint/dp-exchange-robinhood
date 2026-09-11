@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-11
+
 ### Added
 
 - **This package now reports a link on the telemetry channel, where before it would have
