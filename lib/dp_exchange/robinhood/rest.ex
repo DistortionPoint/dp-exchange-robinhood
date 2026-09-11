@@ -417,26 +417,65 @@ defmodule DpExchange.Robinhood.Rest do
       asked_at = DateTime.utc_now()
 
       with {:ok, body} <- get(path, credentials, opts) do
-        {:ok, body |> account_rows() |> Enum.map(&to_balance(&1, asked_at))}
+        body |> account_rows() |> to_balances(asked_at)
       end
     end
   end
 
+  # Refuses a holdings row this package cannot read, rather than emitting an unusable
+  # `Balance` and reporting it as success.
+  #
+  # `Core.Types.Balance`'s `new/1` refuses a `nil` in `:currency`. Nothing here called
+  # `new/1` — this built the struct literally, the way all five venues do — so the check
+  # never ran, and `currency` came straight out of the venue's JSON by key. A renamed or
+  # absent `asset_code` produced `%Balance{currency: nil}`: an amount attributable to no
+  # asset, returned inside `{:ok, balances}`, which a consumer cannot size, book or
+  # reconcile against. It is the renamed-field scenario `Core.Types.Validate`'s moduledoc
+  # exists for, arriving through the one path that bypassed the constructor written to
+  # catch it.
+  #
+  # `total_quantity` is deliberately NOT guarded the same way. `Core.Types.Balance` states
+  # that `:balance` may honestly be `nil` while `:currency` may not, and the two are not the
+  # same kind of required: an unknown quantity is still a balance, an unattributable one is
+  # not. `dp_exchange_gemini` made and recorded the same call for its own amount field. This
+  # matters more here since the NaN guard landed — `decimal/1` now maps `"NaN"` and `"Inf"`
+  # to `nil` rather than to a poisonous `Decimal`, which is right, and which makes a `nil`
+  # total reachable from a value that was present all along.
   defp to_balance(row, asked_at) do
-    total = decimal(row["total_quantity"])
-    available = decimal(row["quantity_available_for_trading"])
-
-    %Balance{
-      currency: row["asset_code"],
-      balance: total,
-      available_balance: available,
-      # The venue publishes no hold figure. Subtracting would produce a number it never
-      # stated, and one that is wrong the moment either side is missing.
-      hold: nil,
-      timestamp: asked_at,
-      provider: :robinhood
-    }
+    with {:ok, currency} <- required_currency(row["asset_code"]) do
+      {:ok,
+       %Balance{
+         currency: currency,
+         balance: decimal(row["total_quantity"]),
+         available_balance: decimal(row["quantity_available_for_trading"]),
+         # The venue publishes no hold figure. Subtracting would produce a number it never
+         # stated, and one that is wrong the moment either side is missing.
+         hold: nil,
+         timestamp: asked_at,
+         provider: :robinhood
+       }}
+    end
   end
+
+  # One unreadable row refuses the whole reply rather than leaving a gap in it. A balance
+  # list with an entry silently missing reads as "you hold none of that asset", which is a
+  # different and more dangerous statement than "this response could not be read".
+  defp to_balances(rows, asked_at) do
+    rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+      case to_balance(row, asked_at) do
+        {:ok, balance} -> {:cont, {:ok, [balance | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, balances} -> {:ok, Enum.reverse(balances)}
+      error -> error
+    end
+  end
+
+  defp required_currency(code) when is_binary(code) and code != "", do: {:ok, code}
+  defp required_currency(_absent), do: {:error, :unexpected_response_shape}
 
   @doc """
   An execution estimate — `GET /api/v2/crypto/trading/estimated_price/`.
