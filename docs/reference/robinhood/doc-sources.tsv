@@ -15,3 +15,4 @@
 # Do not edit a row to make the check pass. The row records what someone READ; rewriting
 # it to match a fetch nobody looked at turns this file into a rubber stamp.
 https://docs.robinhood.com/crypto/trading/	200	-	2026-09-09	auto	The whole published surface for this venue's crypto API — every claim this package makes about Robinhood traces here. A single page is the entire corpus, which is why losing it silently would matter more here than anywhere else in the family.
+https://docs.robinhood.com	307	https://docs.robinhood.com/crypto/trading	2026-09-11	auto	The documentation root, cited by the re-capture snippet in `endpoint-inventory.md`. Worth a row of its own rather than folding into the page it redirects to: this venue publishes ONE documentation page, so if that 307 ever points somewhere else it is the whole notice this vendor would give.

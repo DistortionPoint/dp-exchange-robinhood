@@ -19,6 +19,59 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Added
+
+- **`check_doc_sources.sh` now checks whether its own manifest is COMPLETE.** Everything it
+  did before verified the sources that were listed; nothing verified that the list covered
+  what this package's `docs/reference/` actually cites. A checker whose coverage nobody
+  audits reports "all sources resolve" while saying nothing about the sources it was never
+  told about.
+
+  The gap was real: `dp_exchange_gemini` cited 22 distinct URLs and listed 12, leaving two
+  genuine vendor documentation pages — the WebSocket streams introduction that
+  `websocket-api-replacement.md` names as its source, and one of the four API specifications
+  `endpoint-inventory.md` diffs — unchecked by anything.
+
+  Two classes, reported separately, because only one can be judged mechanically:
+
+  **UNLISTED** — cited on a host the manifest already names as documentation. Same vendor,
+  same docs site, different page: near-certainly a source that belongs in the manifest.
+
+  **UNKNOWN** — cited on a host the manifest does not name at all. Deliberately **not**
+  assumed to be documentation, because most are not: `api.gemini.com`,
+  `api.sandbox.webull.com` and `api.schwabapi.com` are venue APIs, and adding one here would
+  put a live venue into a **weekly scheduled fetch**. D7 is explicit that a venue seeing a
+  package poll it on a timer will rate-limit or block. These are listed for a person to
+  classify and never auto-added.
+
+  Non-blocking, like the rest of the script: it prints and does not change the exit code. An
+  unlisted page is a gap in evidence, not a broken build.
+
+- **A re-capture command in `endpoint-inventory.md` broke when followed literally.** It
+  wrote its placeholder in angle brackets — the docs host followed by `<that bundle>`. In
+  prose that reads fine; pasted into a shell, `<` is an input redirect, so the command
+  silently fetched the bare host with its stdin pointed at a file called `that` and never
+  touched the bundle it was supposed to read. It now uses shell variables and runs end to
+  end.
+
+  Found by the coverage check above, which reported the mangled string as a cited URL on an
+  unrecognised host — it was looking for unverified documentation sources and turned up a
+  broken command instead. The first fix replaced the placeholder with `BUNDLE_PATH`, and the
+  same check immediately reported **that** as a cited-but-unlisted documentation URL. It was
+  right to: a URL-shaped placeholder is still an unfollowable URL, and the fix had moved the
+  defect rather than removed it.
+
+- **The documentation root is now a checked source.** This venue publishes exactly one
+  documentation page, so its manifest listed exactly one URL — the thinnest evidence base in
+  the family. `https://docs.robinhood.com` 307s to that page, and if that redirect ever
+
+- **Both of this package's scheduled checkers were run by hand for the first time, and they
+  pass.** Neither had ever executed: they are scheduled weekly for Monday and landed on a
+  Tuesday, so no cron had come around. A checker nobody has watched run is a checker nobody
+  has proved works — and running these found the manifest-coverage gap above, which is not
+  the defect either of them was written to catch.
+
+  No vendor drift: every cited documentation source resolves exactly as recorded.
 ## [0.3.7] - 2026-09-11
 
 ### Changed

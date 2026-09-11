@@ -110,7 +110,28 @@ where it would be.
 The documentation is a Next.js single-page app; its sitemap lists only five pages. The
 endpoint list lives in the page's own JS bundle:
 
+```sh
+host=https://docs.robinhood.com
+
+# The page loads its endpoint list from a JS bundle; find that bundle's path.
+bundle=$(curl -s "$host/crypto/trading/" |
+  grep -oE 'src="[^"]+pages/crypto/trading[^"]+"' | head -1 | sed -E 's/^src="//; s/"$//')
+
+# Then read the endpoints out of it.
+curl -s "$host$bundle" | grep -oE '/api/v[0-9]+/crypto/[a-z_/{}]*' | sort -u
 ```
-curl -s https://docs.robinhood.com/crypto/trading/ | grep -oE 'src="[^"]+pages/crypto/trading[^"]+"'
-curl -s https://docs.robinhood.com<that bundle> | grep -oE '/api/v[0-9]+/crypto/[a-z_/{}]*' | sort -u
-```
+
+The second line used to write its placeholder in **angle brackets** — the host followed by
+`<that bundle>`. In prose that reads fine; pasted into a shell, `<` is an input redirect, so
+the command silently fetched the bare host with its stdin pointed at a file called `that`
+and never touched the bundle. A re-capture procedure that fails confusingly when followed
+literally is worse than one that is obviously incomplete. Found by
+`script/check_doc_sources.sh`'s manifest-coverage check, which reported the mangled string
+as a cited URL on an unrecognised host — it was looking for unverified documentation sources
+and turned up a broken command instead.
+
+The first fix replaced it with a `BUNDLE_PATH` placeholder, and the same check immediately
+reported **that** as a cited-but-unlisted documentation URL. It was right to: a URL-shaped
+placeholder is still an unfollowable URL, and it had simply moved the defect rather than
+removed it. Hence the shell variables above — the snippet now runs end to end, and contains
+no URL that is not real.
