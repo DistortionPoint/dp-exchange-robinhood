@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-09-12
+
 ### Fixed
 
 - **`mix.lock` moved to `dp_exchange_core` 0.3.8, so assertion 24's refusal check runs
