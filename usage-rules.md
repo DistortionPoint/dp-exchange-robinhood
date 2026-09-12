@@ -287,6 +287,36 @@ is nowhere honest to put it.
 sitting in an open order. **`hold` is `nil` because the venue publishes no such figure**, and
 subtracting would state a number it never did.
 
+**A holdings row the venue did not attribute to an asset refuses the whole reply** with
+`{:error, :unexpected_response_shape}`. An amount you cannot name an asset for cannot be
+sized, booked or reconciled against, and dropping the row silently would read as "you hold
+none of that asset" — a different and more dangerous claim than "this response could not be
+read".
+
+`balance` itself may be `nil`, and that is not the same thing: it means the venue did name
+the asset and did not state a quantity for it. Read that as unknown, never as zero.
+
+## Two error shapes that mean "do not act on this answer"
+
+Both are returned by calls that previously answered `{:ok, _}` carrying a value you could not
+act on. A consumer matching only `{:ok, _}` needs no change; one that enumerates error
+reasons should know them.
+
+`{:error, {:undecodable_response, :robinhood}}` — the venue answered `2xx` with a body this
+package could not decode. The realistic cause is not malformed JSON from Robinhood; it is a
+`200` that never reached Robinhood, such as a captive portal or a CDN maintenance page
+answering `200 text/html`. **Worth retrying**: nothing about the request was wrong.
+
+`{:error, :unexpected_response_shape}` — the body decoded and is not the thing this endpoint
+returns. From `get_order/3`, `place_order/3`, `cancel_order/3` and `get_orders/2` that means
+it was not an order object; from `get_balances/2`, that a holdings row named no asset. **Not
+retryable on its own** — the same request produces the same shape.
+
+On `place_order/3` the distinction matters most. Neither error tells you whether an order was
+placed, and both are more honest than the empty `%Order{}` this package used to return as
+success. Re-read with `get_orders/2` before re-sending, and pass the same `client_order_id`
+if you do — the venue treats it as an idempotency key.
+
 ## A slow subscriber gets dropped, and told — it does not get an unbounded mailbox
 
 If your process falls far enough behind that its mailbox reaches **10,000 queued
