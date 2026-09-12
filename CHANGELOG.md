@@ -18,6 +18,8 @@ authenticated flows are not.
 what was run against the live venue, and when.
 
 ## [Unreleased]
+
+## [0.3.19] - 2026-09-12
 ### Changed
 
 - **`usage-rules.md` documents the error shapes this package started returning this week.**
