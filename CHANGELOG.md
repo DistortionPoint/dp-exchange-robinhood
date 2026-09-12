@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-09-12
+
 ### Fixed
 
 - **`mix.lock` moved to `dp_exchange_core` 0.3.10.** It carries two conformance-suite
