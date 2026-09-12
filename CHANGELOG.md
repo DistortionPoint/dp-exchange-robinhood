@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-09-12
+
 ### Fixed
 
 - **This package was passing fake-driven conformance assertions that never ran.** Several
