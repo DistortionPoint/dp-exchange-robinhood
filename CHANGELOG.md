@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-09-13
+
 ### Changed
 
 - **`quantization/2` was never called through the facade.** Every assertion about it went
