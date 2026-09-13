@@ -19,6 +19,18 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-09-13
+
+_No consumer-facing changes to this package._ The release carried a `mix.lock` move
+only: `dp_exchange_core` 0.3.10 → 0.3.13, which is what makes Core's assertion 25 (order
+book ordering) run against this package's conformance suite. Nothing in `lib/` changed.
+
+Backfilled by hand on 2026-09-13 — see dp-exchange-coinbase issue #2, which reported the
+identical shape here. The heading was absent from the published tarball because
+`## [Unreleased]` was empty at release time and the pipeline skipped the cut. **The 0.3.20
+tarball on Hex cannot be changed and still has no heading**; this entry makes the record
+complete from the next release onward.
+
 ## [0.3.19] - 2026-09-12
 ### Changed
 
