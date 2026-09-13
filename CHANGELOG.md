@@ -19,6 +19,19 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- **`quantization/2` was never called through the facade.** Every assertion about it went
+  straight to `Rest`, so the facade clause that threads `credentials/1` and `with_limiter/1`
+  into the call had never executed. A delegate wired to the wrong `Rest` function, or one
+  dropping the limiter wrap, compiles and type-checks and leaves the suite green — verified
+  by making that exact swap, which now fails.
+
+  No delegation was wrong. Found by reading which lines of `DpExchange.Robinhood` the suite
+  never executes, with the `def ... \\ []` head artifact filtered out.
+
+  Coverage 95.34% to 95.52%.
+
 ## [0.3.22] - 2026-09-13
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

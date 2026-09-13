@@ -421,6 +421,24 @@ defmodule DpExchange.Robinhood.RestTest do
       assert quantum.min_quantity == nil
     end
 
+    test "the facade reaches it too, not only Rest" do
+      # `DpExchange.Robinhood.quantization/2` threads `credentials/1` and `with_limiter/1`
+      # into this call and no test had ever gone through it — every assertion above talks to
+      # `Rest` directly. A delegate wired to the wrong `Rest` function, or one dropping the
+      # limiter wrap, compiles and type-checks, and the whole suite stays green.
+      #
+      # Found by reading which lines of `DpExchange.Robinhood` the suite never executes.
+      assert {:ok, quantum} =
+               DpExchange.Robinhood.quantization("BTC-USD",
+                 credentials: @credentials,
+                 plug: responding(%{"results" => [@pair_row]}),
+                 retry_attempts: 0
+               )
+
+      assert Decimal.equal?(quantum.quantity_increment, Decimal.new("0.00000001"))
+      assert Decimal.equal?(quantum.price_increment, Decimal.new("0.01"))
+    end
+
     test "an empty page is retryable, not a permanent not_listed verdict — issue #25" do
       assert {:error, :empty_result} =
                Rest.quantization("NOPE-USD", @credentials,
