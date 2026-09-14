@@ -19,6 +19,22 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A timestamp of zero or less decoded to 1970 instead of being refused.** `from_epoch/1`
+  already used the non-raising `DateTime.from_unix/2` and already picked seconds or
+  milliseconds by threshold, so the out-of-range hazard never applied here — but
+  `from_unix/2` answers `{:ok, ~U[1970-01-01 00:00:00Z]}` for `0` and a 1969 instant for
+  negatives, and those are perfectly valid `DateTime`s. That is the dangerous case rather
+  than the obvious one: `0` is a common venue sentinel for "unknown", and a row dated 1970 is
+  a real timestamp to every consumer that only checks for `nil`.
+
+  The comment there called 1970 "loud". It is not — a consumer computing an age gets
+  fifty-six years and may skip the row, but one that logs or charts the timestamp shows 1970
+  and calls it data. The family settled this for level timestamps ("an unreadable level
+  timestamp does not become the epoch") and the same answer now holds wherever an epoch is
+  converted, in this package and in the other four.
+
 ## [0.3.24] - 2026-09-14
 
 ### Fixed

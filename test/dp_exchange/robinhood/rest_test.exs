@@ -133,6 +133,28 @@ defmodule DpExchange.Robinhood.RestTest do
       assert top.venue_time == nil
     end
 
+    test "a zero or negative timestamp decodes to nil rather than to 1970" do
+      # `DateTime.from_unix/2` answers `{:ok, ~U[1970-01-01 00:00:00Z]}` for 0 and a 1969
+      # instant for negatives. Both are valid `DateTime`s, which is why they are the
+      # dangerous case rather than the obvious one: `venue_time` is documented as the venue's
+      # own instant or `nil`, never invented, and a 1970 stamp is indistinguishable from a
+      # real one to every consumer that only checks for `nil`. `0` is a common venue sentinel
+      # for "unknown".
+      #
+      # `from_epoch/1`'s own comment called 1970 "loud". It is not — a consumer computing an
+      # age gets fifty-six years and may skip the row, but one that logs or charts the
+      # timestamp shows 1970 and calls it data.
+      for bad <- [0, -1, "0"] do
+        assert {:ok, top} =
+                 Rest.get_top_of_book("BTC-USD", @credentials,
+                   plug: responding(quote_body(%{"timestamp" => bad})),
+                   retry_attempts: 0
+                 )
+
+        assert top.venue_time == nil, "a timestamp of #{inspect(bad)} must decode to nil"
+      end
+    end
+
     test "an empty results list is a retryable error, NOT a refusal — DpCryptoManagement issue #25" do
       # An empty page is this specific request coming back with nothing — it is not the
       # venue stating the symbol does not exist. `{:refused, _}` is reported once and
