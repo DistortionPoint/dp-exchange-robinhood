@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.27] - 2026-09-14
+
 ### Added
 
 - **A test pinning that a retried order carries the SAME idempotency key.** This venue's
