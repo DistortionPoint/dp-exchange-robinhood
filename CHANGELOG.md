@@ -19,6 +19,23 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Added
+
+- **A test pinning that a retried order carries the SAME idempotency key.** This venue's
+  order writes retry — safely, because `client_order_id` is documented as an idempotency key
+  and is generated here when the caller gives none, so a retry asks the venue to complete the
+  same order rather than place another.
+
+  That safety rests on the key being generated once, while the body is built, with the retry
+  loop re-sending that body unchanged. **Nothing pinned it.** Move the generation inside the
+  loop and every attempt becomes a distinct order, with the whole suite still green — the
+  worst failure available here, arrived at by a change that looks like a refactor.
+
+  Found while fixing `dp_exchange_schwab` and `dp_exchange_gemini`, whose order writes had no
+  such key and were retrying anyway; they now send once. The rule across the family is not
+  "never retry a write" but "never repeat an action the venue cannot tell apart from the
+  first one", and this test is what makes this venue's half of it verifiable.
+
 ## [0.3.26] - 2026-09-14
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._
