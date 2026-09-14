@@ -83,6 +83,24 @@ defmodule DpExchange.Robinhood.FeedTest do
     name
   end
 
+  # `coverage/1` is a WINDOWED read — see `Core.PollingFeed`'s `@coverage_grace` — so it can
+  # legitimately answer `%{}` a moment before the next tick lands and the expected map a
+  # moment after. Retrying is what a consumer watching coverage does, and it keeps the
+  # assertion about what is covered rather than about when this process happened to look.
+  defp assert_covered(feed, expected, waited \\ 0) do
+    case Feed.coverage(feed) do
+      ^expected ->
+        :ok
+
+      other when waited >= 2_000 ->
+        flunk("coverage was #{inspect(other)}, not #{inspect(expected)}, after 2000ms")
+
+      _other ->
+        Process.sleep(10)
+        assert_covered(feed, expected, waited + 10)
+    end
+  end
+
   defp start_feed(opts \\ []) do
     name = :"feed_#{System.unique_integer([:positive])}"
 
@@ -392,7 +410,17 @@ defmodule DpExchange.Robinhood.FeedTest do
       # becomes a refusal, not just that it wasn't one on the very first attempt.
       refute_receive {:dp_exchange, :robinhood, {:refused, "ETH-USD", _reason}}, 300
 
-      assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
+      # Polled, not sampled once. `coverage/1` reports what arrived within
+      # `interval_ms * @coverage_grace` — two intervals — and this feed ticks every 50ms,
+      # so the window is a hundred milliseconds wide. Reading it at one arbitrary instant
+      # after a 300ms wait asks whether a tick happened to land in the last tenth of a
+      # second, which on a loaded async suite it sometimes did not: 1 failure in 30
+      # full-suite runs, reporting `%{}` for a feed that was delivering perfectly well.
+      #
+      # The claim is "BTC-USD is covered", and a windowed read is allowed to be sampled
+      # more than once to establish that. A symbol that genuinely never becomes covered
+      # still fails, just after the window instead of inside it.
+      assert_covered(feed, %{"BTC-USD" => :internal_poll})
     end
 
     test "a bulk refusal falls back per symbol: the bad one is refused once, the good ones publish the same cycle" do
@@ -559,7 +587,13 @@ defmodule DpExchange.Robinhood.FeedTest do
                       %Notice{kind: :coverage_change, severity: :warning} = notice},
                      2_000
 
-      assert notice.provider == "robinhood"
+      # The ATOM, not the string this used to be. `Core.PollingFeed` named its notices
+      # by its `label`, so this venue emitted `:robinhood` from `Feed`'s own notices and
+      # `"robinhood"` from the poll's — and a consumer routing on `provider` saw one and
+      # missed the other. Core 0.3.17 added `provider:`; `Feed` passes it, and both halves
+      # of this package now name the venue the same way.
+      assert notice.provider == :robinhood
+      assert notice.details.label == "robinhood", "the label still names which feed spoke"
       assert notice.message =~ "delivered nothing"
     end
 
@@ -809,7 +843,13 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # `%{}` alone would be indistinguishable from a venue that is simply delivering
       # nothing. The notice is what says "we could not ask", which is a different fact.
-      assert_receive {:dp_exchange, :robinhood, notice}, 500
+      # `%Notice{}` in the pattern, not a bare variable. `start_feed/1` defaults to
+      # `symbols: ["BTC-USD"]` and `start_delay_ms: 0`, so this feed publishes a
+      # `TopOfBook` of its own almost immediately — and a bare variable matches that just
+      # as happily as the notice, after which `notice.kind` raises `KeyError` on a struct
+      # that has no such field. Seen twice in 30 full-suite runs, as a crash rather than a
+      # failed assertion, which is how a loose pattern reports being wrong.
+      assert_receive {:dp_exchange, :robinhood, %Notice{} = notice}, 500
       assert notice.kind == :link_down
       assert notice.severity == :warning
       assert notice.message =~ "did not answer a coverage read"

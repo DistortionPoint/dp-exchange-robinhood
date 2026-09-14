@@ -19,6 +19,19 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The poll's notices named this venue as a string, so half of them were unroutable.**
+  `Core.PollingFeed` named its notices by its `label`, so this package emitted `:robinhood`
+  on the `:link_down` notices `Feed` builds itself and `"robinhood"` on every
+  `:coverage_change` the poll raised. A consumer matching `notice.provider == :robinhood`
+  saw the first kind and silently missed the second — which is the kind that says this
+  feed is delivering nothing, the thing most worth hearing from a venue with no stream.
+  `Feed` now passes Core 0.3.17's `provider: :robinhood`, and `details.label` still names
+  which feed spoke. The `dp_exchange_core` floor moves to `~> 0.3.17` accordingly: below
+  that the option does not exist and would be silently ignored, which is the same bug
+  wearing a passing test suite.
+
 ## [0.3.23] - 2026-09-13
 
 ### Changed

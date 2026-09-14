@@ -348,6 +348,13 @@ defmodule DpExchange.Robinhood.Feed do
 
     PollingFeed.start_link(
       label: "robinhood",
+      # `provider:` so `Core.PollingFeed`'s notices name this venue the same way this
+      # module's own do. Without it the poll named itself by its string `label`, and a
+      # consumer matching `notice.provider == :robinhood` saw the `:link_down` notices this
+      # file builds and silently missed every `:coverage_change` the poll raised — which is
+      # the one that says the feed is delivering nothing, the thing most worth hearing.
+      # `label` still names the feed inside `message` and `details.label`.
+      provider: :robinhood,
       symbols: state.symbols,
       interval_ms: state.interval_ms,
       start_delay_ms: state.start_delay_ms,
