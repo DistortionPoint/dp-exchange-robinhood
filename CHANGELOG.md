@@ -23,6 +23,28 @@ what was run against the live venue, and when.
 
 ### Fixed
 
+- **`to_exchange_symbol/1` no longer decorates a non-pair with this venue's separator.**
+  `"AAPL"` came back `"AAPL-"` and `""` came back `"-"`, because this venue maps with
+  `sep: "-"` and `CanonicalPair.to_exchange/2` joined `base <> sep <> quote` unconditionally.
+  The fix is in `dp_exchange_core` 0.3.23 and the floor moves to match, so a consumer
+  resolving an older core cannot silently get the old behaviour back.
+
+  The string it produced was plausible, which is what made it expensive: it went into a
+  request URL, the venue answered 404, and `classify/1` reported `{:refused, :not_listed}` —
+  this package telling a caller the VENUE said their symbol is not listed, when what happened
+  is that the normaliser invented a symbol the venue was never asked about.
+
+- **The moduledoc promised a defensive boundary it does not provide, and the code is right.**
+  It said any un-canonical form "gets normalised here rather than leaking upward — a
+  lowercase `btc-usd`, or a separatorless form". A separatorless form is NOT normalised on
+  this venue: `CanonicalPair` consults the quote list only for a mapping declaring `sep: ""`,
+  so `"BTCUSD"` comes back uppercased and unsplit.
+
+  The promise was removed rather than the behaviour changed. Guessing a split from a quote
+  suffix is safe on a venue that only ever names pairs and unsafe in general — a bare ticker
+  ending in a quote code (`PLUSD`) would silently become `PL-USD`, a different instrument —
+  and an unrecognised symbol that collects nothing is the cheaper of the two failures.
+
 - **A timestamp of zero or less decoded to 1970 instead of being refused.** `from_epoch/1`
   already used the non-raising `DateTime.from_unix/2` and already picked seconds or
   milliseconds by threshold, so the out-of-range hazard never applied here — but
