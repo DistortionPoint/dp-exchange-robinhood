@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.25] - 2026-09-14
+
 ### Fixed
 
 - **A timestamp of zero or less decoded to 1970 instead of being refused.** `from_epoch/1`
