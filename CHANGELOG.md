@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-09-14
+
 ### Fixed
 
 - **The poll's notices named this venue as a string, so half of them were unroutable.**
