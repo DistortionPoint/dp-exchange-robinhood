@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-09-15
+
 ### Fixed
 
 - **An empty or blank `api_key` was signed with rather than refused.** `is_binary/1` was the
