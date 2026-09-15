@@ -121,7 +121,15 @@ orders alike. There is no anonymous endpoint on this venue at all:
 Without credentials, every one of those calls returns
 `{:error, {:missing_credentials, :robinhood}}` before any request is built — an `:error`,
 not a `:refused`, because a missing local credential never reaches the venue and is never
-the venue's own word about anything. `DpExchange.Robinhood.Fake` — the in-process double
+the venue's own word about anything.
+**A blank credential counts as a missing one.** An `:api_key` or `:private_key` that is `""`, or only
+whitespace, is refused locally with `{:error, {:missing_credentials, :robinhood}}` — it is
+never signed with. This matters because the usual way a credential goes missing is not a
+`nil`: it is a `.env` line reading `NAME=` with nothing after it, and `System.get_env/1`
+hands that back as `""`. Signing with it produced a well-formed request the venue refused
+for a reason naming signatures, which points at the signing code rather than at the
+credential.
+ `DpExchange.Robinhood.Fake` — the in-process double
 your own tier-1 tests run against — answers the identical shape for the identical reason,
 on every function that reaches a real endpoint, not only the market-data ones. If your test
 suite pinned the fake's older answer here (`{:refused, :missing_credentials}`, or an

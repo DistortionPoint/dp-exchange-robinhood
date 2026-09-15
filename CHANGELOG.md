@@ -19,6 +19,27 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An empty or blank `api_key` was signed with rather than refused.** `is_binary/1` was the
+  whole gate and `""` satisfies it. `:api_key` is not decoration on this venue — it is the
+  `kid` of the scheme, it ships as `x-api-key` and it goes into the signed payload — so a
+  blank one produced a fully-formed request that the venue answered 401, which `headers/5`'s
+  own `@doc` says it refuses to cause ("clearer than the 401 they would otherwise become").
+  Reachable by
+  the commonest misconfiguration there is: a `.env` line reading `NAME=` with nothing after
+  it. `System.get_env/1` returns `""` for that, not `nil`, so every `nil`-shaped guard
+  upstream passes it through intact. Blank is now trimmed and treated as absent, which is the
+  answer `{:missing_credentials, _}` already existed to give. Two venues in this family were
+  already safe from this, and both by accident rather than by check — their credential
+  formats are structured (base64 key material, a trimmed token), so the blank failed a format
+  test rather than a presence test. The fields that are opaque strings had nothing to fail.
+  This package is the sharp illustration of that last point: the `:private_key` half was
+  already safe because `decode_seed/1` refuses anything that is not 32 bytes of base64. The
+  field with a structural format was guarded; the opaque string beside it was not. A
+  non-binary `:api_key` also no longer crashes the caller inside `payload/5`'s
+  concatenation — it is the same condition as an absent field and gets the same answer.
+
 ## [0.3.27] - 2026-09-14
 
 ### Added

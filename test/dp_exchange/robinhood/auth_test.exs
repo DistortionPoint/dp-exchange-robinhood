@@ -126,4 +126,46 @@ defmodule DpExchange.Robinhood.AuthTest do
                Auth.headers("GET", "/p", "", %{api_key: "k", private_key: wrong})
     end
   end
+
+  describe "a blank credential is a missing one, not one to sign with" do
+    # `""` satisfies `is_binary/1`, and `is_binary/1` was the whole gate. An empty secret is
+    # not a secret — it is the commonest misconfiguration there is, `.env` carrying
+    # `NAME=` with nothing after it, which `System.get_env/1` hands back as `""` and not as
+    # `nil`. Every module here documents that it refuses to sign a partial credential
+    # precisely so the venue's answer does not send the reader to the signing code, which
+    # is correct, instead of to the credential, which was never set.
+    #
+    # Robinhood's own case is the sharper one, because half of it was already safe by
+    # accident: `decode_seed/1` refuses an empty `:private_key` because it is not 32 bytes
+    # of base64, so the field with a structural format was guarded and the opaque string
+    # next to it was not. `:api_key` is not decoration — it is the `kid` of the scheme, it
+    # ships as `x-api-key` AND goes into the signed payload.
+    @seed Base.encode64(:crypto.strong_rand_bytes(32))
+
+    test "an empty or blank api_key refuses by name" do
+      for api_key <- ["", "   "] do
+        assert Auth.headers("GET", "/p", "", %{api_key: api_key, private_key: @seed}) ==
+                 {:error, {:missing_credentials, :robinhood}},
+               "#{inspect(api_key)} was signed with"
+      end
+    end
+
+    test "a non-string api_key refuses instead of building a header out of it" do
+      assert Auth.headers("GET", "/p", "", %{api_key: 7, private_key: @seed}) ==
+               {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "the api_key is checked BEFORE the private key, so the first answer is the useful one" do
+      # Both are missing here. The one a host can act on is the one it can see is blank;
+      # reporting `:invalid_private_key` for a credential where neither field is set sends
+      # the reader to the key material.
+      assert Auth.headers("GET", "/p", "", %{api_key: "", private_key: ""}) ==
+               {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "a real pair still signs" do
+      assert {:ok, headers} = Auth.headers("GET", "/p", "", %{api_key: "k", private_key: @seed})
+      assert List.keyfind(headers, "x-signature", 0) != nil
+    end
+  end
 end

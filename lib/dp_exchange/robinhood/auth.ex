@@ -62,10 +62,11 @@ defmodule DpExchange.Robinhood.Auth do
   def headers(method, path, body, credentials, opts \\ [])
 
   def headers(method, path, body, %{api_key: api_key, private_key: private_key}, opts)
-      when is_binary(method) and is_binary(path) and is_binary(body) do
+      when is_binary(method) and is_binary(path) and is_binary(body) and is_binary(api_key) do
     timestamp = opts |> Keyword.get(:timestamp, System.system_time(:second)) |> to_string()
 
-    with {:ok, seed} <- decode_seed(private_key) do
+    with {:ok, _present} <- present(api_key),
+         {:ok, seed} <- decode_seed(private_key) do
       signed_payload = payload(api_key, timestamp, path, method, body)
       {_public, secret} = :crypto.generate_key(:eddsa, :ed25519, seed)
       signature = :crypto.sign(:eddsa, :none, signed_payload, [secret, :ed25519])
@@ -81,6 +82,27 @@ defmodule DpExchange.Robinhood.Auth do
 
   def headers(_method, _path, _body, _credentials, _opts),
     do: {:error, {:missing_credentials, :robinhood}}
+
+  # The `@doc` above promises `{:missing_credentials, :robinhood}` "rather than signing with
+  # a partial credential ... clearer than the 401 they would otherwise become", and an empty
+  # `:api_key` is exactly a partial credential: it is the `kid` half of the scheme, it goes
+  # out as `x-api-key: ` AND into the signed payload, and `is_binary/1` accepts it.
+  #
+  # The `:private_key` half was already safe, but by accident rather than by check —
+  # `decode_seed/1` refuses `""` because it is not 32 bytes of base64. So the field with a
+  # structural format was guarded and the field that is an opaque string was not, which is
+  # the shape this whole family keeps finding: the check lands wherever the data happened to
+  # have something to check.
+  #
+  # Reachable by the commonest misconfiguration there is: `.env` carrying
+  # `ROBINHOOD_API_KEY=` with nothing after it. `System.get_env/1` returns `""` for that,
+  # not `nil`. Trimmed rather than compared to `""`, because a trailing space in a `.env`
+  # line produces `" "` and means the same thing.
+  defp present(api_key) do
+    if String.trim(api_key) == "",
+      do: {:error, {:missing_credentials, :robinhood}},
+      else: {:ok, api_key}
+  end
 
   @doc """
   The signed payload — `headers/5`'s own signing path builds it by calling this, not by
