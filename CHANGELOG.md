@@ -19,6 +19,35 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Fake.subscribe/2` replaced the live subscription instead of adding to it.** It was the
+  identical line `update_symbols/2` carries — the two callbacks were byte-for-byte the same
+  function — so a second `subscribe/2` silently dropped whatever the first had subscribed.
+
+  The real facade unions (`wanted: MapSet.union(state.wanted, MapSet.new(symbols))` in
+  `Feed`), and so does every other venue package in this family. A consumer's tier-1 tests
+  against this fake therefore certified the opposite of what the venue does: subscribe twice,
+  keep one symbol here and both there. That is precisely the "differently capable" divergence
+  a fake exists not to have.
+
+  `c:DpExchange.Core.Venue.subscribe/2`'s own doc does not state which it is, and it does not
+  need to — the contract settles it by shape. `c:update_symbols/2` exists to "change a live
+  subscription's symbol set" and `c:unsubscribe/2` to stop delivery for named symbols; neither
+  has any purpose if `subscribe/2` already replaces, since a caller would just subscribe the
+  new list. Two callbacks the contract distinguishes, implemented as one function, is the tell.
+
+  Found by asking all five fakes the same three questions in order — subscribe, subscribe
+  again, unsubscribe, replace — and four of the five answered differently from the fifth.
+  Core's conformance suite gains assertion 26 so the next venue cannot reintroduce it.
+
+  One of this package's own tests was pinning the defect. "subscribe works without options,
+  and an unlisted symbol pushes nothing" asserted `coverage() == %{}` after subscribing a
+  LISTED symbol and then an unlisted one — and passed only because the second call wiped the
+  first. The empty map came out of the bug, not out of the property under test. It now asserts
+  the listed symbol IS covered and the unlisted one is not, which holds whichever way
+  `subscribe/2` composes.
+
 ## [0.3.28] - 2026-09-15
 
 ### Fixed

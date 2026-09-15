@@ -267,10 +267,20 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
   describe "the fake's short arity" do
     test "subscribe works without options, and an unlisted symbol pushes nothing" do
+      # **This asserted `coverage() == %{}` after subscribing a LISTED symbol first**, and
+      # passed only because `subscribe/2` replaced the live set: `"BTC-USD"` was wiped by
+      # the second call and `"NOPE-USD"` contributes nothing, so the empty map came out of
+      # the bug rather than out of the property being tested. It pinned the defect in place.
+      #
+      # The claim this test is actually about — an unlisted symbol adds no coverage — is
+      # asserted directly now, and holds whichever way `subscribe/2` composes.
       assert :ok = Fake.subscribe(["BTC-USD"])
       assert :ok = Fake.subscribe(["NOPE-USD"])
 
-      assert Fake.coverage() == %{}
+      covered = Map.keys(Fake.coverage())
+
+      assert "BTC-USD" in covered, "subscribe/2 adds to the live set; it does not replace it"
+      refute "NOPE-USD" in covered, "a symbol this venue does not list is never covered"
     end
   end
 end
