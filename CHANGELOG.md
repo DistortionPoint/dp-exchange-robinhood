@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.29] - 2026-09-15
+
 ### Fixed
 
 - **`Fake.subscribe/2` replaced the live subscription instead of adding to it.** It was the
