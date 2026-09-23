@@ -159,7 +159,7 @@ defmodule DpExchange.Robinhood.Feed do
 
   use GenServer
 
-  alias DpExchange.Core.{Fanout, Notice, PollingFeed}
+  alias DpExchange.Core.{Config, Fanout, Notice, PollingFeed}
   alias DpExchange.Robinhood.{Credentials, Rest}
 
   # Matches the platform's collection cadence — an internal/operational choice, not
@@ -254,7 +254,7 @@ defmodule DpExchange.Robinhood.Feed do
   # calling process for asking during exactly the conditions it exists to report.
   @spec subscribe_notices(GenServer.server(), keyword()) :: :ok
   def subscribe_notices(feed, opts \\ []),
-    do: GenServer.call(feed, {:subscribe_notices, Keyword.get(opts, :to, self())}, @call_timeout)
+    do: GenServer.call(feed, {:subscribe_notices, Config.opt(opts, :to, self())}, @call_timeout)
 
   # --- server ------------------------------------------------------------
 
@@ -267,7 +267,7 @@ defmodule DpExchange.Robinhood.Feed do
     # state)` below is what this flag makes reachable at all.
     Process.flag(:trap_exit, true)
 
-    subscriber = Keyword.get(opts, :subscriber, self())
+    subscriber = Config.opt(opts, :subscriber, self())
 
     state = %{
       poller: nil,
@@ -294,12 +294,12 @@ defmodule DpExchange.Robinhood.Feed do
       # Tracked here, not only inside `PollingFeed`'s own state, so a crash-restart has
       # something to rebuild the poller FROM: the opts this process started with are
       # static and never carry an `update_symbols/2` call made after boot.
-      symbols: Keyword.get(opts, :symbols, []),
+      symbols: Config.opt(opts, :symbols, []),
       # Wrapped immediately, before it reaches `state` — see `Credentials`'s moduledoc.
       # `start_poller/1`'s `fetch` closure and `Rest.get_top_of_book/3`/`Auth.headers/5`
       # keep working unchanged: a struct is a map.
       credentials: opts |> Keyword.get(:credentials, %{}) |> Credentials.wrap(),
-      interval_ms: Keyword.get(opts, :interval_ms, @interval_ms),
+      interval_ms: Config.opt(opts, :interval_ms, @interval_ms),
       start_delay_ms: Keyword.get(opts, :start_delay_ms),
       request_opts:
         opts

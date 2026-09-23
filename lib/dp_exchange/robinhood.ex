@@ -62,7 +62,7 @@ defmodule DpExchange.Robinhood do
 
   @behaviour DpExchange.Core.Venue
 
-  alias DpExchange.Core.{Capabilities, Venue}
+  alias DpExchange.Core.{Capabilities, Config, Venue}
   alias DpExchange.Robinhood.{Feed, Rest, SymbolFormat}
 
   # The venue serves none of these. That is a claim about Robinhood, not about how far this
@@ -726,7 +726,7 @@ defmodule DpExchange.Robinhood do
 
   # --- internals ---------------------------------------------------------
 
-  defp feed(opts), do: Keyword.get(opts, :feed, DpExchange.Robinhood.Supervisor.feed_name(opts))
+  defp feed(opts), do: Config.opt(opts, :feed, DpExchange.Robinhood.Supervisor.feed_name(opts))
 
   defp alive?(name) when is_atom(name), do: is_pid(GenServer.whereis(name))
   defp alive?(pid) when is_pid(pid), do: Process.alive?(pid)

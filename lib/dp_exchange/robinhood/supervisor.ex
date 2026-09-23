@@ -16,7 +16,7 @@ defmodule DpExchange.Robinhood.Supervisor do
 
   use Supervisor
 
-  alias DpExchange.Core.DefaultRateLimiter
+  alias DpExchange.Core.{Config, DefaultRateLimiter}
   alias DpExchange.Robinhood.Feed
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -36,11 +36,11 @@ defmodule DpExchange.Robinhood.Supervisor do
 
   @doc "The limiter this venue meters against."
   @spec limiter_name(keyword()) :: atom()
-  def limiter_name(opts), do: Keyword.get(opts, :limiter, DpExchange.Robinhood.RateLimiter)
+  def limiter_name(opts), do: Config.opt(opts, :limiter, DpExchange.Robinhood.RateLimiter)
 
   @doc "This venue's feed process."
   @spec feed_name(keyword()) :: atom()
-  def feed_name(opts), do: Keyword.get(opts, :feed, Feed)
+  def feed_name(opts), do: Config.opt(opts, :feed, Feed)
 
   defp limits do
     caps = DpExchange.Robinhood.capabilities()

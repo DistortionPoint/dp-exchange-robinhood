@@ -80,7 +80,7 @@ defmodule DpExchange.Robinhood.Rest do
 
   @doc "Base URL, overridable for tests."
   @spec base_url(keyword()) :: String.t()
-  def base_url(opts), do: Keyword.get(opts, :base_url, @base_url)
+  def base_url(opts), do: Config.opt(opts, :base_url, @base_url)
 
   @doc """
   Best bid and ask for `symbol` — the top of the book, not a traded price.
@@ -411,7 +411,7 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, account} <- required_account(opts) do
       query =
         [{"account_number", account}] ++
-          Enum.map(List.wrap(Keyword.get(opts, :asset_codes, [])), &{"asset_code", &1})
+          Enum.map(List.wrap(Config.opt(opts, :asset_codes, [])), &{"asset_code", &1})
 
       path = "/api/v2/crypto/trading/holdings/" <> query_string(query)
       asked_at = DateTime.utc_now()
