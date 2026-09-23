@@ -195,6 +195,101 @@ defmodule DpExchange.Robinhood.TradingTest do
     end
   end
 
+  describe "client_order_id survives a forwarded nil, and every retry carries the same one" do
+    # `order_body/2` read `Keyword.get(opts, :client_order_id, generate_client_order_id())`.
+    # `Keyword.get/3` substitutes its default only for an ABSENT key — never for one present
+    # and `nil` — and this family forwards `opts` unchanged by convention, so a caller whose
+    # own caller never set one handed through `client_order_id: nil`.
+    #
+    # Measured against a transport answering 500, before the fix: THREE submissions of one
+    # order, each with `"client_order_id": null`. `request_opts/1` forwards `:retry_attempts`
+    # and `HttpClient`'s default of 3 applied, and the key is the whole reason those retries
+    # are safe. A null key is no key at all.
+    #
+    # These tests deliberately do NOT pin `retry_attempts: 0` — the package's real retry
+    # default is the thing under test, and pinning it away is how it stayed invisible.
+    @market %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: Decimal.new("0.5")}
+
+    defp failing(test_pid) do
+      fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:attempt, Jason.decode!(raw)["client_order_id"]})
+        Plug.Conn.resp(conn, 500, "upstream is having a bad day")
+      end
+    end
+
+    defp attempts(acc \\ []) do
+      receive do
+        {:attempt, id} -> attempts([id | acc])
+      after
+        200 -> Enum.reverse(acc)
+      end
+    end
+
+    test "an explicit nil gets a generated key, never a null one" do
+      assert {:error, _reason} =
+               Rest.place_order(@credentials, @market,
+                 account_number: "RH-1",
+                 client_order_id: nil,
+                 plug: failing(self()),
+                 retry_delay: 1
+               )
+
+      ids = attempts()
+
+      assert length(ids) > 1,
+             "the retries must actually happen here, or this proves nothing about them"
+
+      assert Enum.all?(ids, &(is_binary(&1) and &1 != "")),
+             "a retried order carried client_order_id #{inspect(ids)} — a null key is no " <>
+               "key, and the venue places each attempt as a new order"
+
+      assert length(Enum.uniq(ids)) == 1,
+             "every retry of ONE order must carry the SAME key, or the venue cannot tell " <>
+               "the second attempt from the first: #{inspect(ids)}"
+    end
+
+    test "an empty string is treated as absent — it would be a key every order shared" do
+      assert {:error, _reason} =
+               Rest.place_order(@credentials, @market,
+                 account_number: "RH-1",
+                 client_order_id: "",
+                 plug: failing(self()),
+                 retry_delay: 1
+               )
+
+      assert [id | _rest] = attempts()
+      assert is_binary(id) and id != ""
+    end
+
+    test "a caller's own key is sent unchanged on every attempt" do
+      assert {:error, _reason} =
+               Rest.place_order(@credentials, @market,
+                 account_number: "RH-1",
+                 client_order_id: "mine-123",
+                 plug: failing(self()),
+                 retry_delay: 1
+               )
+
+      assert Enum.uniq(attempts()) == ["mine-123"]
+    end
+
+    test "two separate orders get two different generated keys" do
+      # The other half of the property: one key per ORDER, not one per process. Two calls
+      # are two orders, and sharing a key would make the venue return the first for both.
+      for _call <- 1..2 do
+        Rest.place_order(@credentials, @market,
+          account_number: "RH-1",
+          plug: failing(self()),
+          retry_attempts: 1
+        )
+      end
+
+      assert [first, second] = attempts()
+      refute first == second
+    end
+  end
+
   describe "placing an order" do
     test "the config goes under a key named after the order's own type" do
       # A config under the wrong key is silently ignored and the order is placed with none.

@@ -19,6 +19,30 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A forwarded `client_order_id: nil` sent the order with a null idempotency key — three
+  times.** `order_body/2` read `Keyword.get(opts, :client_order_id, generate())`, and
+  `Keyword.get/3` substitutes its default only for an ABSENT key, never for one present and
+  `nil`. This family forwards `opts` unchanged by convention — the facade passes
+  `with_limiter(opts)` straight through — so a caller whose own caller never set one handed
+  `client_order_id: nil` down, and the order went out with `"client_order_id": null`.
+
+  Measured against a transport answering 500: **three submissions of the same order, each
+  carrying `client_order_id: null`**, because `request_opts/1` forwards `:retry_attempts`
+  and `Core.HttpClient`'s default of 3 applied. The key is the whole reason those retries are
+  safe; a null one is no key at all. After the fix the same run sends three attempts carrying
+  one identical generated key.
+
+  It is the forwarded-`nil` trap `Core.Config.opt/3` exists for, and the two sibling venues
+  had each already got it right — `dp_exchange_coinbase` with `||`, `dp_exchange_webull` with
+  an explicit `nil ->` clause. Anything that is not a non-empty string is now treated as
+  absent: an empty key would be one every order shared.
+
+  The new tests deliberately do not pin `retry_attempts: 0`, because the package's real
+  retry default is what is under test and pinning it away is how it stayed invisible. They
+  also assert the other half of the property — two separate orders get two different keys.
+
 ## [0.3.29] - 2026-09-15
 
 ### Fixed

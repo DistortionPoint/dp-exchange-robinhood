@@ -42,7 +42,7 @@ defmodule DpExchange.Robinhood.Rest do
   discovering an empty series.
   """
 
-  alias DpExchange.Core.{HttpClient, Instrument}
+  alias DpExchange.Core.{Config, HttpClient, Instrument}
   alias DpExchange.Core.Types.{Balance, Order, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
@@ -643,7 +643,7 @@ defmodule DpExchange.Robinhood.Rest do
 
       {:ok,
        %{
-         "client_order_id" => Keyword.get(opts, :client_order_id, generate_client_order_id()),
+         "client_order_id" => client_order_id(opts),
          "side" => to_string(side),
          "type" => wire_type,
          "symbol" => SymbolFormat.to_exchange_symbol(symbol),
@@ -755,6 +755,34 @@ defmodule DpExchange.Robinhood.Rest do
   # A v4 UUID from the VM's own CSPRNG. The venue treats `client_order_id` as an idempotency
   # key, so a collision would return someone else's order — worth generating correctly, and
   # not worth a dependency for sixteen bytes.
+  # **`Config.opt/3`, not `Keyword.get/3` with a default — and a string, or a fresh key.**
+  #
+  # This was `Keyword.get(opts, :client_order_id, generate_client_order_id())`. `Keyword.get/3`
+  # substitutes its default only for an ABSENT key, never for one that is present and `nil`,
+  # and this family forwards `opts` unchanged through every layer by convention — the facade
+  # passes `with_limiter(opts)` straight here. So a caller whose own caller never set a
+  # `client_order_id` handed through `client_order_id: nil`, and the order went out with
+  # `"client_order_id": null`.
+  #
+  # Measured against a transport answering 500: **three submissions of the same order, each
+  # carrying `client_order_id: null`**, because `request_opts/1` forwards `:retry_attempts`
+  # and `Core.HttpClient`'s default of 3 applied. The key is the whole reason those retries
+  # are safe — "re-sending one returns the original order instead of placing a second" —
+  # and a null one is no key at all. It is the same forwarded-`nil` trap `Core.Config.opt/3`
+  # exists for, which this family has recorded three times already under
+  # `rate_limit_blocking`.
+  #
+  # The two sibling venues had already got this right, each its own way:
+  # `dp_exchange_coinbase` reads `Map.get(request, :client_order_id) || generate()` and
+  # `dp_exchange_webull` matches `nil ->` explicitly. Anything that is not a non-empty
+  # string is treated as absent — an empty key is a key every order would share.
+  defp client_order_id(opts) do
+    case Config.opt(opts, :client_order_id, nil) do
+      id when is_binary(id) and id != "" -> id
+      _absent -> generate_client_order_id()
+    end
+  end
+
   defp generate_client_order_id do
     <<a::32, b::16, _version::4, c::12, _variant::2, d::62>> = :crypto.strong_rand_bytes(16)
 
