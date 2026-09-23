@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.31] - 2026-09-23
+
 ### Fixed
 
 - **A forwarded `nil` option was used as the value instead of meaning "not set".** This
