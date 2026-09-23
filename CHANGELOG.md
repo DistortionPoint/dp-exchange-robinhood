@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.30] - 2026-09-23
+
 ### Fixed
 
 - **A forwarded `client_order_id: nil` sent the order with a null idempotency key — three
