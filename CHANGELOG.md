@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.34] - 2026-09-24
+
 ### Fixed
 
 - **One refused symbol could stop the whole feed at scale, every cycle.** When the bulk
