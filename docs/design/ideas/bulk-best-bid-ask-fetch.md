@@ -1,7 +1,9 @@
 # Idea: switch the feed to `best_bid_ask`'s bulk form
 
-**Status:** implemented, 2026-09-08. `Feed` now polls in bulk (`Rest.get_top_of_book_bulk/3`)
-with a per-cycle per-symbol fallback on a whole-batch refusal — see "What shipped" below.
+**Status:** implemented, 2026-09-08; fallback replaced, 2026-09-24. `Feed` polls in bulk
+(`Rest.get_top_of_book_bulk/3`). A whole-batch refusal is bisected, and a refused symbol is
+remembered and asked for on its own, where it used to fall back to one request per symbol.
+See "What shipped" below.
 Recorded during the 2026-09-06 bug audit, alongside the fix for the v1/v2 field-name defect
 in `Rest.get_top_of_book/3` (see CHANGELOG).
 
@@ -34,10 +36,18 @@ the endpoint that does exist.
 
 `Feed` polls in bulk now: `Rest.get_top_of_book_bulk/3` sends every symbol in scope as
 repeated `symbol` query parameters in one signed request, decodes whatever `results` rows
-come back, and `Feed.fetch_all/4` falls back to one request per symbol, for that cycle only,
-when the bulk call itself is refused. Request count at the ~86-pair catalogue this package
-inherited: roughly 86 signed requests a cycle before, 1 after, rising back toward 86 only for
-cycles where the bulk call is actively refused — see the CHANGELOG entry for this release.
+come back. Request count at the ~86-pair catalogue this package inherited: roughly 86
+signed requests a cycle before, 1 after.
+
+**2026-09-24: the per-symbol fallback was replaced.** As first shipped, a refused bulk call
+fell back to one request per symbol, sequentially, inside `PollingFeed`'s fetch, for every
+cycle the bad symbol stayed in scope. That fetch is killed at 30s and this venue's limiter
+allows 10 requests a second, so a large enough universe could not finish. A killed fetch
+publishes nothing, so one bad symbol silenced every symbol, every cycle. It also fell back
+on a 401, where every symbol is refused alike. Now `Feed.fetch_all/5` bisects a refused
+batch within a 20s budget, remembers a refused symbol (`state.refused`) so the next bulk
+request leaves it out and asks for it on its own, and does not split a 401. See `Feed`'s
+moduledoc, "A refused batch is bisected, and a refused symbol is remembered".
 
 ## Why this was not a code change when first recorded
 
@@ -60,8 +70,8 @@ forever" — strictly worse than per-symbol polling.
 
 ## Why the design does not need to guess
 
-Rather than wait on a probe to answer the open question above, `Feed.fetch_all/4` (and its
-`fallback_per_symbol/5`) is built to be correct under EITHER possible venue behaviour,
+Rather than wait on a probe to answer the open question above, `Feed.fetch_all/5` is built
+to be correct under EITHER possible venue behaviour,
 without knowing which one is real:
 
 - **If the venue drops the bad row and 200s the rest** (a `results` array shorter than what
@@ -71,13 +81,12 @@ without knowing which one is real:
   `Rest.first_result/1`'s own moduledoc states for the single-symbol path, guarding against
   DpCryptoManagement issue #25's exact mistake (silence read as a permanent refusal).
 - **If the venue 400s the whole batch**: the bulk call comes back `{:refused, _}`, and
-  `Feed` falls back to one signed request per symbol for that cycle only. Every refusal
-  found is reported through the same `on_refusal` function `PollingFeed` itself would have
-  used, and every symbol that answers fine still publishes in the SAME cycle — so the bad
-  symbol is identified without withholding the other N-1 symbols' quotes. The cost is real
-  but bounded: one cycle spends one request per symbol instead of one for the whole batch,
-  for as long as the refused symbol stays in scope; once a consumer reacts to the refusal
-  and drops the symbol, the very next tick is back to one request.
+  `Feed` splits the batch and asks again until it reaches the refused symbol, about
+  2·log₂(N) requests for one bad symbol. Every refusal found is reported through the same
+  `on_refusal` function `PollingFeed` itself would have used, and every symbol that
+  answers still publishes in the SAME cycle. From the next cycle the refused symbol is
+  asked for on its own and the rest are back to one request, without waiting for a
+  consumer to drop it.
 
 No consumer-visible behaviour depends on which of the two is true. See
 `lib/dp_exchange/robinhood/feed.ex`'s moduledoc ("This does not guess") for the full

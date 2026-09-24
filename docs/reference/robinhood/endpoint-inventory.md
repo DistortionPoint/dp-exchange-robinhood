@@ -70,8 +70,10 @@ naming, no `price`, no `timestamp`. This cost a working quote for one release: s
 CHANGELOG's `### Fixed` entry, 2026-09-06.
 
 **`best_bid_ask`'s `symbol` parameter is repeatable** on both versions — `?symbol=BTC-USD&
-symbol=ETH-USD` — one signed request answering for every symbol named. Not yet used by
-this package's feed; see `docs/design/ideas/bulk-best-bid-ask-fetch.md` for why.
+symbol=ETH-USD` — one signed request answering for every symbol named. `Feed` polls this
+way (`Rest.get_top_of_book_bulk/3`); see `docs/design/ideas/bulk-best-bid-ask-fetch.md`
+and `Feed`'s moduledoc. The vendor publishes no maximum number of symbols per request;
+none has been measured, and at this venue's ~86 pairs the query string is about 1.5 KB.
 
 ## Streaming: checked against the vendor, not inherited
 

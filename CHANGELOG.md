@@ -19,6 +19,13 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Documentation
+
+- **The bulk-fetch design note and the endpoint inventory still described the per-symbol
+  fallback** that 0.3.34 replaced with bisection, and the inventory still said the feed did
+  not use `best_bid_ask`'s repeatable `symbol` parameter. Both now match the code, and the
+  inventory records that no per-request symbol maximum is published or measured.
+
 ## [0.3.34] - 2026-09-24
 
 ### Fixed
