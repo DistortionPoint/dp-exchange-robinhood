@@ -554,8 +554,9 @@ defmodule DpExchange.Robinhood.Rest do
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
 
-      with {:ok, body} <- get(path, credentials, opts) do
-        body |> account_rows() |> to_orders()
+      with {:ok, body} <- get(path, credentials, opts),
+           {:ok, rows} <- order_rows(body) do
+        to_orders(rows)
       end
     end
   end
@@ -819,8 +820,30 @@ defmodule DpExchange.Robinhood.Rest do
   # this field" from "there was no order object at all". That distinction has to be made
   # here, where the shape is still visible. `{:error, :unexpected_response_shape}` is the
   # same refusal `DpExchange.Gemini.Private.to_order/1` returns for the same condition.
-  defp to_order(row) when is_map(row), do: {:ok, order_struct(row)}
+  # **An order with no id is refused, and so is a list whose shape is not a page.**
+  #
+  # Found by feeding every active facade call plausible-but-wrong bodies. `get_orders/2` read
+  # its rows through `account_rows/1`, whose last clause wraps any bare object as one row —
+  # right for the accounts endpoint, which can answer with a single account, and wrong here:
+  # `{}` became `{:ok, [%Order{id: nil, symbol: nil, side: nil, …}]}`. `get_order/3` did the
+  # same with any map at all. An order a caller cannot cancel or look up again is not a weaker
+  # answer; it is a phantom.
+  #
+  # Refused rather than dropped, which is this module's own rule for this list —
+  # `to_orders/1` refuses the whole batch on one unreadable row, because a list with an order
+  # silently missing reads as complete. `Core.Types.Order` admits `id: nil` for
+  # acknowledgements that carry little else; this venue's V2 order object always carries one.
+  defp to_order(%{"id" => id} = row) when is_binary(id) and id != "",
+    do: {:ok, order_struct(row)}
+
+  defp to_order(row) when is_map(row), do: {:error, {:missing_required_field, :id}}
   defp to_order(_row), do: {:error, :unexpected_response_shape}
+
+  # The orders endpoint answers with a page, `{"next": …, "results": [...]}`, and never with a
+  # bare order — so, unlike `account_rows/1`, there is no bare-object clause to fall into.
+  defp order_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
+  defp order_rows(%{"results" => _not_a_list}), do: {:ok, []}
+  defp order_rows(_other), do: {:error, :unexpected_response_shape}
 
   # One bad row refuses the whole list rather than seeding it with a blank order among real
   # ones — the hardest version of this to notice, and the reason `get_orders/2` does not

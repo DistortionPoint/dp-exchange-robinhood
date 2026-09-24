@@ -19,6 +19,29 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An empty object became a phantom order.** `get_orders/2` read its rows through
+  `account_rows/1`, whose bare-object clause is right for the accounts endpoint and wrong
+  here: `{}` came back as `{:ok, [%Order{id: nil, symbol: nil, side: nil, …}]}`, and
+  `get_order/3` accepted any map as an order. Orders now read their rows only from the page's
+  `"results"`, and an order with no id is refused as `{:missing_required_field, :id}` — the
+  whole page, by this module's own rule that a list with an order silently missing reads as
+  complete.
+
+  Two test fixtures changed with it. The cancel tests answered `{"cancel_requested": true}`,
+  with no id — but `cancel_order/3`'s own @doc records, checked against the vendor's OpenAPI
+  document, that the v2 cancel returns a full `V2CryptoOrder`, which carries one. Those
+  fixtures passed only because an id-less order was accepted; they now use the documented
+  shape.
+
+  Found by feeding every active facade callback a set of plausible-but-wrong bodies — `[]`,
+  `null`, `{}`, an object whose list fields are all `null`, and `{"data": {}}` — and
+  flagging any call that raised, or that answered with a wrapper as a row or a record with
+  no identity. `Core.Venue`'s error discipline is that a facade answers and never raises in
+  the caller's process. `response_shape_test.exs` pins each body that used to fail, driven
+  through the facade, red against the previous code.
+
 ## [0.3.32] - 2026-09-24
 
 ### Fixed

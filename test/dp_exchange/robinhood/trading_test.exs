@@ -824,7 +824,7 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert {:ok, _result} =
                Rest.cancel_order(@credentials, "o-1",
-                 plug: capturing(%{"cancel_requested" => true}, me),
+                 plug: capturing(%{"id" => "o-1", "state" => "canceled"}, me),
                  retry_attempts: 0
                )
 
@@ -962,7 +962,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                DpExchange.Robinhood.cancel_order(
                  @credentials,
                  "o-1",
-                 base ++ [plug: responding(%{"cancel_requested" => true})]
+                 base ++ [plug: responding(%{"id" => "o-1", "state" => "canceled"})]
                )
 
       assert {:ok, _estimate} =
