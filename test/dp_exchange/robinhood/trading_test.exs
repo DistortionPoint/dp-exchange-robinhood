@@ -1026,4 +1026,17 @@ defmodule DpExchange.Robinhood.TradingTest do
       refute source =~ "/api/v1/"
     end
   end
+
+  describe "a page is never an account" do
+    # `account_rows/1` wrapped any map as one row, so a page with `"results": null` came back
+    # as `{:ok, [%{"next" => nil, "results" => nil}]}` — the pagination wrapper as an
+    # ACCOUNT, whose number a caller would then pass to every account-scoped call.
+    test "get_accounts/2 with results: null is no accounts" do
+      assert {:ok, []} =
+               Rest.get_accounts(@credentials,
+                 plug: fn conn -> Req.Test.json(conn, %{"next" => nil, "results" => nil}) end,
+                 retry_attempts: 0
+               )
+    end
+  end
 end

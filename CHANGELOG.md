@@ -19,6 +19,15 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A page came back as an account.** `account_rows/1` ended in a clause that wraps any map as
+  one row, and a page with `"results": null` fell through to it: measured, `get_accounts/2`
+  answered **`{:ok, [%{"next" => nil, "results" => nil}]}`** — the pagination wrapper as an
+  account, whose number a caller would then pass to every account-scoped call. When
+  `"results"` is present it now decides the shape whatever it holds, and this answers
+  `{:ok, []}`. The same defect `dp_exchange_webull`'s `rows/1` had, found the same day.
+
 ## [0.3.31] - 2026-09-23
 
 ### Fixed

@@ -387,6 +387,12 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   defp account_rows(%{"results" => rows}) when is_list(rows), do: rows
+  # **The wrapper is never a row.** When `"results"` is present it decides the shape whatever
+  # it holds; only a response with no `"results"` key at all is treated as one bare object.
+  # The catch-all used to take the wrapper too: a page `{"next": null, "results": null}`
+  # came back as an ACCOUNT, `{:ok, [%{"next" => nil, "results" => nil}]}`. The same defect
+  # `dp_exchange_webull`'s `rows/1` had, found the same day.
+  defp account_rows(%{"results" => _not_a_list}), do: []
   defp account_rows(%{} = row), do: [row]
   defp account_rows(_other), do: []
 
