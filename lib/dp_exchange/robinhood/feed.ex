@@ -60,18 +60,16 @@ defmodule DpExchange.Robinhood.Feed do
     own moduledoc), and this path must not reintroduce it on the bulk one.
   - The WHOLE request refused (400/401/403/404) — the shape a single bad symbol could
     plausibly produce, and the one this module used to have no safe answer for.
-    `fetch_all/4` falls back to one signed request per symbol, **for this cycle only**, via
-    the same `Rest.get_top_of_book/3` the old per-symbol design used. That fallback reports
-    every refusal it finds by CALLING the same `on_refusal` function `PollingFeed` itself
-    would have called, directly, rather than by returning `{:refused, refusals}` — see
-    `fetch_all/4` and `fallback_per_symbol/5` for why the return channel cannot carry both
-    the refusal and the other symbols' events in one outcome. So the bad symbol is reported
-    (once per cycle it stays in scope, same as the venue's own per-symbol refusal already
-    behaves when a consumer never drops it) AND every other symbol that answers fine
-    publishes in the SAME cycle — no data withheld, no cycle lost. The unavoidable cost is
-    real but different: this cycle spends one request per symbol instead of one for the
-    whole batch, for as long as the refused symbol stays in scope. Once a consumer reacts
-    to the refusal and drops the symbol, the very next tick is back to one request.
+    `fetch_all/5` splits the batch and asks again until it reaches the symbol the venue
+    objects to (see "A refused batch is bisected, and a refused symbol is remembered"
+    below). It reports every refusal it finds by CALLING the same `on_refusal` function
+    `PollingFeed` itself would have called, directly, rather than by returning
+    `{:refused, refusals}`, because the return channel cannot carry both the refusal and the
+    other symbols' events in one outcome. So the bad symbol is reported (once per cycle it
+    stays in scope, as the venue's own per-symbol refusal already behaves when a consumer
+    never drops it) AND every other symbol that answers publishes in the SAME cycle. From
+    the next cycle the refused symbol is asked for on its own, and the rest are back to one
+    request without waiting for a consumer to drop it.
   - The whole request merely erroring (a 5xx, a network failure) is left alone: retried
     next tick the ordinary way, at the ordinary one-request cost. Falling back per symbol
     here would not identify anything — an outage affects every symbol on either path
@@ -81,6 +79,34 @@ defmodule DpExchange.Robinhood.Feed do
   No single bad symbol can make this feed deliver nothing indefinitely: the worst case is
   one degraded cycle before the offending symbol is out of scope, never a permanent
   whole-batch failure.
+
+  ## A refused batch is bisected, and a refused symbol is remembered
+
+  The fallback above used to be one request per symbol, sequentially, inside `PollingFeed`'s
+  fetch. That fetch is killed at `:fetch_timeout_ms`, which is 30s at this feed's 30s
+  interval. This venue's limiter allows 10 requests a second, so 300 symbols could not
+  finish in time on the limiter alone, and fewer could not either once ordinary latency and
+  retries were added. A killed fetch publishes nothing. The next cycle sent the same bulk
+  request, was refused again, and fell back again, so one bad symbol past that size meant
+  every symbol delivered nothing, every cycle: the failure the fallback existed to prevent.
+  It also ran on a 401, where every per-symbol request is refused alike, spending one
+  request per symbol per cycle to learn nothing.
+
+  Now:
+
+  - **A refused batch is split in half and each half asked again**, down to single
+    symbols. One bad symbol among 300 is found in about 17 requests, not 300. A cycle
+    stops splitting at `@bisect_budget_ms` (20s), well inside the fetch timeout. What it
+    has not resolved by then is silence, retried next cycle, never reported as refused.
+  - **A symbol the venue refused is remembered** (`state.refused`) until it delivers again
+    or leaves scope. The next cycle's bulk request leaves it out, so the others are back to
+    ONE request without waiting for a consumer to drop it. The remembered symbols are
+    asked for in a request of their own, and bisected again if more than one, so one that
+    starts answering rejoins at once, and one still refused is reported again, once per
+    cycle, as before.
+  - **A 401 is not split.** An unauthenticated request is refused for every symbol alike.
+    It is returned as the cycle's error, and `PollingFeed`'s "delivering nothing" notice
+    says so, with no per-symbol refusals attributed to symbols that did nothing wrong.
 
   ## `acquire`, not `check`
 
@@ -176,6 +202,11 @@ defmodule DpExchange.Robinhood.Feed do
   # 2.9 req/s — comfortably under the declared ceiling, but that is a coincidence of the
   # two numbers, not a derivation of one from the other.
   @interval_ms 30_000
+
+  # How long one cycle may spend bisecting a refused batch. Well inside `PollingFeed`'s
+  # fetch timeout (its 30s floor), so a bisection is never killed part-way and its
+  # findings lost. See the moduledoc's "A refused batch is bisected".
+  @bisect_budget_ms 20_000
 
   # Every call INTO this Feed carries this explicitly, reads included, rather than taking
   # `GenServer.call/2`'s implicit five seconds.
@@ -295,6 +326,10 @@ defmodule DpExchange.Robinhood.Feed do
       # something to rebuild the poller FROM: the opts this process started with are
       # static and never carry an `update_symbols/2` call made after boot.
       symbols: Config.opt(opts, :symbols, []),
+      # Symbols the venue has refused and that have not delivered since. Added on a
+      # `{:refused, symbol, _}`, removed when that symbol's book arrives or it leaves scope.
+      # The fetch reads it so the bulk request leaves them out.
+      refused: MapSet.new(),
       # Wrapped immediately, before it reaches `state` — see `Credentials`'s moduledoc.
       # `start_poller/1`'s `fetch` closure and `Rest.get_top_of_book/3`/`Auth.headers/5`
       # keep working unchanged: a struct is a map.
@@ -340,7 +375,7 @@ defmodule DpExchange.Robinhood.Feed do
     request_opts = state.request_opts
 
     # Named so it can be handed to `PollingFeed` for its own per-symbol refusal channel
-    # AND reused inside `fetch_all/4`'s bulk-fallback path below — one function, one
+    # AND reused inside `fetch_all/5`'s bisection below — one function, one
     # meaning ("the venue just said so"), used from both places rather than reimplemented.
     on_refusal = fn symbol, reason ->
       send(parent, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
@@ -361,70 +396,108 @@ defmodule DpExchange.Robinhood.Feed do
       sink: fn book -> send(parent, {:dp_exchange, :robinhood, book}) end,
       on_refusal: on_refusal,
       on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
-      fetch_all: fn symbols -> fetch_all(symbols, credentials, request_opts, on_refusal) end
+      fetch_all: fn symbols ->
+        fetch_all(symbols, credentials, request_opts, on_refusal, parent)
+      end
     )
   end
 
   # The `:fetch_all` this feed hands to `PollingFeed` — see the moduledoc's "This does not
-  # guess" section for why each branch below is shaped the way it is. `on_refusal` is the
-  # SAME function `start_poller/1` gives `PollingFeed` for its own per-symbol path — reused
-  # here rather than reported through this function's return value, for a reason specific
-  # to the fallback below.
-  defp fetch_all(symbols, credentials, request_opts, on_refusal) do
-    case Rest.get_top_of_book_bulk(symbols, credentials, request_opts) do
-      {:ok, events} ->
-        {:ok, events}
+  # guess" and "A refused batch is bisected, and a refused symbol is remembered" sections.
+  # Symbols the venue has already refused are asked for separately, so the rest go back to
+  # one request. A refusal is reported by CALLING `on_refusal`, not through the return
+  # value: `PollingFeed`'s `fetch_all` contract carries one outcome per call, and a cycle
+  # that found a bad symbol also has every other symbol's events to publish.
+  defp fetch_all(symbols, credentials, request_opts, on_refusal, parent) do
+    refused = known_refused(parent)
+    {suspect, active} = Enum.split_with(symbols, &MapSet.member?(refused, &1))
 
-      {:error, reason} ->
-        {:error, reason}
+    ctx = %{
+      credentials: credentials,
+      request_opts: request_opts,
+      on_refusal: on_refusal,
+      deadline: System.monotonic_time(:millisecond) + @bisect_budget_ms
+    }
 
-      {:refused, reason} ->
-        fallback_per_symbol(symbols, credentials, request_opts, reason, on_refusal)
-    end
-  end
+    outcomes = resolve(active, ctx) ++ resolve(suspect, ctx)
 
-  # Reached only when the BULK call itself was refused (400/401/403/404) — a shape the
-  # vendor's document never disambiguates between "one bad symbol" and "the whole request
-  # was malformed". One signed request per symbol, for this cycle only, turns that
-  # ambiguity into an answer: which symbol (if any) the venue actually named.
-  #
-  # Every refusal found is reported by CALLING `on_refusal` directly, not by returning
-  # `{:refused, refusals}` for `PollingFeed` to report on this function's behalf. That
-  # matters: `PollingFeed`'s own `fetch_all` contract can carry only ONE outcome per call,
-  # and this cycle has two true things to say — which symbol (if any) the venue actually
-  # refused, AND the events every other symbol still answered with. Returning
-  # `{:refused, refusals}` would say the first and silently drop the second, which is
-  # exactly the "86 good symbols wait behind 1 bad one" failure this fallback exists to
-  # prevent — so the refusal is reported through the side channel `on_refusal` always was,
-  # and `{:ok, events}` is still returned whenever there is anything to publish, so the
-  # other symbols keep flowing in the SAME cycle the bad one is identified in. The
-  # unavoidable cost is real but different: this cycle spends one signed request per
-  # symbol instead of one for the whole batch, for as long as the refused symbol stays in
-  # scope — never a lost cycle, never a permanent one.
-  defp fallback_per_symbol(symbols, credentials, request_opts, bulk_reason, on_refusal) do
-    outcomes =
-      Enum.map(symbols, fn symbol ->
-        {symbol, Rest.get_top_of_book(symbol, credentials, request_opts)}
-      end)
-
-    Enum.each(outcomes, fn
-      {symbol, {:refused, reason}} -> on_refusal.(symbol, reason)
-      _fetched_or_errored -> :ok
-    end)
-
-    case for({_symbol, {:ok, event}} <- outcomes, do: event) do
-      [] -> {:error, bulk_reason}
+    case for({:events, events} <- outcomes, do: events) |> List.flatten() do
+      [] -> no_events(outcomes)
       events -> {:ok, events}
     end
   end
 
+  defp no_events([]), do: {:ok, []}
+
+  defp no_events(outcomes) do
+    case Enum.find(outcomes, &match?({:error, _reason}, &1)) do
+      {:error, reason} -> {:error, reason}
+      nil -> {:error, outcomes |> Enum.find(&match?({:refused, _}, &1)) |> elem(1)}
+    end
+  end
+
+  # One bulk request for `symbols`; on a refusal, split in half and ask again, down to
+  # single symbols — see the moduledoc's "A refused batch is bisected, and a refused symbol
+  # is remembered". Returns a list of `{:events, _}`, `{:error, _}` and `{:refused, _}`.
+  defp resolve([], _ctx), do: []
+
+  defp resolve(symbols, ctx) do
+    case Rest.get_top_of_book_bulk(symbols, ctx.credentials, ctx.request_opts) do
+      {:ok, events} ->
+        [{:events, events}]
+
+      {:error, reason} ->
+        [{:error, reason}]
+
+      {:refused, reason} ->
+        refused(symbols, reason, ctx)
+    end
+  end
+
+  # 401 is the request being unauthenticated. Every symbol would be refused the same way,
+  # so splitting identifies nothing and only spends requests.
+  defp refused(_symbols, {:venue_error, 401} = reason, _ctx), do: [{:error, reason}]
+  defp refused(_symbols, {:venue_error, 401, _detail} = reason, _ctx), do: [{:error, reason}]
+
+  defp refused([symbol], reason, ctx) do
+    ctx.on_refusal.(symbol, reason)
+    [{:refused, reason}]
+  end
+
+  defp refused(symbols, reason, ctx) do
+    if System.monotonic_time(:millisecond) >= ctx.deadline do
+      # Out of budget. Left unresolved, as silence retried next cycle, not reported as
+      # refused, because nothing here established which of these the venue objected to.
+      [{:error, reason}]
+    else
+      {left, right} = Enum.split(symbols, div(length(symbols), 2))
+      resolve(left, ctx) ++ resolve(right, ctx)
+    end
+  end
+
+  # The set `Feed` holds of symbols the venue has refused and that have not delivered since.
+  # Read at the start of each cycle. A feed that does not answer is treated as holding
+  # none: every symbol goes into the bulk request, which is the old behaviour.
+  defp known_refused(parent) do
+    GenServer.call(parent, :refused_symbols, 5_000)
+  catch
+    :exit, _reason -> MapSet.new()
+  end
+
   @impl true
+  def handle_call(:refused_symbols, _from, state), do: {:reply, state.refused, state}
+
   def handle_call(:coverage, _from, state) do
     {:reply, poller_coverage(state), state}
   end
 
   def handle_call({:update_symbols, symbols}, _from, state) do
-    state = %{state | symbols: symbols}
+    state = %{
+      state
+      | symbols: symbols,
+        refused: MapSet.intersection(state.refused, MapSet.new(symbols))
+    }
+
     {:reply, PollingFeed.update_symbols(state.poller, symbols), state}
   end
 
@@ -466,6 +539,14 @@ defmodule DpExchange.Robinhood.Feed do
   def handle_info({:dp_exchange, :robinhood, %Notice{}} = message, state) do
     fan_out(state.notice_subscribers, message)
     {:noreply, state}
+  end
+
+  def handle_info({:dp_exchange, :robinhood, {:refused, symbol, _reason}} = message, state) do
+    {:noreply, deliver(%{state | refused: MapSet.put(state.refused, symbol)}, message)}
+  end
+
+  def handle_info({:dp_exchange, :robinhood, %{symbol: symbol}} = message, state) do
+    {:noreply, deliver(%{state | refused: MapSet.delete(state.refused, symbol)}, message)}
   end
 
   def handle_info({:dp_exchange, :robinhood, _payload} = message, state) do

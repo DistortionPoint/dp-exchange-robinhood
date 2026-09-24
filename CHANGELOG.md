@@ -19,6 +19,20 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **One refused symbol could stop the whole feed at scale, every cycle.** When the bulk
+  `best_bid_ask` request was refused, `Feed` fell back to one request per symbol,
+  sequentially, inside `PollingFeed`'s fetch. That fetch is killed at 30s, and this venue's
+  limiter allows 10 requests a second, so a large enough universe could not finish. A
+  killed fetch publishes nothing, and the same refused batch was sent again next cycle, so
+  every symbol delivered nothing for as long as the bad one stayed in scope. It also fell
+  back on a 401, spending one refused request per symbol per cycle. Now a refused batch is
+  bisected (one bad symbol among 300 is found in about 17 requests), within a 20s budget.
+  A refused symbol is remembered until it delivers again or leaves scope, so the next
+  bulk request leaves it out and it is asked for on its own. A 401 is not split.
+  Break-verified: three of the four new tests fail on the previous code.
+
 ## [0.3.33] - 2026-09-24
 
 ### Fixed

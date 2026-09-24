@@ -514,6 +514,113 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert_bulk_request_for(["BTC-USD", "ETH-USD"])
     end
 
+    # A venue that refuses any request containing `bad` (400 for a batch, 404 alone) and
+    # answers every other symbol. `good?` lets a test make `bad` start answering.
+    defp refusing(bad, good? \\ fn -> false end) do
+      test_pid = self()
+
+      fn conn ->
+        symbols = query_symbols(conn.query_string)
+        send(test_pid, {:request, symbols})
+        conn = Plug.Conn.put_resp_content_type(conn, "application/json")
+
+        cond do
+          bad in symbols and not good?.() and length(symbols) > 1 ->
+            Plug.Conn.resp(conn, 400, Jason.encode!(%{"detail" => "Invalid symbol: #{bad}"}))
+
+          bad in symbols and not good?.() ->
+            Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
+
+          true ->
+            rows = for s <- symbols, do: %{"symbol" => s, "bid" => "1", "ask" => "2"}
+            Plug.Conn.resp(conn, 200, Jason.encode!(%{"results" => rows}))
+        end
+      end
+    end
+
+    defp drain_requests(acc \\ []) do
+      receive do
+        {:request, symbols} -> drain_requests([symbols | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "a refused symbol leaves the bulk request on the next cycle without a consumer dropping it" do
+      # See the moduledoc's "A refused batch is bisected, and a refused symbol is
+      # remembered". Before it, every cycle sent the same refused batch and fell back again.
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD", "LTC-USD"],
+        interval_ms: 300,
+        retry_attempts: 0,
+        plug: refusing("LTC-USD")
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 1_000
+      assert_bulk_request_for(["BTC-USD", "ETH-USD"])
+    end
+
+    test "one bad symbol among sixteen is found by bisection, not sixteen requests" do
+      symbols = for n <- 1..16, do: "S#{n}-USD"
+
+      start_feed(
+        symbols: symbols,
+        interval_ms: 60_000,
+        retry_attempts: 0,
+        plug: refusing("S7-USD")
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, "S7-USD", _reason}}, 2_000
+      Process.sleep(100)
+
+      # 1 whole batch + 2 per level for 4 levels = at most 9, against 16 per symbol.
+      assert length(drain_requests()) <= 9
+    end
+
+    test "a 401 is not split: one request a cycle, and no symbol is blamed" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(401, Jason.encode!(%{"detail" => "Not authenticated"}))
+      end
+
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD", "LTC-USD"],
+        interval_ms: 60_000,
+        retry_attempts: 0,
+        plug: plug
+      )
+
+      assert_receive {:request, first}, 1_000
+      assert length(first) == 3
+      refute_receive {:request, _split}, 300
+      refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
+    end
+
+    test "a remembered symbol that starts answering rejoins" do
+      {:ok, flag} = Agent.start_link(fn -> false end)
+
+      start_feed(
+        symbols: ["BTC-USD", "LTC-USD"],
+        interval_ms: 200,
+        retry_attempts: 0,
+        plug: refusing("LTC-USD", fn -> Agent.get(flag, & &1) end)
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 1_000
+      Agent.update(flag, fn _released -> true end)
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "LTC-USD"}},
+                     2_000
+
+      assert_bulk_request_for(["BTC-USD", "LTC-USD"])
+    end
+
     test "a bulk request that merely errors (a 5xx) is retried plainly, never fanned out per symbol" do
       test_pid = self()
 
