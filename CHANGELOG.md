@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.33] - 2026-09-24
+
 ### Fixed
 
 - **An empty object became a phantom order.** `get_orders/2` read its rows through
