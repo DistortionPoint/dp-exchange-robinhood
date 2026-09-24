@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.35] - 2026-09-24
+
 ### Documentation
 
 - **The bulk-fetch design note and the endpoint inventory still described the per-symbol
