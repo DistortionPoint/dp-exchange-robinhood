@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.32] - 2026-09-24
+
 ### Fixed
 
 - **A page came back as an account.** `account_rows/1` ended in a clause that wraps any map as
