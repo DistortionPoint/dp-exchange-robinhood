@@ -173,6 +173,23 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.coverage(feed: name) == %{}
     end
 
+    test "a second subscribe keeps the first, which has not delivered yet", %{name: name} do
+      # `subscribe/2` used to rebuild the polled set from `coverage/1`, which is what has
+      # been observed arriving. Nothing has arrived here, so the second call replaced the
+      # first instead of adding to it.
+      :ok = Robinhood.subscribe(["BTC-USD"], feed: name)
+      :ok = Robinhood.subscribe(["ETH-USD"], feed: name)
+
+      assert Enum.sort(Robinhood.wanted(feed: name)) == ["BTC-USD", "ETH-USD"]
+    end
+
+    test "unsubscribe removes only what it names, delivering or not", %{name: name} do
+      :ok = Robinhood.update_symbols(["BTC-USD", "ETH-USD", "SOL-USD"], feed: name)
+      :ok = Robinhood.unsubscribe(["ETH-USD"], feed: name)
+
+      assert Enum.sort(Robinhood.wanted(feed: name)) == ["BTC-USD", "SOL-USD"]
+    end
+
     test "subscribe_notices registers against a running feed", %{name: name} do
       assert Robinhood.subscribe_notices(feed: name) == :ok
     end
@@ -583,6 +600,41 @@ defmodule DpExchange.RobinhoodTest do
       {_name, 3} -> [@credentials, "id", []]
       {_name, 2} -> [@credentials, []]
       {_name, 1} -> [[]]
+    end
+  end
+
+  describe "a streaming call answers rather than exiting the caller" do
+    # Every streaming callback's spec is a value. A bare `GenServer.call/3` into the feed
+    # exited the caller instead: `:noproc` with no feed running, `:timeout` with a busy one.
+    # A `:timeout` needs the feed's full call budget to observe, so a feed that exits mid-call
+    # stands in for it here. Both go through the same `catch`.
+    test "with no feed running" do
+      opts = [feed: :"absent_feed_#{System.unique_integer([:positive])}"]
+
+      assert DpExchange.Robinhood.subscribe(["BTC-USD"], opts) == {:error, :feed_not_started}
+      assert DpExchange.Robinhood.unsubscribe(["BTC-USD"], opts) == :ok
+      assert DpExchange.Robinhood.update_symbols(["BTC-USD"], opts) == {:error, :feed_not_started}
+      assert DpExchange.Robinhood.subscribe_notices(opts) == {:error, :feed_not_started}
+      assert DpExchange.Robinhood.coverage(opts) == %{}
+    end
+
+    test "with a feed that exits while answering" do
+      name = :"dying_feed_#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      spawn(fn ->
+        Process.register(self(), name)
+        send(test_pid, :registered)
+
+        receive do
+          {:"$gen_call", _from, _request} -> exit(:boom)
+        end
+      end)
+
+      assert_receive :registered
+
+      assert DpExchange.Robinhood.subscribe(["BTC-USD"], feed: name) ==
+               {:error, {:feed_exited, :boom}}
     end
   end
 end

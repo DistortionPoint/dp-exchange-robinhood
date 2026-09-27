@@ -456,3 +456,13 @@ documentation pages read in full: zero occurrences of `websocket`, `wss://` or `
 including in the JavaScript bundles that carry the endpoint lists. See
 `docs/reference/robinhood/negative-claims.md`, which records every negative this package
 makes with the source and date behind it, and the method, so any of them can be re-run.
+
+## Streaming calls answer; they never exit your process
+
+`subscribe/2`, `unsubscribe/2`, `update_symbols/2` and `subscribe_notices/1` return
+`{:error, :feed_not_started}` when this venue's feed is not running (`unsubscribe/2`
+answers `:ok`: there is nothing to stop). They return `{:error, :feed_timeout}` when the
+feed is too busy to answer within its call budget, and `{:error, {:feed_exited, reason}}`
+when it dies while answering. `coverage/1` and `coverage_by_kind/1` answer an empty map in
+all three cases, which means "not observed". Treat `:feed_timeout` as transient and retry.
+Treat the other two as a feed your supervision tree has to bring back.

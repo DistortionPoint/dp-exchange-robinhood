@@ -564,39 +564,37 @@ defmodule DpExchange.Robinhood do
   # --- streaming, which here is a poll ------------------------------------
 
   @impl true
-  def subscribe(symbols, opts \\ []) do
-    feed = feed(opts)
-
-    if alive?(feed) do
-      current = feed |> Feed.coverage() |> Map.keys()
-      Feed.update_symbols(feed, Enum.uniq(current ++ symbols))
-    else
-      {:error, :feed_not_started}
-    end
-  end
+  # Added and removed against what was asked for, inside `Feed`. This used to rebuild the
+  # set from `coverage/1`, which is only what has been observed arriving, so a second
+  # subscribe dropped every symbol that had not delivered yet. See `Feed.add_symbols/2`.
+  def subscribe(symbols, opts \\ []),
+    do: feed_call(fn -> Feed.add_symbols(feed(opts), symbols) end, {:error, :feed_not_started})
 
   @impl true
-  def unsubscribe(symbols, opts \\ []) do
-    feed = feed(opts)
-
-    if alive?(feed) do
-      remaining = feed |> Feed.coverage() |> Map.keys() |> Enum.reject(&(&1 in symbols))
-      Feed.update_symbols(feed, remaining)
-    else
-      :ok
-    end
-  end
+  def unsubscribe(symbols, opts \\ []),
+    do: feed_call(fn -> Feed.remove_symbols(feed(opts), symbols) end, :ok)
 
   @impl true
-  def update_symbols(symbols, opts \\ []) do
-    feed = feed(opts)
-    if alive?(feed), do: Feed.update_symbols(feed, symbols), else: {:error, :feed_not_started}
-  end
+  def update_symbols(symbols, opts \\ []),
+    do: feed_call(fn -> Feed.update_symbols(feed(opts), symbols) end, {:error, :feed_not_started})
 
   @impl true
   def coverage(opts \\ []) do
     feed = feed(opts)
-    if alive?(feed), do: Feed.coverage(feed), else: %{}
+    if alive?(feed), do: feed_read(fn -> Feed.coverage(feed) end, %{}), else: %{}
+  end
+
+  @doc """
+  What has been asked for, which is not what `coverage/1` reports.
+
+  `coverage/1` is what is observed arriving. This is the polled set as `subscribe/2`,
+  `unsubscribe/2` and `update_symbols/2` left it, the same split `dp_exchange_schwab`'s
+  `wanted/1` offers. An empty list when the feed is not running.
+  """
+  @spec wanted(keyword()) :: [Venue.symbol()]
+  def wanted(opts \\ []) do
+    feed = feed(opts)
+    if alive?(feed), do: feed_read(fn -> Feed.wanted(feed) end, []), else: []
   end
 
   @doc """
@@ -630,7 +628,10 @@ defmodule DpExchange.Robinhood do
           %{Capabilities.data_kind() => %{Venue.symbol() => Venue.route()}}
   def coverage_by_kind(opts \\ []) do
     feed = feed(opts)
-    if alive?(feed), do: Feed.coverage_by_kind(feed), else: %{top_of_book: %{}}
+
+    if alive?(feed),
+      do: feed_read(fn -> Feed.coverage_by_kind(feed) end, %{top_of_book: %{}}),
+      else: %{top_of_book: %{}}
   end
 
   @doc """
@@ -651,7 +652,7 @@ defmodule DpExchange.Robinhood do
   @spec subscribe_notices(keyword()) :: :ok | {:error, term()}
   def subscribe_notices(opts \\ []) do
     feed = feed(opts)
-    if alive?(feed), do: Feed.subscribe_notices(feed, opts), else: {:error, :feed_not_started}
+    feed_call(fn -> Feed.subscribe_notices(feed, opts) end, {:error, :feed_not_started})
   end
 
   # --- health ------------------------------------------------------------
@@ -730,6 +731,32 @@ defmodule DpExchange.Robinhood do
 
   defp alive?(name) when is_atom(name), do: is_pid(GenServer.whereis(name))
   defp alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+
+  # **A streaming call answers; it does not exit in the caller's process.** Every
+  # streaming callback's spec is a value (`:ok | {:error, term()}`, or a map). A bare
+  # `GenServer.call/3` into `Feed` exits the caller instead: with `:noproc` when no `Feed` is
+  # running, and with `:timeout` when one is too busy to answer within its call budget.
+  # This facade checked `alive?/1` first, which covered a `Feed` never started. Three
+  # sibling venues did not, and exited `:noproc` there (measured 2026-09-27). But the check
+  # still raced a `Feed` that died between it and the call, and did nothing for a busy
+  # one, so the exit is caught at the call itself. A reply that arrives after a timeout is
+  # dropped by OTP's call aliases, so it cannot reach the caller's mailbox later.
+  defp feed_call(call, not_running) do
+    call.()
+  catch
+    :exit, {:noproc, _call} -> not_running
+    :exit, {:timeout, _call} -> {:error, :feed_timeout}
+    :exit, {reason, _call} -> {:error, {:feed_exited, reason}}
+  end
+
+  # `coverage/1` and `coverage_by_kind/1` return a map, with no room for an error. Any
+  # failure is the empty answer, which says "not observed" and never claims delivery nobody
+  # confirmed.
+  defp feed_read(call, empty) do
+    call.()
+  catch
+    :exit, _reason -> empty
+  end
 
   # An absent map reaches `Auth` and is refused there rather than producing an unsigned
   # request — this venue has no anonymous endpoint to fall back to.

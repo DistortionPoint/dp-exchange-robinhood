@@ -19,6 +19,27 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A streaming facade call answers instead of exiting the caller's process.**
+  `subscribe/2`, `unsubscribe/2`, `update_symbols/2`, `subscribe_notices/1`, `coverage/1`
+  and `coverage_by_kind/1` called into `Feed` with a bare `GenServer.call/3`, which exits
+  the caller when no `Feed` is running (`:noproc`) or when one is too busy to answer in
+  its call budget (`:timeout`). Every one of these callbacks is specified to return a
+  value. An `alive?/1` check covered a `Feed` never started, but not one that died between the check and the call, or a busy one. They now answer `{:error, :feed_not_started}` (`:ok` for `unsubscribe/2`),
+  `{:error, :feed_timeout}`, or `{:error, {:feed_exited, reason}}`, and the coverage calls
+  answer an empty map.
+- **A second `subscribe/2` no longer drops symbols that have not delivered yet.** It
+  rebuilt the polled set from `coverage/1`, which is what has been observed arriving,
+  not what was asked for. So subscribing `ETH-USD` right after `BTC-USD`, before BTC's
+  first poll landed, replaced BTC instead of adding ETH. `unsubscribe/2` had the same
+  flaw and dropped every wanted symbol that was not delivering at that moment. Both
+  were also a read then a write from the caller's process, so two concurrent callers
+  could overwrite each other. The set is now changed inside `Feed`, against what was
+  asked for: see `Feed.add_symbols/2`, `Feed.remove_symbols/2` and `Feed.wanted/1`.
+- **`wanted/1` on the facade**: the polled set as it was asked for, alongside
+  `coverage/1`'s observed one. It mirrors `dp_exchange_schwab`'s `wanted/1`.
+
 ## [0.3.36] - 2026-09-27
 
 ### Fixed

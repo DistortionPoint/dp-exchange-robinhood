@@ -263,6 +263,30 @@ defmodule DpExchange.Robinhood.Feed do
     do: GenServer.call(feed, {:update_symbols, symbols}, @call_timeout)
 
   @doc """
+  Adds `symbols` to the polled set, inside this process.
+
+  **Not `update_symbols(coverage ++ symbols)`.** `DpExchange.Robinhood.subscribe/2` used to
+  do exactly that, and `coverage/1` is what has been observed arriving, not what was asked
+  for. A symbol subscribed a moment ago, one the venue is refusing, or one whose last poll
+  failed is absent from it. So a second `subscribe/2` silently dropped every wanted symbol
+  that had not yet delivered. It was also a read then a write from the caller's process,
+  so two callers subscribing at once could each overwrite the other. Both are gone when the
+  set is changed here, against `state.symbols`, in one call.
+  """
+  @spec add_symbols(GenServer.server(), [String.t()]) :: :ok
+  def add_symbols(feed, symbols),
+    do: GenServer.call(feed, {:add_symbols, symbols}, @call_timeout)
+
+  @doc "Removes `symbols` from the polled set, inside this process. See `add_symbols/2`."
+  @spec remove_symbols(GenServer.server(), [String.t()]) :: :ok
+  def remove_symbols(feed, symbols),
+    do: GenServer.call(feed, {:remove_symbols, symbols}, @call_timeout)
+
+  @doc "What has been asked for, which is not what `coverage/1` reports."
+  @spec wanted(GenServer.server()) :: [String.t()]
+  def wanted(feed), do: GenServer.call(feed, :wanted, @call_timeout)
+
+  @doc """
   Registers `opts[:to]` (default: the caller) to receive this feed's own `Core.Notice`
   traffic — currently the coverage-outage pair described in this module's moduledoc.
 
@@ -491,15 +515,15 @@ defmodule DpExchange.Robinhood.Feed do
     {:reply, poller_coverage(state), state}
   end
 
-  def handle_call({:update_symbols, symbols}, _from, state) do
-    state = %{
-      state
-      | symbols: symbols,
-        refused: MapSet.intersection(state.refused, MapSet.new(symbols))
-    }
+  def handle_call({:update_symbols, symbols}, _from, state), do: replace_symbols(state, symbols)
 
-    {:reply, PollingFeed.update_symbols(state.poller, symbols), state}
-  end
+  def handle_call({:add_symbols, symbols}, _from, state),
+    do: replace_symbols(state, Enum.uniq(state.symbols ++ symbols))
+
+  def handle_call({:remove_symbols, symbols}, _from, state),
+    do: replace_symbols(state, Enum.reject(state.symbols, &(&1 in symbols)))
+
+  def handle_call(:wanted, _from, state), do: {:reply, state.symbols, state}
 
   def handle_call({:subscribe_notices, subscriber}, _from, state) do
     state = %{
@@ -512,6 +536,16 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, :unknown_call}, state}
+
+  defp replace_symbols(state, symbols) do
+    state = %{
+      state
+      | symbols: symbols,
+        refused: MapSet.intersection(state.refused, MapSet.new(symbols))
+    }
+
+    {:reply, PollingFeed.update_symbols(state.poller, symbols), state}
+  end
 
   # A notice subscriber that died. Dropped, and its monitor forgotten.
   #
