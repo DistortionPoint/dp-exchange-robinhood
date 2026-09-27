@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.37] - 2026-09-27
+
 ### Fixed
 
 - **A streaming facade call answers instead of exiting the caller's process.**
