@@ -206,8 +206,7 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], 0, []) do
       {:ok,
        rows
-       |> Enum.map(& &1["symbol"])
-       |> Enum.reject(&is_nil/1)
+       |> Enum.flat_map(&row_symbol/1)
        |> Enum.map(&SymbolFormat.to_canonical_symbol/1)
        |> Enum.sort()}
     end
@@ -228,10 +227,17 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], 0, []) do
       {:ok,
        rows
-       |> Enum.reject(&is_nil(&1["symbol"]))
+       |> Enum.filter(&(row_symbol(&1) != []))
        |> Enum.map(&to_instrument/1)}
     end
   end
+
+  # A row's symbol, as a one-element list, or `[]` for a row that is not an object or whose
+  # `symbol` is not a string. Both used to raise here, inside the caller's process
+  # (`Access` on a non-map, `SymbolFormat` on a non-string). Found by mutating real
+  # response bodies, 2026-09-27. An absent symbol was already skipped, and so are these.
+  defp row_symbol(%{"symbol" => symbol}) when is_binary(symbol), do: [symbol]
+  defp row_symbol(_row), do: []
 
   defp to_instrument(row) do
     Instrument.new(
@@ -447,7 +453,7 @@ defmodule DpExchange.Robinhood.Rest do
   # matters more here since the NaN guard landed — `decimal/1` now maps `"NaN"` and `"Inf"`
   # to `nil` rather than to a poisonous `Decimal`, which is right, and which makes a `nil`
   # total reachable from a value that was present all along.
-  defp to_balance(row, asked_at) do
+  defp to_balance(%{} = row, asked_at) do
     with {:ok, currency} <- required_currency(row["asset_code"]) do
       {:ok,
        %Balance{
@@ -466,6 +472,10 @@ defmodule DpExchange.Robinhood.Rest do
   # One unreadable row refuses the whole reply rather than leaving a gap in it. A balance
   # list with an entry silently missing reads as "you hold none of that asset", which is a
   # different and more dangerous statement than "this response could not be read".
+  # A holdings row that is not an object is unreadable, and refused like one with no
+  # currency. It used to raise in `Access`, inside the caller's process.
+  defp to_balance(_unreadable_row, _asked_at), do: {:error, :unexpected_response_shape}
+
   defp to_balances(rows, asked_at) do
     rows
     |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
@@ -918,8 +928,12 @@ defmodule DpExchange.Robinhood.Rest do
     end)
   end
 
-  defp order_canonical(nil), do: nil
-  defp order_canonical(symbol), do: SymbolFormat.to_canonical_symbol(symbol)
+  # Not a string is not a symbol, and is `nil` like an absent one. `SymbolFormat` raised on
+  # it, inside the caller's process.
+  defp order_canonical(symbol) when is_binary(symbol),
+    do: SymbolFormat.to_canonical_symbol(symbol)
+
+  defp order_canonical(_absent_or_unreadable), do: nil
 
   defp order_side("buy"), do: :buy
   defp order_side("sell"), do: :sell

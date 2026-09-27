@@ -330,6 +330,46 @@ defmodule DpExchange.Robinhood.RestTest do
     end
   end
 
+  describe "a response value of the wrong type is refused or skipped, never raised on" do
+    # Found by mutating real response bodies, 2026-09-27. Each of these raised inside the
+    # CALLER's process.
+    test "an instrument row whose symbol is not a string is skipped" do
+      body = %{"results" => [%{"symbol" => 0}, %{"symbol" => "BTC-USD", "asset_code" => "BTC"}]}
+
+      assert {:ok, [only]} =
+               Rest.list_instruments(@credentials, plug: responding(body), retry_attempts: 0)
+
+      assert only.symbol == "BTC-USD"
+
+      assert {:ok, ["BTC-USD"]} =
+               Rest.get_symbols(@credentials, plug: responding(body), retry_attempts: 0)
+    end
+
+    test "a holdings row that is not an object is refused" do
+      body = %{"results" => [true]}
+
+      assert {:error, :unexpected_response_shape} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+    end
+
+    test "an order whose symbol is not a string has no symbol, not a raise" do
+      body = %{"id" => "o-1", "state" => "filled", "symbol" => %{}}
+
+      assert {:ok, order} =
+               Rest.get_order(@credentials, "o-1",
+                 account_number: "RH-1",
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert order.symbol == nil
+    end
+  end
+
   describe "list_instruments/2" do
     @row %{
       "symbol" => "BTC-USD",

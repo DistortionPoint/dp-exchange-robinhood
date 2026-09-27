@@ -19,6 +19,20 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A response value of the wrong type raised inside the caller's process.** Found by
+  mutating every value of real response bodies into wrong shapes:
+  - A `symbol` that was not a string raised in `SymbolFormat` from `list_instruments/2`,
+    `get_symbols/2`, `get_orders/2` and `get_order/3`. Instrument and symbol rows with one
+    are now skipped, as rows with no symbol already were, and an order's is `nil`.
+  - A holdings row that was not an object raised in `Access` from `get_balances/2`. It is
+    now refused as `{:error, :unexpected_response_shape}`, as a row with no readable
+    currency already was.
+
+  0 raising mutations remain across eight read calls. Break-verified: all three new tests
+  fail on the previous code.
+
 ## [0.3.35] - 2026-09-24
 
 ### Documentation
