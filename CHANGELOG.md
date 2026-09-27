@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.36] - 2026-09-27
+
 ### Fixed
 
 - **A response value of the wrong type raised inside the caller's process.** Found by
