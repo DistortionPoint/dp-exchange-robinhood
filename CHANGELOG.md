@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.44] - 2026-09-28
+
 ### Fixed
 
 - **A lower-case symbol subscribes under its canonical form again.** `subscribe/2`,
