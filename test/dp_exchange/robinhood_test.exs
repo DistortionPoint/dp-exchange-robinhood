@@ -190,6 +190,13 @@ defmodule DpExchange.RobinhoodTest do
       assert Enum.sort(Robinhood.wanted(feed: name)) == ["BTC-USD", "SOL-USD"]
     end
 
+    test "a lower-case symbol is wanted under its canonical form", %{name: name} do
+      # A poll for `btc-usd` comes back as `BTC-USD`, which `Core.PollingFeed` records as a
+      # symbol nobody asked for. So a lower-case subscription would deliver nothing at all.
+      :ok = Robinhood.update_symbols(["btc-usd"], feed: name)
+      assert Robinhood.wanted(feed: name) == ["BTC-USD"]
+    end
+
     test "subscribe_notices registers against a running feed", %{name: name} do
       assert Robinhood.subscribe_notices(feed: name) == :ok
     end
