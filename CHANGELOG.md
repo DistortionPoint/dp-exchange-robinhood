@@ -19,6 +19,14 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- A retried request is signed again. `Core.HttpClient` retries a timeout or a 5xx, and every
+  retry carried the first attempt's `x-timestamp` and signature; one that came after the
+  venue's roughly 30-second window was refused as an authentication failure. Headers are now
+  a function `Core.HttpClient` calls per attempt. Writes stay safe to retry because each
+  carries its `client_order_id`. Requires `dp_exchange_core` 0.3.46.
+
 ## [0.3.46] - 2026-09-28
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

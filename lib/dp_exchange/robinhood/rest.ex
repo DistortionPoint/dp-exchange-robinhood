@@ -975,46 +975,66 @@ defmodule DpExchange.Robinhood.Rest do
   defp post(path, body, credentials, opts) do
     encoded = Jason.encode!(body)
 
-    with {:ok, headers} <- Auth.headers("POST", path, encoded, credentials, opts) do
-      url = base_url(opts) <> path
+    # Signed per attempt, not once: see `signer/4`.
+    url = base_url(opts) <> path
 
-      case HttpClient.request(:post, url, headers, encoded, request_opts(opts)) do
-        {:ok, %{status: status, body: response}} when status in 200..299 ->
-          decoded_body(response)
+    case HttpClient.request(
+           :post,
+           url,
+           signer("POST", path, encoded, credentials, opts),
+           encoded,
+           request_opts(opts)
+         ) do
+      {:ok, %{status: status, body: response}} when status in 200..299 ->
+        decoded_body(response)
 
-        {:ok, %{status: status, body: response}} when status in [400, 401, 403, 404] ->
-          {:refused, refusal(status, response)}
+      {:ok, %{status: status, body: response}} when status in [400, 401, 403, 404] ->
+        {:refused, refusal(status, response)}
 
-        {:ok, %{status: status, body: response}} ->
-          {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(response)}"}}
+      {:ok, %{status: status, body: response}} ->
+        {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(response)}"}}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  # **A retry is signed again, not replayed.** The signature carries `x-timestamp`, which the
+  # venue accepts for about 30 seconds. That figure comes from third-party client libraries
+  # and write-ups; the vendor's own page renders client-side and was not read directly
+  # (2026-09-28). `Core.HttpClient` used to retry with the first attempt's headers, and a
+  # first attempt that timed out took the whole 30-second `:timeout`. So its retry went out
+  # stale, and the venue refused it as unauthorised: `{:refused, _}`, a credential problem
+  # the caller does not have. Passing a function makes the client sign each attempt afresh.
+  # A write stays safe to retry because `client_order_id` is this venue's idempotency key.
+  defp signer(method, path, body, credentials, opts),
+    do: fn -> Auth.headers(method, path, body, credentials, opts) end
 
   # --- request ------------------------------------------------------------
 
   defp get(path, credentials, opts) do
-    with {:ok, headers} <- Auth.headers("GET", path, "", credentials, opts) do
-      url = base_url(opts) <> path
+    url = base_url(opts) <> path
 
-      case HttpClient.request(:get, url, headers, nil, request_opts(opts)) do
-        {:ok, %{status: status, body: body}} when status in 200..299 ->
-          decoded_body(body)
+    case HttpClient.request(
+           :get,
+           url,
+           signer("GET", path, "", credentials, opts),
+           nil,
+           request_opts(opts)
+         ) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        decoded_body(body)
 
-        # Permanent for the request as sent. A caller whose key was rotated signs again
-        # with the new one, which is a different request rather than a retry of this.
-        {:ok, %{status: status, body: body}} when status in [400, 401, 403, 404] ->
-          {:refused, refusal(status, body)}
+      # Permanent for the request as sent. A caller whose key was rotated signs again
+      # with the new one, which is a different request rather than a retry of this.
+      {:ok, %{status: status, body: body}} when status in [400, 401, 403, 404] ->
+        {:refused, refusal(status, body)}
 
-        {:ok, %{status: status, body: body}} ->
-          {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(body)}"}}
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(body)}"}}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

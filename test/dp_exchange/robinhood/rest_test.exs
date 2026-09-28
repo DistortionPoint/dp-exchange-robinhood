@@ -57,6 +57,39 @@ defmodule DpExchange.Robinhood.RestTest do
                Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
     end
 
+    test "a retry is signed again rather than replaying the first attempt's signature" do
+      # The venue accepts a signature's `x-timestamp` for about 30 seconds, and a first
+      # attempt that timed out has used its whole `:timeout`. A retry re-sending those same
+      # headers went out stale and was refused as unauthorised. Here the first attempt is
+      # held past a second boundary and fails, so a re-signed retry carries a later stamp.
+      test_pid = self()
+      counter = :counters.new(1, [])
+
+      plug = fn conn ->
+        :counters.add(counter, 1, 1)
+        [timestamp] = Plug.Conn.get_req_header(conn, "x-timestamp")
+        send(test_pid, {:attempt, :counters.get(counter, 1), timestamp})
+
+        if :counters.get(counter, 1) == 1 do
+          Process.sleep(1_100)
+          Plug.Conn.resp(conn, 503, "busy")
+        else
+          Req.Test.json(conn, quote_body())
+        end
+      end
+
+      assert {:ok, _top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: plug,
+                 retry_attempts: 2,
+                 retry_delay: 1
+               )
+
+      assert_received {:attempt, 1, first}
+      assert_received {:attempt, 2, second}
+      assert String.to_integer(second) > String.to_integer(first)
+    end
+
     test "without credentials it refuses rather than sending unsigned" do
       assert {:error, {:missing_credentials, :robinhood}} =
                Rest.get_top_of_book("BTC-USD", %{}, retry_attempts: 0)
