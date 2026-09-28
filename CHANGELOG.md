@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.47] - 2026-09-28
+
 ### Fixed
 
 - A retried request is signed again. `Core.HttpClient` retries a timeout or a 5xx, and every
