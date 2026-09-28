@@ -644,4 +644,16 @@ defmodule DpExchange.RobinhoodTest do
                {:error, {:feed_exited, :boom}}
     end
   end
+
+  describe "the fake, with a lower-case subscription" do
+    # The real facade upper-cases symbols on the way in. The fake has to give the same
+    # answer, or a consumer's tier-1 tests certify silence where the venue delivers.
+    test "is delivered under the canonical symbol, as the real package does" do
+      opts = [to: self(), account_id: "acct", account_number: "acct", account_hash: "acct"]
+
+      assert :ok = DpExchange.Robinhood.Fake.subscribe(["btc-usd"], opts)
+      assert_receive {:dp_exchange, _venue, %{symbol: "BTC-USD"}}, 2_000
+      assert Map.has_key?(DpExchange.Robinhood.Fake.coverage(opts), "BTC-USD")
+    end
+  end
 end

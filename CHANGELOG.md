@@ -19,6 +19,14 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The fake upper-cases subscribed symbols, as the real facade has since the previous
+  release.** `Fake.subscribe/2`, `unsubscribe/2` and `update_symbols/2` took symbols exactly
+  as given. So a `btc-usd` subscription delivered nothing against the fake while the real
+  package delivered `BTC-USD`, and a consumer's tier-1 tests certified silence where the
+  venue delivers.
+
 ## [0.3.44] - 2026-09-28
 
 ### Fixed

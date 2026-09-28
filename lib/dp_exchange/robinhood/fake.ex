@@ -387,6 +387,7 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def subscribe(symbols, _opts \\ []) do
+    symbols = canonical_case(symbols)
     # Always the caller — never `opts[:to]`. The real `c:subscribe/2` has no notion of a
     # per-call recipient at all: delivery goes to whichever process this venue's feed was
     # supervised with, fixed at boot, and a `:to` passed to the real facade's `subscribe/2`
@@ -425,12 +426,14 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def unsubscribe(symbols, _opts \\ []) do
+    symbols = canonical_case(symbols)
     Process.put(__MODULE__, MapSet.difference(subscribed(), MapSet.new(symbols)))
     :ok
   end
 
   @impl true
   def update_symbols(symbols, _opts \\ []) do
+    symbols = canonical_case(symbols)
     Process.put(__MODULE__, MapSet.new(Enum.filter(symbols, &(&1 in @symbols))))
     :ok
   end
@@ -616,4 +619,12 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def get_roles(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
+
+  # Upper-cased on the way in, as the real facade does, so a lower-case subscription gets
+  # the same answer here as against the venue. Without it the fake delivered nothing for
+  # `btc-usd` while the real package delivered `BTC-USD` (checked 2026-09-28).
+  defp canonical_case(symbols) when is_list(symbols),
+    do: Enum.map(symbols, fn s -> if is_binary(s), do: String.upcase(s), else: s end)
+
+  defp canonical_case(other), do: other
 end
