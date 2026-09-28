@@ -80,7 +80,9 @@ defmodule DpExchangeRobinhood.MixProject do
       # poll served by `Core.PollingFeed`. Shipping a WebSocket library here would be
       # dead weight that also implies a capability the venue does not have.
       {:jason, "~> 1.4"},
-      {:decimal, "~> 2.0"},
+      # `or ~> 3.0`: decimal 3 makes the CVE-2026-32686 limits the default. This package's
+      # suite and its REST and frame fuzz pass on 3.1.1 (2026-09-27).
+      {:decimal, "~> 2.0 or ~> 3.0"},
 
       # Dev/Test
       {:usage_rules, "~> 1.2", only: :dev},
