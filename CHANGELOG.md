@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.45] - 2026-09-28
+
 ### Fixed
 
 - **The fake upper-cases subscribed symbols, as the real facade has since the previous
