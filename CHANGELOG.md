@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.49] - 2026-09-29
+
 ### Fixed
 
 - A page whose `"results"` is neither a list nor `null` is now `{:error,
