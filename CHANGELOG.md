@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.50] - 2026-09-29
+
 ### Fixed
 
 Checked against the vendor's v2 OpenAPI, extracted from the Robinhood docs bundle on
