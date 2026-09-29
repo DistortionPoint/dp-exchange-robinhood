@@ -388,19 +388,26 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, [map()]} | {:error, term()} | {:refused, term()}
   def get_accounts(credentials, opts) do
     with {:ok, body} <- get("/api/v2/crypto/trading/accounts/", credentials, opts) do
-      {:ok, body |> account_rows() |> List.wrap()}
+      account_rows(body)
     end
   end
 
-  defp account_rows(%{"results" => rows}) when is_list(rows), do: rows
+  defp account_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
   # **The wrapper is never a row.** When `"results"` is present it decides the shape whatever
   # it holds; only a response with no `"results"` key at all is treated as one bare object.
   # The catch-all used to take the wrapper too: a page `{"next": null, "results": null}`
   # came back as an ACCOUNT, `{:ok, [%{"next" => nil, "results" => nil}]}`. The same defect
   # `dp_exchange_webull`'s `rows/1` had, found the same day.
-  defp account_rows(%{"results" => _not_a_list}), do: []
-  defp account_rows(%{} = row), do: [row]
-  defp account_rows(_other), do: []
+  #
+  # `null` is an empty page. **Anything else that is not a list is not a page this package
+  # can read**, and it used to be read as no accounts, like `null`: `"results": "denied"` or a
+  # body that is not an object at all answered `{:ok, []}`. A host told a credential holds
+  # no account stops asking, which is the wrong outcome for a response that said nothing
+  # about accounts.
+  defp account_rows(%{"results" => nil}), do: {:ok, []}
+  defp account_rows(%{"results" => _unreadable}), do: {:error, :unexpected_response_shape}
+  defp account_rows(%{} = row), do: {:ok, [row]}
+  defp account_rows(_other), do: {:error, :unexpected_response_shape}
 
   @doc """
   Crypto holdings — `GET /api/v2/crypto/trading/holdings/`.
@@ -428,8 +435,9 @@ defmodule DpExchange.Robinhood.Rest do
       path = "/api/v2/crypto/trading/holdings/" <> query_string(query)
       asked_at = DateTime.utc_now()
 
-      with {:ok, body} <- get(path, credentials, opts) do
-        body |> account_rows() |> to_balances(asked_at)
+      with {:ok, body} <- get(path, credentials, opts),
+           {:ok, rows} <- account_rows(body) do
+        to_balances(rows, asked_at)
       end
     end
   end
@@ -852,7 +860,11 @@ defmodule DpExchange.Robinhood.Rest do
   # The orders endpoint answers with a page, `{"next": …, "results": [...]}`, and never with a
   # bare order — so, unlike `account_rows/1`, there is no bare-object clause to fall into.
   defp order_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
-  defp order_rows(%{"results" => _not_a_list}), do: {:ok, []}
+  # `null` is an empty page; any other non-list is unreadable, not empty. See `account_rows/1`:
+  # `"results": "denied"` used to answer `{:ok, []}`, "no orders", about an account that may
+  # hold open ones.
+  defp order_rows(%{"results" => nil}), do: {:ok, []}
+  defp order_rows(%{"results" => _unreadable}), do: {:error, :unexpected_response_shape}
   defp order_rows(_other), do: {:error, :unexpected_response_shape}
 
   # One bad row refuses the whole list rather than seeding it with a blank order among real

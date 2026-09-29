@@ -1039,4 +1039,41 @@ defmodule DpExchange.Robinhood.TradingTest do
                )
     end
   end
+
+  describe "a page whose results are not a list is unreadable, not empty" do
+    # `null` is an empty page. `"results": "denied"` or a body that is not an object used to
+    # answer `{:ok, []}` too: no accounts, no orders, and — worst — no holdings, a statement
+    # about money made from a response that said nothing about it.
+    @unreadable [%{"results" => "denied"}, %{"results" => %{"x" => 1}}, ["not", "a", "page"]]
+
+    test "get_accounts/2 refuses it" do
+      for body <- @unreadable do
+        assert {:error, :unexpected_response_shape} =
+                 Rest.get_accounts(@credentials,
+                   plug: fn conn -> Req.Test.json(conn, body) end,
+                   retry_attempts: 0
+                 )
+      end
+    end
+
+    test "get_balances/2 refuses it rather than reporting no holdings" do
+      for body <- @unreadable do
+        assert {:error, :unexpected_response_shape} =
+                 Rest.get_balances(@credentials,
+                   account_number: "acct",
+                   plug: fn conn -> Req.Test.json(conn, body) end,
+                   retry_attempts: 0
+                 )
+      end
+    end
+
+    test "get_orders/2 refuses it" do
+      assert {:error, :unexpected_response_shape} =
+               Rest.get_orders(@credentials,
+                 account_number: "acct",
+                 plug: fn conn -> Req.Test.json(conn, %{"results" => "denied"}) end,
+                 retry_attempts: 0
+               )
+    end
+  end
 end

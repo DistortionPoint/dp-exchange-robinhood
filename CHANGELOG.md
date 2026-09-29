@@ -19,6 +19,16 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- A page whose `"results"` is neither a list nor `null` is now `{:error,
+  :unexpected_response_shape}` instead of an empty list. `get_balances/2` answered such a
+  page with `{:ok, []}`, "you hold nothing", and `get_accounts/2` and `get_orders/2` with no
+  accounts and no orders, from a response that said nothing about any of them. A body that
+  is not an object at all is refused the same way. `"results": null` is still an empty page.
+- Locked `dp_exchange_core` 0.3.48, whose bulk `PollingFeed` no longer counts a tick with
+  no symbols as a failure.
+
 ## [0.3.48] - 2026-09-29
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

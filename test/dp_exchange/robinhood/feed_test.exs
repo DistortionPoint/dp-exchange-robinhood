@@ -900,7 +900,11 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
 
     test "a symbol added after boot survives the crash, because Feed tracks it too" do
-      feed = start_feed(symbols: [])
+      # A start delay, not 0. At 0 the first bulk tick raced `update_symbols/2`: when the
+      # tick won, it polled an empty set and the next tick was `interval_ms` (60 s) away, so
+      # this failed about one run in five. 300 ms is ample for a cast sent right after
+      # `start_link/1` returns.
+      feed = start_feed(symbols: [], start_delay_ms: 300)
       :ok = Feed.update_symbols(feed, ["BTC-USD"])
 
       assert_receive {:dp_exchange, :robinhood,
