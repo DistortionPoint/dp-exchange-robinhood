@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.53] - 2026-09-29
+
 ### Fixed
 
 - **`get_balances/2` includes the account's cash** (dp-exchange-core issue #35). Holdings are
