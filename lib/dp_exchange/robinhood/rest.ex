@@ -1020,6 +1020,20 @@ defmodule DpExchange.Robinhood.Rest do
       # much of it had filled so far — an open 0.5, filled 0.25, read back as
       # `quantity: 0.25`, indistinguishable from a smaller order placed and fully filled.
       quantity: decimal(configured_quantity(row)),
+      # `price` and `stop_price` were never read at all — `%Order{}`'s struct literal below
+      # simply had no `price:`/`stop_price:` key, so both stayed `nil` on every decode,
+      # silently, for every order this package has ever read back. Per the vendor's own
+      # `OrderResponse` schema (confirmed 2026-09-29): `limit_order_config.limit_price` and
+      # `stop_limit_order_config.limit_price` are exactly what `Core.Types.Order.price`
+      # exists to carry, and `stop_loss_order_config.stop_price` /
+      # `stop_limit_order_config.stop_price` are what `.stop_price` exists to carry — the
+      # same type-named-config scan `configured_quantity/1` already does for
+      # `asset_quantity`, generalised the same way `configured_time_in_force/1` generalises
+      # it for `time_in_force`. Found via `spec_examples_test.exs`: a fixture built strictly
+      # from the vendor's schema decoded a limit order with a real `limit_price` and the
+      # returned `Order.price` was `nil` regardless.
+      price: decimal(configured_price(row)),
+      stop_price: decimal(configured_stop_price(row)),
       filled_quantity: decimal(row["filled_asset_quantity"]),
       average_price: decimal(row["average_price"]),
       status: order_status(row["state"]),
@@ -1035,6 +1049,12 @@ defmodule DpExchange.Robinhood.Rest do
       fee: decimal(row["fee_charged"]),
       fee_currency: nil,
       created_at: order_time(row["created_at"]),
+      # Same gap as `price`/`stop_price` above, found the same way: `OrderResponse.updated_at`
+      # is a real, always-present field on the vendor's own schema — "the timestamp of when
+      # the order was updated" — and `Core.Types.Order.updated_at` exists for exactly it, but
+      # nothing here ever read it. `order_time/1` is the same parser `created_at` already
+      # uses, so a value in the same wire format decodes identically.
+      updated_at: order_time(row["updated_at"]),
       provider: :robinhood
     }
   end
@@ -1044,6 +1064,34 @@ defmodule DpExchange.Robinhood.Rest do
     |> Enum.find_value(fn
       {"" <> key, %{"asset_quantity" => quantity}} ->
         if String.ends_with?(key, "_order_config"), do: quantity
+
+      _other ->
+        nil
+    end)
+  end
+
+  # `limit_price` and `stop_price` live inside the type-named config object, same as
+  # `asset_quantity` and `time_in_force` — but never both in the same config.
+  # `limit_order_config` and `stop_limit_order_config` carry `limit_price`;
+  # `stop_loss_order_config` and `stop_limit_order_config` carry `stop_price`. A
+  # `market_order_config` row has neither key, so both scans simply find nothing for a
+  # market order, which is correct: this venue's market orders have no price at all.
+  defp configured_price(row) do
+    row
+    |> Enum.find_value(fn
+      {"" <> key, %{"limit_price" => price}} ->
+        if String.ends_with?(key, "_order_config"), do: price
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp configured_stop_price(row) do
+    row
+    |> Enum.find_value(fn
+      {"" <> key, %{"stop_price" => price}} ->
+        if String.ends_with?(key, "_order_config"), do: price
 
       _other ->
         nil

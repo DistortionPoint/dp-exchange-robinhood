@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "symbol": "BTC-USD",
+      "side": "ask",
+      "quantity": 0.1,
+      "timestamp": "2026-09-06T12:34:56Z",
+      "bid": 77800.25,
+      "ask": 77850.75,
+      "fee_ratio": 0.0035,
+      "est_fee": 27.25,
+      "est_total_cost": 7812.5,
+      "est_total_credit": 7780.0
+    }
+  ]
+}

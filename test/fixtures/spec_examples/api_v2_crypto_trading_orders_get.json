@@ -1,0 +1,53 @@
+{
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "account_number": "5QR89701",
+      "symbol": "ETH-USD",
+      "client_order_id": "22222222-2222-4222-8222-222222222222",
+      "side": "buy",
+      "executions": [],
+      "type": "limit",
+      "state": "open",
+      "average_price": null,
+      "filled_asset_quantity": 0.0,
+      "created_at": "2026-09-01T10:00:00Z",
+      "updated_at": "2026-09-01T10:00:00Z",
+      "limit_order_config": {
+        "asset_quantity": 2.0,
+        "limit_price": 3400.5
+      },
+      "fee_charged": 0.0,
+      "estimated_fee_remaining": 1.19
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "account_number": "5QR89701",
+      "symbol": "BTC-USD",
+      "client_order_id": "44444444-4444-4444-8444-444444444444",
+      "side": "sell",
+      "executions": [
+        {
+          "effective_price": "76500.00",
+          "quantity": "0.01000000",
+          "timestamp": "2026-09-02T09:15:00Z"
+        }
+      ],
+      "type": "stop_loss",
+      "state": "filled",
+      "average_price": 76500.0,
+      "filled_asset_quantity": 0.01,
+      "created_at": "2026-09-02T09:00:00Z",
+      "updated_at": "2026-09-02T09:15:00Z",
+      "stop_loss_order_config": {
+        "asset_quantity": 0.01,
+        "stop_price": 76600.0,
+        "time_in_force": "gtc"
+      },
+      "fee_charged": 0.19,
+      "estimated_fee_remaining": 0.0
+    }
+  ]
+}

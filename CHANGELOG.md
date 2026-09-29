@@ -19,6 +19,17 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- An order's `price` and `stop_price` are read from its config's `limit_price` and
+  `stop_price`, and `updated_at` from the order. All three were documented in the vendor's
+  `OrderResponse` and never read, so they were always `nil`.
+
+### Added
+
+- Spec-example tests drive every endpoint this package calls with a response built from the
+  vendor's committed OpenAPI schema, and check the request against its documented parameters.
+
 ## [0.3.51] - 2026-09-29
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._
