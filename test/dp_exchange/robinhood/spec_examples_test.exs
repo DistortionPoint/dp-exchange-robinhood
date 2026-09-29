@@ -113,6 +113,37 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
 
   defp query_params(query_string), do: URI.decode_query(query_string || "")
 
+  # `get_balances/2` also calls `get_accounts/2` for the account's cash (dp-exchange-core
+  # issue #35), through the same `opts[:plug]` — routed here by request path so a
+  # holdings-example body never has to answer for the accounts call too. Defaults to the
+  # vendor's own committed accounts example, so the cash row this drives is itself spec-built.
+  defp holdings_and_accounts(holdings_body, accounts_body \\ nil) do
+    fn conn ->
+      if String.contains?(conn.request_path, "/holdings/") do
+        Req.Test.json(conn, holdings_body)
+      else
+        Req.Test.json(conn, accounts_body || fixture!("api_v2_crypto_trading_accounts.json"))
+      end
+    end
+  end
+
+  defp capturing_holdings(holdings_body, status, test_pid, accounts_body \\ nil) do
+    fn conn ->
+      if String.contains?(conn.request_path, "/holdings/") do
+        {:ok, raw_body, conn} = Plug.Conn.read_body(conn)
+
+        send(
+          test_pid,
+          {:spec_request, conn.method, conn.request_path, conn.query_string, raw_body}
+        )
+
+        Req.Test.json(%{conn | status: status}, holdings_body)
+      else
+        Req.Test.json(conn, accounts_body || fixture!("api_v2_crypto_trading_accounts.json"))
+      end
+    end
+  end
+
   describe "GET best_bid_ask — /api/v2/crypto/marketdata/best_bid_ask/ (V2BestBidAskResponse)" do
     test "request: the spec's one required query parameter, `symbol`" do
       me = self()
@@ -254,7 +285,8 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
                Rest.get_balances(@credentials,
                  account_number: "5QR89701",
                  asset_codes: ["BTC"],
-                 plug: capturing(fixture!("api_v2_crypto_trading_holdings.json"), 200, me),
+                 plug:
+                   capturing_holdings(fixture!("api_v2_crypto_trading_holdings.json"), 200, me),
                  retry_attempts: 0
                )
 
@@ -264,10 +296,13 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
     end
 
     test "response: the example holding decodes to a real Balance, hold left nil" do
-      assert {:ok, [%Types.Balance{} = balance]} =
+      # Plus the account's cash (dp-exchange-core issue #35), derived from the vendor's own
+      # committed accounts example — `api_v2_crypto_trading_accounts.json`'s
+      # `buying_power`/`buying_power_currency`, "1000.00" / "USD".
+      assert {:ok, [%Types.Balance{} = balance, %Types.Balance{} = cash]} =
                Rest.get_balances(@credentials,
                  account_number: "5QR89701",
-                 plug: responding(fixture!("api_v2_crypto_trading_holdings.json")),
+                 plug: holdings_and_accounts(fixture!("api_v2_crypto_trading_holdings.json")),
                  retry_attempts: 0
                )
 
@@ -277,6 +312,12 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
       # The venue publishes no hold figure — subtracting would state a number it never sent.
       assert balance.hold == nil
       assert balance.provider == :robinhood
+
+      assert cash.currency == "USD"
+      assert cash.balance == nil
+      assert Decimal.equal?(cash.available_balance, Decimal.new("1000.00"))
+      assert cash.hold == nil
+      assert cash.provider == :robinhood
     end
   end
 

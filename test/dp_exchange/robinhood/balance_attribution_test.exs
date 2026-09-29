@@ -40,11 +40,29 @@ defmodule DpExchange.Robinhood.BalanceAttributionTest do
 
   @credentials %{api_key: "rh-key", private_key: Base.encode64(:crypto.strong_rand_bytes(32))}
 
+  # `get_balances/2` also calls `get_accounts/2` for the account's cash (dp-exchange-core
+  # issue #35), through the same `opts[:plug]` — routed here by request path so the
+  # holdings-shaped `body` never has to answer for the accounts call too.
   defp opts(body) do
     plug = fn conn ->
+      response =
+        if String.contains?(conn.request_path, "/holdings/") do
+          body
+        else
+          %{
+            "results" => [
+              %{
+                "account_number" => "RH-1",
+                "buying_power" => "1000.00",
+                "buying_power_currency" => "USD"
+              }
+            ]
+          }
+        end
+
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(body))
+      |> Plug.Conn.resp(200, Jason.encode!(response))
     end
 
     [account_number: "RH-1", retry_attempts: 0, plug: plug]
@@ -77,9 +95,11 @@ defmodule DpExchange.Robinhood.BalanceAttributionTest do
     # not knowing which asset the row is about.
     body = %{"results" => [%{"asset_code" => "BTC", "total_quantity" => "NaN"}]}
 
-    assert {:ok, [balance]} = Rest.get_balances(@credentials, opts(body))
+    # Plus the account's cash (dp-exchange-core issue #35), appended after the holdings.
+    assert {:ok, [balance, cash]} = Rest.get_balances(@credentials, opts(body))
     assert balance.currency == "BTC"
     assert balance.balance == nil
+    assert cash.currency == "USD"
   end
 
   test "an ordinary holdings row still decodes" do
@@ -93,10 +113,16 @@ defmodule DpExchange.Robinhood.BalanceAttributionTest do
       ]
     }
 
-    assert {:ok, [balance]} = Rest.get_balances(@credentials, opts(body))
+    assert {:ok, [balance, cash]} = Rest.get_balances(@credentials, opts(body))
     assert balance.currency == "BTC"
     assert Decimal.equal?(balance.balance, Decimal.new("1.5"))
     assert Decimal.equal?(balance.available_balance, Decimal.new("1.0"))
     assert balance.provider == :robinhood
+
+    # The account's cash — dp-exchange-core issue #35.
+    assert cash.currency == "USD"
+    assert cash.balance == nil
+    assert Decimal.equal?(cash.available_balance, Decimal.new("1000.00"))
+    assert cash.provider == :robinhood
   end
 end

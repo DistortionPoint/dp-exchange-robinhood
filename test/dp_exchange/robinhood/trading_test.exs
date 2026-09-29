@@ -64,6 +64,55 @@ defmodule DpExchange.Robinhood.TradingTest do
     end
   end
 
+  # `get_balances/2` makes TWO requests — the holdings page(s), then `get_accounts/2` for
+  # the account's cash (dp-exchange-core issue #35) — both through the same `opts[:plug]`.
+  # Every plug below that feeds `get_balances/2` a holdings-shaped body must also answer
+  # the accounts request with an account row, or the second call refuses with
+  # `{:account_not_found, _}` before the first ever gets read.
+  defp fake_account_row(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "account_number" => "RH-1",
+        "status" => "active",
+        "buying_power" => "1000.00",
+        "buying_power_currency" => "USD"
+      },
+      overrides
+    )
+  end
+
+  defp responding_holdings(holdings_body, account \\ fake_account_row()) do
+    fn conn ->
+      body =
+        if String.contains?(conn.request_path, "/holdings/") do
+          holdings_body
+        else
+          %{"results" => [account]}
+        end
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, Jason.encode!(body))
+    end
+  end
+
+  defp capturing_holdings(holdings_body, test_pid, account \\ fake_account_row()) do
+    fn conn ->
+      if String.contains?(conn.request_path, "/holdings/") do
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:request, conn.method, conn.request_path, conn.query_string, raw})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(holdings_body))
+      else
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{"results" => [account]}))
+      end
+    end
+  end
+
   describe "the account is the prerequisite for everything else" do
     test "it reads v2's own path" do
       me = self()
@@ -110,10 +159,10 @@ defmodule DpExchange.Robinhood.TradingTest do
         ]
       }
 
-      assert {:ok, [balance]} =
+      assert {:ok, [balance, cash]} =
                Rest.get_balances(@credentials,
                  account_number: "RH-1",
-                 plug: responding(body),
+                 plug: responding_holdings(body),
                  retry_attempts: 0
                )
 
@@ -121,16 +170,24 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert Decimal.equal?(balance.balance, Decimal.new("1.5"))
       assert Decimal.equal?(balance.available_balance, Decimal.new("1.0"))
       assert balance.hold == nil
+
+      # The account's cash, appended after the holdings — dp-exchange-core issue #35.
+      assert %Types.Balance{currency: "USD"} = cash
+      assert cash.balance == nil
+      assert Decimal.equal?(cash.available_balance, Decimal.new("1000.00"))
+      assert cash.hold == nil
     end
 
     test "the asset filter is repeated per code, as the venue takes it" do
       me = self()
 
+      # The cash row is excluded too: its currency, USD, is not among the asset codes asked
+      # for.
       assert {:ok, []} =
                Rest.get_balances(@credentials,
                  account_number: "RH-1",
                  asset_codes: ["BTC", "ETH"],
-                 plug: capturing(%{"results" => []}, me),
+                 plug: capturing_holdings(%{"results" => []}, me),
                  retry_attempts: 0
                )
 
@@ -143,13 +200,16 @@ defmodule DpExchange.Robinhood.TradingTest do
 
     test "results: null is an empty page, not an error" do
       # `account_rows/1`'s convention, preserved once `get_balances/2` moved from reading
-      # `account_rows/1` directly to walking the same shape across pages.
-      assert {:ok, []} =
+      # `account_rows/1` directly to walking the same shape across pages. The account's
+      # cash still comes back — a null holdings page says nothing about the account itself.
+      assert {:ok, [cash]} =
                Rest.get_balances(@credentials,
                  account_number: "RH-1",
-                 plug: fn conn -> Req.Test.json(conn, %{"next" => nil, "results" => nil}) end,
+                 plug: responding_holdings(%{"next" => nil, "results" => nil}),
                  retry_attempts: 0
                )
+
+      assert cash.currency == "USD"
     end
 
     test "a holding on page two is not silently dropped" do
@@ -161,10 +221,13 @@ defmodule DpExchange.Robinhood.TradingTest do
       test_pid = self()
 
       plug = fn conn ->
-        send(test_pid, {:page, conn.query_string})
+        cond do
+          String.contains?(conn.request_path, "/accounts/") ->
+            Req.Test.json(conn, %{"results" => [fake_account_row()]})
 
-        case conn.query_string do
-          "account_number=RH-1" ->
+          conn.query_string == "account_number=RH-1" ->
+            send(test_pid, {:page, conn.query_string})
+
             Req.Test.json(conn, %{
               "results" => [
                 %{
@@ -177,7 +240,9 @@ defmodule DpExchange.Robinhood.TradingTest do
                 "https://trading.robinhood.com/api/v2/crypto/trading/holdings/?account_number=RH-1&cursor=2"
             })
 
-          _second_page ->
+          true ->
+            send(test_pid, {:page, conn.query_string})
+
             Req.Test.json(conn, %{
               "results" => [
                 %{
@@ -198,7 +263,8 @@ defmodule DpExchange.Robinhood.TradingTest do
                  retry_attempts: 0
                )
 
-      assert Enum.map(balances, & &1.currency) == ["BTC", "ETH"]
+      # The account's cash follows the holdings — dp-exchange-core issue #35.
+      assert Enum.map(balances, & &1.currency) == ["BTC", "ETH", "USD"]
     end
 
     test "an unbounded holdings cursor fails closed rather than returning a truncated list" do
@@ -220,6 +286,140 @@ defmodule DpExchange.Robinhood.TradingTest do
                  plug: plug,
                  retry_attempts: 0
                )
+    end
+  end
+
+  describe "the account's cash (dp-exchange-core issue #35)" do
+    test "currency and available_balance come from buying_power, balance stays nil" do
+      account =
+        fake_account_row(%{"buying_power" => "47.79", "buying_power_currency" => "USD"})
+
+      assert {:ok, [cash]} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding_holdings(%{"results" => []}, account),
+                 retry_attempts: 0
+               )
+
+      assert %Types.Balance{currency: "USD"} = cash
+      assert cash.balance == nil
+      assert Decimal.equal?(cash.available_balance, Decimal.new("47.79"))
+      assert cash.hold == nil
+      assert cash.provider == :robinhood
+    end
+
+    test "the account is matched by account_number among several accounts" do
+      accounts = [
+        fake_account_row(%{
+          "account_number" => "RH-0",
+          "buying_power" => "5.00",
+          "buying_power_currency" => "USD"
+        }),
+        fake_account_row(%{
+          "account_number" => "RH-1",
+          "buying_power" => "250.00",
+          "buying_power_currency" => "USD"
+        }),
+        fake_account_row(%{
+          "account_number" => "RH-2",
+          "buying_power" => "9.00",
+          "buying_power_currency" => "USD"
+        })
+      ]
+
+      plug = fn conn ->
+        body =
+          if String.contains?(conn.request_path, "/holdings/") do
+            %{"results" => []}
+          else
+            %{"results" => accounts}
+          end
+
+        Req.Test.json(conn, body)
+      end
+
+      assert {:ok, [cash]} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert Decimal.equal?(cash.available_balance, Decimal.new("250.00"))
+    end
+
+    test "asset_codes naming the account's currency keeps the cash row" do
+      assert {:ok, [cash]} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 asset_codes: ["BTC", "USD"],
+                 plug: responding_holdings(%{"results" => []}),
+                 retry_attempts: 0
+               )
+
+      assert cash.currency == "USD"
+    end
+
+    test "refuses with account_not_found when no account matches account_number" do
+      other_account = fake_account_row(%{"account_number" => "RH-OTHER"})
+
+      assert {:error, {:account_not_found, "RH-1"}} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding_holdings(%{"results" => []}, other_account),
+                 retry_attempts: 0
+               )
+    end
+
+    test "refuses when the matched account has no readable currency" do
+      account = Map.delete(fake_account_row(), "buying_power_currency")
+
+      assert {:error, :unexpected_response_shape} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding_holdings(%{"results" => []}, account),
+                 retry_attempts: 0
+               )
+    end
+
+    test "refuses when the matched account has no readable buying_power" do
+      account = Map.delete(fake_account_row(), "buying_power")
+
+      assert {:error, {:missing_required_field, :buying_power}} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding_holdings(%{"results" => []}, account),
+                 retry_attempts: 0
+               )
+    end
+
+    test "the holdings page is requested before the accounts call" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:seq, conn.request_path})
+
+        body =
+          if String.contains?(conn.request_path, "/holdings/") do
+            %{"results" => []}
+          else
+            %{"results" => [fake_account_row()]}
+          end
+
+        Req.Test.json(conn, body)
+      end
+
+      assert {:ok, [_cash]} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert_receive {:seq, first_path}
+      assert_receive {:seq, second_path}
+      assert first_path =~ "/holdings/"
+      assert second_path =~ "/accounts/"
     end
   end
 
@@ -1131,9 +1331,16 @@ defmodule DpExchange.Robinhood.TradingTest do
 
   describe "the fake and the facade" do
     test "the fake's holdings show a balance held in an open order" do
-      assert {:ok, [balance]} = Fake.get_balances(@credentials, account_number: "RH-1")
+      assert {:ok, [balance, cash]} = Fake.get_balances(@credentials, account_number: "RH-1")
       refute Decimal.equal?(balance.balance, balance.available_balance)
       assert balance.hold == nil
+
+      # The fake's account cash — dp-exchange-core issue #35 — mirrors `Rest.get_balances/2`
+      # appending it from `buying_power`.
+      assert cash.currency == "USD"
+      assert cash.balance == nil
+      assert Decimal.equal?(cash.available_balance, Decimal.new("1000.00"))
+      assert cash.hold == nil
     end
 
     test "the fake's placed order is open, not filled" do
@@ -1162,11 +1369,14 @@ defmodule DpExchange.Robinhood.TradingTest do
                  base ++ [plug: responding(%{"account_number" => "RH-1"})]
                )
 
-      assert {:ok, []} =
+      # The account's cash still comes back — dp-exchange-core issue #35.
+      assert {:ok, [cash]} =
                DpExchange.Robinhood.get_balances(
                  @credentials,
-                 base ++ [plug: responding(%{"results" => []})]
+                 base ++ [plug: responding_holdings(%{"results" => []})]
                )
+
+      assert cash.currency == "USD"
 
       assert {:ok, _order} =
                DpExchange.Robinhood.place_order(

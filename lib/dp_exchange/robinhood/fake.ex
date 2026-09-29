@@ -67,6 +67,13 @@ defmodule DpExchange.Robinhood.Fake do
   # anything about freshness, and is itself the substitution this family refuses.
   @at ~U[2026-08-28 12:00:00Z]
 
+  # The account's cash — mirrors the real venue's `buying_power`/`buying_power_currency`
+  # on the account row `get_accounts/2` answers, and what `get_balances/2` appends as a
+  # `Balance` (dp-exchange-core issue #35). Kept as attributes so the two stay consistent
+  # with each other rather than two separately hand-typed figures drifting apart.
+  @cash_currency "USD"
+  @cash_amount "1000.00"
+
   @impl true
   def child_spec(opts),
     do: %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
@@ -165,26 +172,54 @@ defmodule DpExchange.Robinhood.Fake do
         # Total above available: the difference is a balance sitting in an open order, which
         # is the case a consumer reading only one of them gets wrong. `hold` stays nil, as in
         # the package — the venue publishes no such figure.
-        {:ok,
-         [
-           %Types.Balance{
-             currency: "BTC",
-             balance: Decimal.new("1.5"),
-             available_balance: Decimal.new("1.0"),
-             hold: nil,
-             timestamp: DateTime.utc_now(),
-             provider: :robinhood
-           }
-         ]}
+        holding = %Types.Balance{
+          currency: "BTC",
+          balance: Decimal.new("1.5"),
+          available_balance: Decimal.new("1.0"),
+          hold: nil,
+          timestamp: DateTime.utc_now(),
+          provider: :robinhood
+        }
+
+        # The account's cash, appended the same way `Rest.get_balances/2` appends it —
+        # dp-exchange-core issue #35 — from this fake's own `get_accounts/2` account row,
+        # so the two stay consistent with each other. `balance` is `nil` for the same
+        # reason: the venue states no total cash figure, only what is available.
+        asset_codes = List.wrap(Keyword.get(opts, :asset_codes, []))
+
+        if asset_codes == [] or @cash_currency in asset_codes do
+          {:ok, [holding, fake_cash_balance()]}
+        else
+          {:ok, [holding]}
+        end
       end
     end)
+  end
+
+  defp fake_cash_balance do
+    %Types.Balance{
+      currency: @cash_currency,
+      balance: nil,
+      available_balance: Decimal.new(@cash_amount),
+      hold: nil,
+      timestamp: DateTime.utc_now(),
+      provider: :robinhood
+    }
   end
 
   @impl true
   def get_accounts(credentials, _opts) do
     with_injection(fn ->
       with :ok <- authenticated_credentials(credentials) do
-        {:ok, [%{"account_number" => "RH-1", "status" => "active", "buying_power" => "1000.00"}]}
+        {:ok,
+         [
+           %{
+             "account_number" => "RH-1",
+             "status" => "active",
+             "buying_power" => @cash_amount,
+             "buying_power_currency" => @cash_currency
+           }
+         ]}
       end
     end)
   end

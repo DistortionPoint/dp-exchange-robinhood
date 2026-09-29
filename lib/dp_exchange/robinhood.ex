@@ -400,11 +400,13 @@ defmodule DpExchange.Robinhood do
   # --- account and trading -----------------------------------------------
 
   @doc """
-  Crypto holdings for one account.
+  Crypto holdings for one account, plus the account's cash.
 
   See `DpExchange.Robinhood.Rest.get_balances/2`. `opts[:account_number]` is **required by
   v2** where v1 took none, and `hold` is `nil` because the venue publishes no such figure —
-  subtracting would produce a number it never stated.
+  subtracting would produce a number it never stated. **The account's cash is appended as
+  one more `Balance`**, read from `buying_power` (dp-exchange-core issue #35) — see
+  `Rest.get_balances/2`'s own doc for the shape and the ways that second read can refuse.
   """
   @impl true
   def get_balances(credentials, opts), do: Rest.get_balances(credentials, with_limiter(opts))

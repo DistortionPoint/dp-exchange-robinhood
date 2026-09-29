@@ -329,6 +329,24 @@ read".
 `balance` itself may be `nil`, and that is not the same thing: it means the venue did name
 the asset and did not state a quantity for it. Read that as unknown, never as zero.
 
+## Holdings include the account's cash (dp-exchange-core issue #35)
+
+Holdings are crypto assets only, so a funded account's cash used to never appear in
+`get_balances/2` — a host summing cash across venues read zero on an account that actually
+held money. `get_balances/2` now appends one more `Balance` for the account's cash, read
+from `GET /api/v2/crypto/trading/accounts/`: `buying_power` as `available_balance`,
+`buying_power_currency` as `currency`. **`balance` is `nil` on this row** — the venue states
+no total cash figure, only what is available, so `balance` is never a copy of
+`available_balance` dressed up as a total. When `opts[:asset_codes]` is given, the cash row
+appears only if that list names the account's currency.
+
+This second read can refuse on its own: `{:error, {:account_not_found, account}}` when no
+row from the accounts call matches `opts[:account_number]`, `{:error,
+:unexpected_response_shape}` when the matched row has no readable currency, or `{:error,
+{:missing_required_field, :buying_power}}` when it has no readable amount. A holdings list
+that decoded cleanly still refuses the whole call rather than answer without the cash row —
+the zero-dollar answer this exists to stop.
+
 ## Two error shapes that mean "do not act on this answer"
 
 Both are returned by calls that previously answered `{:ok, _}` carrying a value you could not

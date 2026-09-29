@@ -507,21 +507,93 @@ defmodule DpExchange.Robinhood.Rest do
   `walk/7` bounds `trading_pairs`, and fails closed on the bound for the same reason: a
   truncated holdings list answered as `{:ok, balances}` is money a caller is told it does
   not have.
+
+  **The account's cash is appended as one more `Balance`, after the holdings** —
+  dp-exchange-core issue #35: holdings are crypto assets only, so a funded account's cash
+  never appeared, and a host summing cash across venues read zero on an account actually
+  holding money. It comes from `GET /api/v2/crypto/trading/accounts/` (`get_accounts/2`),
+  matched to this call's `account_number` — `buying_power` as `available_balance`,
+  `buying_power_currency` as `currency`, and `balance: nil` because the venue states no
+  total cash figure, only what is available. When `opts[:asset_codes]` is given, the cash
+  row is included only if that list names the account's currency.
+
+  This second call can refuse on its own, on top of every way the holdings call can:
+  `{:error, {:account_not_found, account}}` when no row in `get_accounts/2`'s reply matches
+  `account_number`, or `{:error, :unexpected_response_shape}` / `{:error,
+  {:missing_required_field, :buying_power}}` when the matched row has no readable currency
+  or amount. Answering without the cash row would be the zero-dollar answer this exists to
+  stop, so a holdings list that decoded cleanly still refuses if the account's cash cannot
+  be read.
   """
   @spec get_balances(map(), keyword()) ::
           {:ok, [Balance.t()]} | {:error, term()} | {:refused, term()}
   def get_balances(credentials, opts) do
     with {:ok, account} <- required_account(opts) do
+      asset_codes = List.wrap(Config.opt(opts, :asset_codes, []))
+
       query =
-        [{"account_number", account}] ++
-          Enum.map(List.wrap(Config.opt(opts, :asset_codes, [])), &{"asset_code", &1})
+        [{"account_number", account}] ++ Enum.map(asset_codes, &{"asset_code", &1})
 
       path = "/api/v2/crypto/trading/holdings/" <> query_string(query)
       asked_at = DateTime.utc_now()
 
-      with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_holdings_pages) do
-        to_balances(rows, asked_at)
+      with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_holdings_pages),
+           {:ok, holdings} <- to_balances(rows, asked_at),
+           {:ok, cash} <- cash_balance(account, asset_codes, credentials, opts, asked_at) do
+        {:ok, holdings ++ cash}
       end
+    end
+  end
+
+  # **The account's cash is a balance too.** Holdings are crypto assets only, so a funded
+  # account's cash never appeared: a host summing its cash across venues read zero on a
+  # Robinhood account holding $47.79, and refused to reset a strategy ledger for want of
+  # starting cash (dp-exchange-core issue #35). Every other venue's `Balance` list carries
+  # its quote cash. Here it lives on the account, as `buying_power` in
+  # `buying_power_currency` (`V2Account`, docs/reference/robinhood/openapi/
+  # crypto-trading.openapi.json).
+  #
+  # `buying_power` is "the available buying power", so it is `available_balance`. The venue
+  # states no total cash figure, so `balance` is `nil` rather than a copy of the available
+  # amount dressed up as one. Every field is required: an account this call cannot find, or
+  # one with no readable amount or currency, refuses the reply, because answering without the
+  # cash row is the zero-dollar answer this exists to stop.
+  #
+  # A caller narrowing by `:asset_codes` gets the cash row only when it named that currency.
+  defp cash_balance(account, asset_codes, credentials, opts, asked_at) do
+    with {:ok, rows} <- get_accounts(credentials, opts),
+         {:ok, row} <- account_row(rows, account),
+         {:ok, currency} <- required_currency(row["buying_power_currency"]),
+         {:ok, amount} <- required_amount(row["buying_power"]) do
+      if asset_codes == [] or currency in asset_codes do
+        {:ok,
+         [
+           %Balance{
+             currency: currency,
+             balance: nil,
+             available_balance: amount,
+             hold: nil,
+             timestamp: asked_at,
+             provider: :robinhood
+           }
+         ]}
+      else
+        {:ok, []}
+      end
+    end
+  end
+
+  defp account_row(rows, account) do
+    case Enum.find(rows, &match?(%{"account_number" => ^account}, &1)) do
+      nil -> {:error, {:account_not_found, account}}
+      row -> {:ok, row}
+    end
+  end
+
+  defp required_amount(value) do
+    case decimal(value) do
+      %Decimal{} = amount -> {:ok, amount}
+      _unreadable -> {:error, {:missing_required_field, :buying_power}}
     end
   end
 

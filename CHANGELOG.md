@@ -19,6 +19,17 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_balances/2` includes the account's cash** (dp-exchange-core issue #35). Holdings are
+  crypto only, so a funded account's cash never appeared: a host summing cash read zero on an
+  account holding dollars. The reply now ends with a cash `Balance` from the account's
+  `buying_power` and `buying_power_currency`: `available_balance` is the buying power, and
+  `balance` is `nil` because the venue states no total. An account that cannot be found, or
+  whose amount or currency cannot be read, refuses the call rather than answering without its
+  cash. With `:asset_codes`, the cash row appears only when its currency is named. `Fake`
+  matches.
+
 ## [0.3.52] - 2026-09-29
 
 ### Fixed
