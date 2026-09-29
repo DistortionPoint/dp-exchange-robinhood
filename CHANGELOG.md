@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.52] - 2026-09-29
+
 ### Fixed
 
 - An order's `price` and `stop_price` are read from its config's `limit_price` and
