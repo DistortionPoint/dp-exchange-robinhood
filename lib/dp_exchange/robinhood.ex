@@ -511,8 +511,9 @@ defmodule DpExchange.Robinhood do
   @doc """
   Orders on one account. `opts[:account_number]` is required by v2.
 
-  See `DpExchange.Robinhood.Rest.get_orders/2` — this does not follow the venue's cursor,
-  because a caller filtering by date wants the page it asked for.
+  See `DpExchange.Robinhood.Rest.get_orders/2` for what `opts[:limit]` and `opts[:cursor]`
+  do — without `opts[:limit]`, every page is walked and bounded; with it, exactly one page
+  is fetched, because the venue's endpoint has no `limit` parameter of its own to send.
   """
   @impl true
   def get_orders(credentials, opts), do: Rest.get_orders(credentials, with_limiter(opts))

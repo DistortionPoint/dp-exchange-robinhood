@@ -206,6 +206,16 @@ by account tier, so treat the count as a property of your key rather than of the
 The walk stops if the venue ever points at a page it already served
 (`{:error, {:pagination_loop, path}}`), rather than looping forever against a live API.
 
+**A pair the venue marks `is_api_tradable: false` is excluded from `get_symbols/1`
+entirely** — `V2TradingPair`'s own field for whether this package's other v2 endpoints
+(`best_bid_ask`, `estimated_price`, `orders`) will accept the symbol at all. `status`
+alone does not say that: a pair can read `"tradable"` and still answer 400 on every quote
+or order call for it. `list_instruments/1` does not exclude the row — it marks `status:
+:unknown` instead, because `Core.Instrument` has no finer state than
+`:tradable`/`:delisted`/`:unknown` for "listed but API-refused". A pair where the venue
+never sends `is_api_tradable` at all is unaffected by either of these — that field being
+absent is unmeasured, not a negative.
+
 ## v2 needs the account number that v1 did not
 
 `get_accounts/2` is the prerequisite for everything else. **`opts[:account_number]` is a
@@ -219,6 +229,21 @@ DELETE. `get_accounts/2` itself reads only the first page of `V2AccountsResponse
 deliberate decision, not an oversight, because one account per credential is this venue's
 common case; see `Rest.get_accounts/2`'s own doc if you are the credential that turns out to
 have more than one.
+
+## Holdings and orders page to the end, bounded — they used to read one page silently
+
+`get_balances/2` and `get_orders/2` both used to read only the first page of their own
+paginated endpoint (`V2HoldingsResponse`, `V2OrdersResponse`) and return it as `{:ok, _}` —
+a holding or an order past page one was simply not in the reply, indistinguishable from not
+existing. Both now walk every page to the end and fail closed
+(`{:error, :too_many_holdings_pages}` / `{:error, :too_many_order_pages}`) rather than hand
+back a truncated list as complete.
+
+`get_orders/2` has one more case: pass `opts[:limit]` to fetch exactly **one** page instead
+of walking. This venue's `GET orders` endpoint takes no `limit` query parameter at all, so
+`opts[:limit]` is not sent to the venue and does not cap how many rows come back — it only
+decides whether this package walks `next` or stops after the page it already has. Pair it
+with `opts[:cursor]` to choose which page.
 
 ## Two prices, and the one that accounts for size
 

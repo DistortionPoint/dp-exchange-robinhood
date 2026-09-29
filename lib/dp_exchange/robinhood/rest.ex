@@ -203,7 +203,7 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_symbols(map(), keyword()) ::
           {:ok, [String.t()]} | {:error, term()} | {:refused, term()}
   def get_symbols(credentials, opts) do
-    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], 0, []) do
+    with {:ok, rows} <- walk_trading_pairs(credentials, opts) do
       {:ok,
        rows
        |> Enum.flat_map(&row_symbol/1)
@@ -224,10 +224,10 @@ defmodule DpExchange.Robinhood.Rest do
   @spec list_instruments(map(), keyword()) ::
           {:ok, [Instrument.t()]} | {:error, term()} | {:refused, term()}
   def list_instruments(credentials, opts) do
-    with {:ok, rows} <- walk(@trading_pairs_path, credentials, opts, [], 0, []) do
+    with {:ok, rows} <- walk_trading_pairs(credentials, opts) do
       {:ok,
        rows
-       |> Enum.filter(&(row_symbol(&1) != []))
+       |> Enum.filter(&has_symbol?/1)
        |> Enum.map(&to_instrument/1)}
     end
   end
@@ -236,8 +236,31 @@ defmodule DpExchange.Robinhood.Rest do
   # `symbol` is not a string. Both used to raise here, inside the caller's process
   # (`Access` on a non-map, `SymbolFormat` on a non-string). Found by mutating real
   # response bodies, 2026-09-27. An absent symbol was already skipped, and so are these.
+  #
+  # **`is_api_tradable: false` excludes the row entirely, and only here.** `V2TradingPair`'s
+  # own field — confirmed against the vendor's OpenAPI document, `docs.robinhood.com`,
+  # 2026-09-29 — "indicates whether the trading pair is supported on API trading v2
+  # endpoints". `get_symbols/2` used to publish every listed pair regardless: a symbol the
+  # venue itself refuses on `best_bid_ask`, `estimated_price` and `orders` was handed to a
+  # poller as though it were quotable, which is a 400 every cycle rather than a catalogue
+  # gap this package can state up front. `list_instruments/2` does NOT exclude the row —
+  # see `has_symbol?/1` and `instrument_status/1` below — a consumer building a catalogue
+  # may still want to know the pair exists; only its status is marked `:unknown` rather than
+  # `:tradable`. The field being ABSENT (not `false`) is unmeasured, not a negative: this
+  # venue did not say, and the row is kept exactly as it was before this field existed to
+  # this package.
+  defp row_symbol(%{"symbol" => symbol, "is_api_tradable" => false}) when is_binary(symbol),
+    do: []
+
   defp row_symbol(%{"symbol" => symbol}) when is_binary(symbol), do: [symbol]
   defp row_symbol(_row), do: []
+
+  # `list_instruments/2`'s own row filter — deliberately NOT `row_symbol/1`, which also
+  # excludes an `is_api_tradable: false` row for `get_symbols/2`'s purpose. This callback
+  # keeps that row (see `row_symbol/1`'s comment) and only needs to know a usable symbol is
+  # present at all.
+  defp has_symbol?(%{"symbol" => symbol}) when is_binary(symbol), do: true
+  defp has_symbol?(_row), do: false
 
   defp to_instrument(row) do
     Instrument.new(
@@ -245,9 +268,22 @@ defmodule DpExchange.Robinhood.Rest do
       base: row["asset_code"],
       quote: row["quote_code"],
       instrument: :spot,
-      status: instrument_status(row["status"])
+      status: instrument_status(row)
     )
   end
+
+  # `is_api_tradable` is what actually gates whether this package's own v2 endpoints
+  # (`best_bid_ask`, `estimated_price`, `orders`) will accept the symbol at all —
+  # `status` alone does not say that; a pair can read `"tradable"` (v1-tradable) and still
+  # answer 400 on every quote or order call this package makes for it, because it is not
+  # API-tradable under v2. `Core.Instrument.status/0` offers exactly `:tradable`,
+  # `:delisted` or `:unknown` — no "listed but API-refused" state — so `:unknown` is the
+  # closest honest reading rather than a fourth value invented here (Core is not changed
+  # for this; checked `dp_exchange_core`'s `Instrument` module directly, 2026-09-29).
+  # Absent entirely (not `false`) is unmeasured: `status` alone decides, same as before this
+  # field existed to this package.
+  defp instrument_status(%{"is_api_tradable" => false}), do: :unknown
+  defp instrument_status(row), do: instrument_status_from_string(Map.get(row, "status"))
 
   # `Core.Instrument.status_from/1` recognises the vocabulary Coinbase and Gemini send
   # (`online`, `open`, `closed`, ...); this venue's own `V2TradingPair` schema sends
@@ -256,8 +292,8 @@ defmodule DpExchange.Robinhood.Rest do
   # value this package has actually seen is `:unknown` rather than assumed `:delisted`:
   # a status string never seen on this venue must not manufacture a delisting nothing
   # said.
-  defp instrument_status("tradable"), do: :tradable
-  defp instrument_status(_other), do: :unknown
+  defp instrument_status_from_string("tradable"), do: :tradable
+  defp instrument_status_from_string(_other), do: :unknown
 
   # `seen` is a loop guard, and it is not defensive decoration.
   #
@@ -302,31 +338,58 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
-  # Bounds the `trading_pairs` pagination walk, matching `dp_exchange_coinbase`'s
-  # `@max_account_pages`/`@max_fill_pages` and `dp_exchange_webull`'s `@max_pages` — this
-  # was the one venue in the family walking a cursor with no page bound at all.
+  # **Deliberately does not read `is_api_tradable`.** This answers "how would an order for
+  # this symbol be rounded", not "will the venue accept one" — `get_symbols/2` and
+  # `list_instruments/2` are where `is_api_tradable: false` is read, because they build a
+  # catalogue a consumer trusts to be quotable and tradable. A caller that already has a
+  # symbol in hand (from wherever) and wants its increments is asking a rounding question,
+  # and the trading-pair row answers it the same way whether or not the pair is currently
+  # API-tradable. Checked deliberately, not skipped: recorded here so the omission reads as
+  # a decision, 2026-09-29.
+
+  # Bounds every paginated walk this module runs — `trading_pairs` (`get_symbols/2`,
+  # `list_instruments/2`, both via `walk_trading_pairs/2`), `holdings` (`get_balances/2`,
+  # when the venue paginates them), and `orders` (`get_orders/2`, when the caller does not
+  # cap itself with `opts[:limit]`) — matching `dp_exchange_coinbase`'s
+  # `@max_account_pages`/`@max_fill_pages` and `dp_exchange_webull`'s `@max_pages`. Robinhood
+  # was the one venue in the family walking any cursor with no page bound at all; that gap
+  # is closed once, here, for every endpoint that walks rather than once per endpoint.
   #
   # **The cycle guard below does not cover this, and that is the whole point.** `seen`
   # catches a venue that hands back a path it already gave us; it cannot catch one that
   # hands back a NEW path every time (`?cursor=1`, `?cursor=2`, …), because no path ever
   # repeats. A venue-side defect of that shape would walk forever, holding a caller and a
   # rate-limit budget with it. Fifty pages is the family's figure, not a measured one for
-  # this venue — Robinhood Crypto lists on the order of a hundred pairs, so this is roughly
-  # two orders of magnitude of headroom.
+  # this venue — Robinhood Crypto lists on the order of a hundred trading pairs, so this is
+  # roughly two orders of magnitude of headroom for that endpoint; holdings and orders have
+  # not been measured against it at all, and the same figure is used for lack of a better
+  # one rather than a per-endpoint guess.
   @max_pages 50
 
-  # Collects raw `trading_pairs` rows across every page — `get_symbols/2` and
-  # `list_instruments/2` each map the same rows to what they need, rather than this
-  # walk deciding ahead of time which fields anyone wants.
-  #
-  # Fails closed on the bound rather than returning what it has: a truncated catalogue
-  # answered as `{:ok, rows}` is a partial list presented as complete, which is the
-  # "nearby substitute where an error belongs" failure this family keeps paying for. Every
-  # other venue's pagination bound in this family answers the same way.
-  defp walk(_path, _credentials, _opts, _pages, page, _seen) when page >= @max_pages,
-    do: {:error, :too_many_trading_pair_pages}
+  # `get_symbols/2` and `list_instruments/2` share this walk of `trading_pairs` — each maps
+  # the same raw rows to what it needs, rather than the walk deciding ahead of time which
+  # fields anyone wants.
+  defp walk_trading_pairs(credentials, opts),
+    do: walk(@trading_pairs_path, credentials, opts, [], 0, [], :too_many_trading_pair_pages)
 
-  defp walk(path, credentials, opts, pages, page, seen) do
+  # Collects raw rows across every page of a `{"next", "previous", "results"}` cursor —
+  # `V2TradingPairsResponse`, `V2HoldingsResponse` and `V2OrdersResponse` are the same shape
+  # for this purpose (confirmed against the vendor's OpenAPI document, 2026-09-29), which is
+  # what let this walk generalise from `trading_pairs` alone to all three. `too_many_error`
+  # is the atom a caller gets back on the page bound below — `walk_trading_pairs/2` above
+  # fixes it at `:too_many_trading_pair_pages` to keep that one call site's existing error
+  # unchanged; `get_balances/2` and `get_orders/2` pass their own.
+  #
+  # Fails closed on the bound rather than returning what it has: a truncated catalogue,
+  # holdings list or order history answered as `{:ok, rows}` is a partial list presented as
+  # complete, which is the "nearby substitute where an error belongs" failure this family
+  # keeps paying for. Every other venue's pagination bound in this family answers the same
+  # way.
+  defp walk(_path, _credentials, _opts, _pages, page, _seen, too_many_error)
+       when page >= @max_pages,
+       do: {:error, too_many_error}
+
+  defp walk(path, credentials, opts, pages, page, seen, too_many_error) do
     if path in seen do
       {:error, {:pagination_loop, path}}
     else
@@ -342,7 +405,18 @@ defmodule DpExchange.Robinhood.Rest do
 
           case next_path(body) do
             nil -> {:ok, pages |> Enum.reverse() |> Enum.concat()}
-            next -> walk(next, credentials, opts, pages, page + 1, [path | seen])
+            next -> walk(next, credentials, opts, pages, page + 1, [path | seen], too_many_error)
+          end
+
+        # `"results": null` is an empty page, the same convention `account_rows/1` and
+        # `order_rows/1` both give their own single-page endpoints — carried here so a
+        # WALKED endpoint (holdings) reads a null page identically rather than refusing a
+        # page that said nothing was wrong. `trading_pairs` and `orders` have never been
+        # observed to send this; harmless for them either way.
+        {:ok, %{"results" => nil} = body} ->
+          case next_path(body) do
+            nil -> {:ok, pages |> Enum.reverse() |> Enum.concat()}
+            next -> walk(next, credentials, opts, pages, page + 1, [path | seen], too_many_error)
           end
 
         {:ok, _unexpected} ->
@@ -423,6 +497,16 @@ defmodule DpExchange.Robinhood.Rest do
 
   `opts[:asset_codes]` narrows to particular assets; without it the venue returns all of
   them.
+
+  **Walks every page.** `V2HoldingsResponse` is `{"next", "previous", "results"}` — the same
+  cursor shape `trading_pairs` uses — confirmed against the vendor's OpenAPI document,
+  2026-09-29. This used to read only the first page: a holding on page two was simply
+  absent from the reply, which reads as "the credential holds none of that asset" —
+  `to_balance/2`'s own comment calls the equivalent single-row case the dangerous one, and a
+  whole missing PAGE of rows is the same failure at a larger scale. Bounded the same way
+  `walk/7` bounds `trading_pairs`, and fails closed on the bound for the same reason: a
+  truncated holdings list answered as `{:ok, balances}` is money a caller is told it does
+  not have.
   """
   @spec get_balances(map(), keyword()) ::
           {:ok, [Balance.t()]} | {:error, term()} | {:refused, term()}
@@ -435,8 +519,7 @@ defmodule DpExchange.Robinhood.Rest do
       path = "/api/v2/crypto/trading/holdings/" <> query_string(query)
       asked_at = DateTime.utc_now()
 
-      with {:ok, body} <- get(path, credentials, opts),
-           {:ok, rows} <- account_rows(body) do
+      with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_holdings_pages) do
         to_balances(rows, asked_at)
       end
     end
@@ -552,11 +635,27 @@ defmodule DpExchange.Robinhood.Rest do
   `opts[:account_number]` is required by v2. `opts[:created_at_start]` and the venue's other
   filters are passed through under its own names, and none is defaulted — a start date
   chosen here would return a real list of orders over a window the caller did not ask about.
+  A `%DateTime{}` passed for `:created_at_start` or `:created_at_end` is sent as ISO 8601
+  (`DateTime.to_iso8601/1`); a string is sent unchanged.
 
-  This does **not** page. The venue returns a cursor and `get_symbols/2` walks one for the
-  catalogue; an order list is a different case — a caller filtering by date wants the page
-  it asked for, and following the cursor silently would fetch a history it did not.
-  `opts[:cursor]` continues where the caller decides to.
+  **Paging changed.** This used to read only the first page and return it as `{:ok, _}`,
+  documented as a deliberate choice — "a caller filtering by date wants the page it asked
+  for". That was true of the filters and false of the result: a caller who did not also
+  pass `opts[:cursor]` had no way to reach page two, so any account with more than one
+  page of matching orders silently lost every order past the first, reported as complete
+  success. `Core`'s contract types this `[Order.t()]`, not a cursor-bearing page, so there
+  is no way to hand a `next` back through the return value either.
+
+  What it does now: with `opts[:limit]` given, exactly **one** page is fetched and
+  returned — the venue's own `GET orders` endpoint takes no `limit` parameter at all
+  (confirmed against the vendor's OpenAPI document, 2026-09-29: its query parameters are
+  `account_number`, `cursor`, `created_at_start`, `created_at_end`, `updated_at_start`,
+  `updated_at_end`, `symbol`, `side`, `type`, `state` — no `limit`), so `:limit` is read
+  here as "do not walk `next`", not as a count this package can ask the venue to cap; pass
+  `opts[:cursor]` alongside it to choose which page. Without `opts[:limit]`, every page is
+  walked to the end with the same bounded `walk/7` `get_symbols/2` uses, failing closed
+  (`{:error, :too_many_order_pages}`) rather than returning a truncated history as
+  complete.
   """
   @spec get_orders(map(), keyword()) ::
           {:ok, [Order.t()]} | {:error, term()} | {:refused, term()}
@@ -564,20 +663,39 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, account} <- required_account(opts) do
       query =
         [{"account_number", account}]
-        |> put_query("created_at_start", Keyword.get(opts, :created_at_start))
-        |> put_query("created_at_end", Keyword.get(opts, :created_at_end))
+        |> put_query("created_at_start", iso8601_param(Keyword.get(opts, :created_at_start)))
+        |> put_query("created_at_end", iso8601_param(Keyword.get(opts, :created_at_end)))
         |> put_query("symbol", order_symbol(Keyword.get(opts, :symbol)))
         |> put_query("state", Keyword.get(opts, :state))
         |> put_query("cursor", Keyword.get(opts, :cursor))
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
 
-      with {:ok, body} <- get(path, credentials, opts),
-           {:ok, rows} <- order_rows(body) do
-        to_orders(rows)
+      if Keyword.has_key?(opts, :limit) do
+        get_orders_one_page(path, credentials, opts)
+      else
+        with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_order_pages) do
+          to_orders(rows)
+        end
       end
     end
   end
+
+  defp get_orders_one_page(path, credentials, opts) do
+    with {:ok, body} <- get(path, credentials, opts),
+         {:ok, rows} <- order_rows(body) do
+      to_orders(rows)
+    end
+  end
+
+  # Vendor: ISO 8601 date-time (`created_at_start`/`created_at_end`, both `format:
+  # "date-time"` in the OpenAPI schema). `put_query/3`'s blanket `to_string/1` on a
+  # `%DateTime{}` gives `"2026-09-01 12:00:00Z"` — space-separated, Elixir's own
+  # `String.Chars` rendering, not the `T`-separated wire format the vendor's schema
+  # documents. A string the caller already built is sent exactly as given; only a
+  # `%DateTime{}` struct is reformatted here.
+  defp iso8601_param(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp iso8601_param(value), do: value
 
   @doc """
   One order — `GET /api/v2/crypto/trading/orders/{order_id}/`.
@@ -891,7 +1009,17 @@ defmodule DpExchange.Robinhood.Rest do
       side: order_side(row["side"]),
       order_type: order_kind(row["type"]),
       time_in_force: tif_atom(configured_time_in_force(row)),
-      quantity: decimal(row["filled_asset_quantity"] || configured_quantity(row)),
+      # `quantity` is the order's own SIZE, read from the type-named `*_order_config` it
+      # was placed or echoed with — never from `filled_asset_quantity`. Per the vendor's
+      # own `OrderResponse` schema, `filled_asset_quantity` is "Portion of total amount
+      # that have been filled" and is always present on the response, filled or not — this
+      # used to read `row["filled_asset_quantity"] || configured_quantity(row)`, so an
+      # order with SOME fill (a real, non-`nil`, non-zero-that-truthy-still-passes value)
+      # always took that branch and `quantity` silently became `filled_quantity`'s own
+      # value. A resting order with a partial fill reported its ORIGINAL size as however
+      # much of it had filled so far — an open 0.5, filled 0.25, read back as
+      # `quantity: 0.25`, indistinguishable from a smaller order placed and fully filled.
+      quantity: decimal(configured_quantity(row)),
       filled_quantity: decimal(row["filled_asset_quantity"]),
       average_price: decimal(row["average_price"]),
       status: order_status(row["state"]),
@@ -1011,14 +1139,19 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
-  # **A retry is signed again, not replayed.** The signature carries `x-timestamp`, which the
-  # venue accepts for about 30 seconds. That figure comes from third-party client libraries
-  # and write-ups; the vendor's own page renders client-side and was not read directly
-  # (2026-09-28). `Core.HttpClient` used to retry with the first attempt's headers, and a
-  # first attempt that timed out took the whole 30-second `:timeout`. So its retry went out
-  # stale, and the venue refused it as unauthorised: `{:refused, _}`, a credential problem
-  # the caller does not have. Passing a function makes the client sign each attempt afresh.
-  # A write stays safe to retry because `client_order_id` is this venue's idempotency key.
+  # **A retry is signed again, not replayed.** The signature carries `x-timestamp`, and the
+  # venue's own OpenAPI document states the window directly, on the `Timestamp` security
+  # scheme: "timestamps are only valid for 30 seconds after they're generated, and an
+  # expired timestamp will be rejected" — confirmed against the Robinhood docs bundle,
+  # 2026-09-29. (An earlier version of this comment said the 30-second figure came from
+  # third-party client libraries and write-ups, and that the vendor's own page "renders
+  # client-side and was not read directly" — that was wrong on both counts: the page does
+  # state it, in the security-scheme description above, and that is where this figure comes
+  # from now.) `Core.HttpClient` used to retry with the first attempt's headers, and a first
+  # attempt that timed out took the whole 30-second `:timeout`. So its retry went out stale,
+  # and the venue refused it as unauthorised: `{:refused, _}`, a credential problem the
+  # caller does not have. Passing a function makes the client sign each attempt afresh. A
+  # write stays safe to retry because `client_order_id` is this venue's idempotency key.
   defp signer(method, path, body, credentials, opts),
     do: fn -> Auth.headers(method, path, body, credentials, opts) end
 

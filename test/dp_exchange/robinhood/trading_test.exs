@@ -140,6 +140,87 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert query =~ "asset_code=BTC"
       assert query =~ "asset_code=ETH"
     end
+
+    test "results: null is an empty page, not an error" do
+      # `account_rows/1`'s convention, preserved once `get_balances/2` moved from reading
+      # `account_rows/1` directly to walking the same shape across pages.
+      assert {:ok, []} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: fn conn -> Req.Test.json(conn, %{"next" => nil, "results" => nil}) end,
+                 retry_attempts: 0
+               )
+    end
+
+    test "a holding on page two is not silently dropped" do
+      # This used to read only `V2HoldingsResponse`'s first page and return it as complete —
+      # a holding past page one was simply absent, which reads as "the credential holds none
+      # of that asset". The venue's own OpenAPI document gives holdings the identical cursor
+      # shape trading_pairs has (`next`/`previous`/`results`), confirmed 2026-09-29, which is
+      # what this walk relies on.
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:page, conn.query_string})
+
+        case conn.query_string do
+          "account_number=RH-1" ->
+            Req.Test.json(conn, %{
+              "results" => [
+                %{
+                  "asset_code" => "BTC",
+                  "total_quantity" => "1",
+                  "quantity_available_for_trading" => "1"
+                }
+              ],
+              "next" =>
+                "https://trading.robinhood.com/api/v2/crypto/trading/holdings/?account_number=RH-1&cursor=2"
+            })
+
+          _second_page ->
+            Req.Test.json(conn, %{
+              "results" => [
+                %{
+                  "asset_code" => "ETH",
+                  "total_quantity" => "2",
+                  "quantity_available_for_trading" => "2"
+                }
+              ],
+              "next" => nil
+            })
+        end
+      end
+
+      assert {:ok, balances} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert Enum.map(balances, & &1.currency) == ["BTC", "ETH"]
+    end
+
+    test "an unbounded holdings cursor fails closed rather than returning a truncated list" do
+      counter = :atomics.new(1, signed: false)
+
+      plug = fn conn ->
+        n = :atomics.add_get(counter, 1, 1)
+
+        Req.Test.json(conn, %{
+          "results" => [%{"asset_code" => "BTC", "total_quantity" => "1"}],
+          "next" =>
+            "https://trading.robinhood.com/api/v2/crypto/trading/holdings/?account_number=RH-1&cursor=#{n}"
+        })
+      end
+
+      assert {:error, :too_many_holdings_pages} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+    end
   end
 
   describe "estimated price — the third price, and the one that moved" do
@@ -799,6 +880,35 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert Decimal.equal?(order.quantity, Decimal.new("0.5"))
     end
 
+    test "a partially filled order's quantity is its own size, not how much of it has filled" do
+      # `order_struct/1` used to read `row["filled_asset_quantity"] || configured_quantity(row)`.
+      # `filled_asset_quantity` is documented on `OrderResponse` as "Portion of total amount
+      # that have been filled" and is always present on the response — filled or not — so an
+      # order with ANY fill always took that branch, and `quantity` silently became
+      # `filled_quantity`'s own value. Neither test near this one ever asserted `quantity` on
+      # a partially filled row, which is how this went unnoticed.
+      body = %{
+        "id" => "o-1",
+        "state" => "partially_filled",
+        "type" => "limit",
+        "filled_asset_quantity" => "0.25",
+        "limit_order_config" => %{"asset_quantity" => "0.5", "limit_price" => "60000"}
+      }
+
+      assert {:ok, order} =
+               Rest.get_order(@credentials, "o-1",
+                 account_number: "RH-1",
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert Decimal.equal?(order.quantity, Decimal.new("0.5")),
+             "quantity must be the order's own configured size"
+
+      assert Decimal.equal?(order.filled_quantity, Decimal.new("0.25"))
+      refute Decimal.equal?(order.quantity, order.filled_quantity)
+    end
+
     test "the order list sends its filters under the venue's own names" do
       me = self()
 
@@ -817,6 +927,131 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert query =~ "created_at_start=2026-08-01T00%3A00%3A00Z"
       assert query =~ "symbol=BTC-USD"
       assert query =~ "state=open"
+    end
+
+    test "a %DateTime{} start/end is sent as ISO 8601, not to_string/1's space-separated form" do
+      # `to_string(%DateTime{})` gives "2026-09-01 12:00:00Z" — space, not `T` — which is not
+      # the ISO 8601 date-time the vendor's own OpenAPI schema documents for
+      # `created_at_start`/`created_at_end`. A string the caller already built (as in the
+      # test above) is sent unchanged; only a `%DateTime{}` struct is reformatted.
+      me = self()
+
+      assert {:ok, []} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 created_at_start: ~U[2026-09-01 12:00:00Z],
+                 created_at_end: ~U[2026-09-02 00:00:00Z],
+                 plug: capturing(%{"results" => []}, me),
+                 retry_attempts: 0
+               )
+
+      assert_receive {:request, "GET", _path, query, _raw}
+      # The bug's own shape: `to_string/1` on a `%DateTime{}` renders a space between the
+      # date and the time, which `URI.encode_query/1` turns into a literal `+`.
+      refute query =~ "2026-09-01+12"
+      assert query =~ "created_at_start=2026-09-01T12%3A00%3A00Z"
+      assert query =~ "created_at_end=2026-09-02T00%3A00%3A00Z"
+    end
+
+    test "without opts[:limit], every page of orders is walked and combined" do
+      # `get_orders/2` used to read only the first page of `V2OrdersResponse` and return it
+      # as `{:ok, _}` — an order on page two was simply not in the reply, and `Core`'s
+      # contract types this `[Order.t()]`, so there was no cursor a caller could even see to
+      # know a second page existed.
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:page, conn.query_string})
+
+        case conn.query_string do
+          "account_number=RH-1" ->
+            Req.Test.json(conn, %{
+              "results" => [%{"id" => "o-1", "state" => "open"}],
+              "next" =>
+                "https://trading.robinhood.com/api/v2/crypto/trading/orders/?account_number=RH-1&cursor=2"
+            })
+
+          _second_page ->
+            Req.Test.json(conn, %{
+              "results" => [%{"id" => "o-2", "state" => "filled"}],
+              "next" => nil
+            })
+        end
+      end
+
+      assert {:ok, orders} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert Enum.map(orders, & &1.id) == ["o-1", "o-2"]
+    end
+
+    test "an unbounded order cursor fails closed rather than returning a truncated history" do
+      counter = :atomics.new(1, signed: false)
+
+      plug = fn conn ->
+        n = :atomics.add_get(counter, 1, 1)
+
+        Req.Test.json(conn, %{
+          "results" => [%{"id" => "o-1", "state" => "open"}],
+          "next" =>
+            "https://trading.robinhood.com/api/v2/crypto/trading/orders/?account_number=RH-1&cursor=#{n}"
+        })
+      end
+
+      assert {:error, :too_many_order_pages} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+    end
+
+    test "opts[:limit] fetches exactly one page, even when the venue offers a next" do
+      # The venue's `GET orders` endpoint has no `limit` query parameter at all (confirmed
+      # against its OpenAPI document, 2026-09-29), so `opts[:limit]` is never sent — it only
+      # decides whether this package walks `next` or stops.
+      me = self()
+
+      assert {:ok, [order]} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 limit: 1,
+                 plug:
+                   capturing(
+                     %{
+                       "results" => [%{"id" => "o-1", "state" => "open"}],
+                       "next" =>
+                         "https://trading.robinhood.com/api/v2/crypto/trading/orders/?account_number=RH-1&cursor=2"
+                     },
+                     me
+                   ),
+                 retry_attempts: 0
+               )
+
+      assert order.id == "o-1"
+      assert_receive {:request, "GET", _path, _query, _raw}
+      refute_receive {:request, "GET", _path2, _second_query, _raw2}, 100
+    end
+
+    test "opts[:limit] with opts[:cursor] fetches that one page, via cursor" do
+      me = self()
+
+      assert {:ok, [order]} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 limit: 1,
+                 cursor: "page-2",
+                 plug: capturing(%{"results" => [%{"id" => "o-2", "state" => "open"}]}, me),
+                 retry_attempts: 0
+               )
+
+      assert order.id == "o-2"
+      assert_receive {:request, "GET", _path, query, _raw}
+      assert query =~ "cursor=page-2"
     end
 
     test "cancelling is a POST at its own path and takes no account number" do

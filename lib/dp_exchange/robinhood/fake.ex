@@ -53,6 +53,12 @@ defmodule DpExchange.Robinhood.Fake do
 
   alias DpExchange.Core.{Capabilities, FakeInjection, Instrument, Types, Venue}
 
+  # Every symbol here is presumed API-tradable. `Rest.get_symbols/2` and
+  # `Rest.list_instruments/2` both read the real venue's `is_api_tradable` field
+  # (`V2TradingPair`) and exclude or downgrade a row where it is explicitly `false` — this
+  # fake has no such row to model, since its fixed universe carries no `is_api_tradable`
+  # concept at all. Not "differently capable": there is nothing here for that distinction
+  # to apply to, the same way this fake has nothing to page past `@symbols`' three entries.
   @symbols ~w(BTC-USD ETH-USD DOGE-USD)
 
   @price %{"BTC-USD" => "77845.79", "ETH-USD" => "2951.40", "DOGE-USD" => "0.1234"}

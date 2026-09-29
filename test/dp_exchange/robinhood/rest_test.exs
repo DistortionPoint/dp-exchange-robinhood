@@ -363,6 +363,75 @@ defmodule DpExchange.Robinhood.RestTest do
     end
   end
 
+  describe "is_api_tradable — a symbol the venue's own v2 endpoints refuse" do
+    # `V2TradingPair.is_api_tradable`: "Indicates whether the trading pair is supported on
+    # API trading v2 endpoints" — confirmed against the vendor's OpenAPI document,
+    # 2026-09-29. `best_bid_ask`, `estimated_price` and `orders` all answer 400 for a symbol
+    # where this is `false`, regardless of what `status` itself says.
+    test "get_symbols/2 excludes a pair the venue marks is_api_tradable: false" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "is_api_tradable" => true},
+          %{"symbol" => "NOPE-USD", "is_api_tradable" => false}
+        ]
+      }
+
+      assert {:ok, ["BTC-USD"]} =
+               Rest.get_symbols(@credentials, plug: responding(body), retry_attempts: 0)
+    end
+
+    test "get_symbols/2 keeps a pair where is_api_tradable is simply absent" do
+      # Absent, not `false`, is unmeasured — the venue did not say, and the row is kept
+      # exactly as before this field existed to this package.
+      body = %{"results" => [%{"symbol" => "BTC-USD"}]}
+
+      assert {:ok, ["BTC-USD"]} =
+               Rest.get_symbols(@credentials, plug: responding(body), retry_attempts: 0)
+    end
+
+    test "list_instruments/2 keeps the row but marks it :unknown, not :tradable" do
+      # Unlike `get_symbols/2`, this does NOT exclude the row — a consumer building a
+      # catalogue may still want to know the pair is listed. `Core.Instrument` has no
+      # status finer than :tradable/:delisted/:unknown for "listed but API-refused", so
+      # :unknown is the closest honest reading rather than a fourth value invented here.
+      body = %{
+        "results" => [
+          %{
+            "symbol" => "NOPE-USD",
+            "asset_code" => "NOPE",
+            "quote_code" => "USD",
+            "status" => "tradable",
+            "is_api_tradable" => false
+          }
+        ]
+      }
+
+      assert {:ok, [instrument]} =
+               Rest.list_instruments(@credentials, plug: responding(body), retry_attempts: 0)
+
+      assert instrument.symbol == "NOPE-USD"
+      assert instrument.status == :unknown
+    end
+
+    test "list_instruments/2 stays :tradable when is_api_tradable is absent" do
+      body = %{
+        "results" => [
+          %{
+            "symbol" => "BTC-USD",
+            "asset_code" => "BTC",
+            "quote_code" => "USD",
+            "status" => "tradable"
+          }
+        ]
+      }
+
+      assert {:ok, [instrument]} =
+               Rest.list_instruments(@credentials, plug: responding(body), retry_attempts: 0)
+
+      assert instrument.status == :tradable
+    end
+  end
+
   describe "a response value of the wrong type is refused or skipped, never raised on" do
     # Found by mutating real response bodies, 2026-09-27. Each of these raised inside the
     # CALLER's process.

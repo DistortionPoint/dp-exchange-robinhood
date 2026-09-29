@@ -19,6 +19,27 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+Checked against the vendor's v2 OpenAPI, extracted from the Robinhood docs bundle on
+2026-09-29.
+
+- An order's `quantity` is its size, not how much of it has filled. It was read from
+  `filled_asset_quantity`, which is always present, so every order's `quantity` equalled its
+  `filled_quantity`: an open order read as size 0 and a partial fill as its filled part. It
+  now comes from the order config's `asset_quantity`.
+- `get_balances/2` follows the holdings `next` cursor. Holdings past the first page were
+  dropped, which reads as holding none of those assets. The walk is bounded and fails
+  closed with `{:error, :too_many_holdings_pages}`.
+- `get_orders/2` without `:limit` walks every page, bounded (`:too_many_order_pages`).
+  It returned the first page as the whole list, and no caller could ever obtain the cursor
+  `opts[:cursor]` asked for. With `:limit` it returns one page, and `:cursor` selects it.
+- A trading pair the venue marks `is_api_tradable: false` is excluded from `get_symbols/2`
+  and is `:unknown`, not `:tradable`, in `list_instruments/2`. The v2 endpoints refuse such
+  a pair, so the feed polled it into a 400 every cycle. A pair without the field is unchanged.
+- A `DateTime` passed as `:created_at_start`/`:created_at_end` is sent as ISO 8601. It was
+  sent with a space in place of the `T`.
+
 ## [0.3.49] - 2026-09-29
 
 ### Fixed
