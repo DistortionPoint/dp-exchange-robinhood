@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.68] - 2026-10-10
+
 ### Fixed
 
 - **A forwarded `limiter: nil` bypassed this venue's rate limiter on every facade call.**
