@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.63] - 2026-10-10
+
 ### Fixed
 
 - **A `Feed` started without `:subscriber` delivered to itself, in a loop.** The default was
