@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.67] - 2026-10-10
+
 ### Fixed
 
 - **The supervised feed polled without this venue's rate limiter.** `Feed` forwarded
