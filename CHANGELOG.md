@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.69] - 2026-10-10
+
 ### Fixed
 
 - **`Fake` refused an unlisted symbol with a shape the real package never returns.**
