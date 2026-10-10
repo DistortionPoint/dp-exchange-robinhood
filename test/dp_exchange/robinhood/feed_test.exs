@@ -143,13 +143,18 @@ defmodule DpExchange.Robinhood.FeedTest do
   # own 60-second next tick) — proving `rate_limit_blocking` actually reached
   # `Core.HttpClient` without needing to reach into a different process's `Config`
   # override, which a separately-started `PollingFeed` process would never see anyway.
-  defp exhausted_limiter do
+  #
+  # `per_ms` is the emission interval. The blocking test keeps the short one, because it must
+  # see the wait end. The fail-fast test passes a long one: the bucket then cannot refill
+  # inside its observation window however late this process is scheduled, so "nothing
+  # delivered" can only mean `check/3` refused, never that the wait happened to be over.
+  defp exhausted_limiter(per_ms \\ 300) do
     name = :"limiter_#{System.unique_integer([:positive])}"
 
     {:ok, _pid} =
       DefaultRateLimiter.start_link(
         name: name,
-        limits: %{default: %{limit: 1, per_ms: 300, burst: 0}}
+        limits: %{default: %{limit: 1, per_ms: per_ms, burst: 0}}
       )
 
     :ok = DefaultRateLimiter.record(:robinhood, 1, limiter: name)
@@ -169,10 +174,10 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
 
     test "a caller can still opt into fail-fast explicitly, and it costs the symbol this cycle" do
-      limiter = exhausted_limiter()
+      limiter = exhausted_limiter(600_000)
       start_feed(limiter: limiter, rate_limit_blocking: false)
 
-      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 1_000
+      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 500
     end
   end
 
@@ -327,8 +332,10 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert details.subscriber == inspect(slow)
 
       for _each <- 1..5, do: send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
+      # Settled: every send above has been handled, and the feed's notices are sent to this
+      # process before `get_state` answers, so absence here is exact and needs no timeout.
       _settled = :sys.get_state(feed)
-      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :degraded}}, 100
+      refute_received {:dp_exchange, :robinhood, %Notice{kind: :degraded}}
     end
 
     test "an invalid bound fails at init, loudly, rather than falling back to the default" do
@@ -601,7 +608,13 @@ defmodule DpExchange.Robinhood.FeedTest do
       )
 
       assert_receive {:dp_exchange, :robinhood, {:refused, "S7-USD", _reason}}, 2_000
-      Process.sleep(100)
+
+      # The cycle's books are published only once its whole bisection has returned, so a
+      # book from the last half means every request of the cycle has already been sent
+      # (the interval is 60s, so there is no second cycle). That replaces a sleep.
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "S16-USD"}},
+                     2_000
 
       # 1 whole batch + 2 per level for 4 levels = at most 9, against 16 per symbol.
       assert length(drain_requests()) <= 9
@@ -832,7 +845,7 @@ defmodule DpExchange.Robinhood.FeedTest do
           end
         end)
 
-      assert_receive :registered
+      assert_receive :registered, 1_000
       assert Process.alive?(registrant)
 
       assert_receive {:relayed,
@@ -1151,7 +1164,11 @@ defmodule DpExchange.Robinhood.FeedTest do
       send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
       send(feed, {:dp_exchange, :robinhood, {:refused, "BTC-USD", :invalid_symbol}})
 
-      refute_receive {:dp_exchange, :robinhood, %{symbol: "BTC-USD"}}, 200
+      # Both messages are handled before `get_state` answers, and any delivery they would
+      # have made is sent to this process before then, so absence is exact.
+      _settled = :sys.get_state(feed)
+
+      refute_received {:dp_exchange, :robinhood, %{symbol: "BTC-USD"}}
       refute_received {:dp_exchange, :robinhood, {:refused, "BTC-USD", _reason}}
     end
 
@@ -1164,10 +1181,18 @@ defmodule DpExchange.Robinhood.FeedTest do
           start_delay_ms: 60_000
         )
 
+      :ok = :sys.statistics(feed, true)
       send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
-      # A self-subscribed feed looped this message forever; its queue never drained.
-      Process.sleep(50)
-      assert {:message_queue_len, 0} = Process.info(feed, :message_queue_len)
+
+      # A self-subscribed feed re-sent this message to itself forever. The re-send is queued
+      # before the statistics request below (it is made while the first copy is handled, and
+      # the request is made after `get_state` answers), so a looping feed has handled it at
+      # least twice by the time the count is read. Counting handled messages replaces
+      # sleeping and then hoping to catch the mailbox non-empty.
+      _settled = :sys.get_state(feed)
+      assert {:ok, statistics} = :sys.statistics(feed, :get)
+      assert statistics[:messages_in] == 1
+
       GenServer.stop(feed)
     end
   end

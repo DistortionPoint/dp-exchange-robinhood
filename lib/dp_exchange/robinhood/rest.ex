@@ -6,7 +6,7 @@ defmodule DpExchange.Robinhood.Rest do
 
   There is no anonymous endpoint here. `best_bid_ask` needs the same Ed25519 signature as
   an order, which is why this venue declares `credential_benefit: :required` and why
-  `get_price/2` takes credentials.
+  `get_top_of_book/3` takes credentials.
 
   ## There is no `get_price/3` here, and that is deliberate
 
@@ -511,10 +511,11 @@ defmodule DpExchange.Robinhood.Rest do
   sent: v1 took none and answered for the credential's own account, so a call without one
   is a v1 habit that v2 will not honour.
 
-  **Three quantities, kept apart.** The venue publishes `total_quantity`,
-  `quantity_available_for_trading` and — where it holds any — an amount that is neither: a
-  balance in an open order is real and is not tradable. `Types.Balance` carries the total
-  and the available separately for that reason, and the difference is what is on hold.
+  **Total and available, kept apart.** The venue publishes `total_quantity` and
+  `quantity_available_for_trading`; the difference is a balance that is real and not
+  tradable (for example, sitting in an open order). `Types.Balance` carries them as
+  `balance` and `available_balance`. **`hold` is always `nil`**: the venue publishes no hold
+  figure, and subtracting one from the other would state a number it never sent.
 
   `opts[:asset_codes]` narrows to particular assets; without it the venue returns all of
   them.
@@ -842,6 +843,14 @@ defmodule DpExchange.Robinhood.Rest do
 
   `symbol`, `side`, `order_type` and a quantity are required. The quantity goes in as
   `asset_quantity` — the venue's own field — and a limit order also needs `limit_price`.
+  A missing field is refused locally as `{:error, {:missing_field, key}}`, an order type
+  outside `:market`, `:limit`, `:stop` (or the venue's `:stop_loss`) and `:stop_limit` as
+  `{:error, {:unsupported_order_type, type}}`. `request.time_in_force` (`:gtc`, `:day`,
+  `:gfw` or `:gfm`) is sent on the three non-market types and refused as
+  `{:error, {:unsupported_time_in_force, tif}}` for anything else; a market order never
+  sends one. The response body must be an order with an `id`, otherwise
+  `{:error, {:missing_required_field, :id}}` (an object without one) or
+  `{:error, :unexpected_response_shape}` (not an object).
   """
   @spec place_order(map(), map(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
@@ -1008,9 +1017,9 @@ defmodule DpExchange.Robinhood.Rest do
   # `opts[:time_in_force]` is absent for almost every caller today, and absence must build
   # exactly the config this package built before this atom existed — no key at all, not a
   # key holding a default the venue was never asked for. A value present but unrepresentable
-  # (an atom `tif_name/1` has no wire name for — `:ioc`, `:fok`, `:gtd`, or one of Core's
-  # `:gfw`/`:gfm` when those ship) is refused, rather than sent as nothing and silently
-  # ignored the way a wrong config key already is on this venue.
+  # (an atom `@tif_names` has no wire name for — `:ioc`, `:fok`, `:gtd`) is refused, rather
+  # than sent as nothing and silently ignored the way a wrong config key already is on this
+  # venue.
   defp order_time_in_force(request) do
     case Map.get(request, :time_in_force) do
       nil ->
@@ -1404,10 +1413,12 @@ defmodule DpExchange.Robinhood.Rest do
   # answer normally on the very next call. Clearing only those 56 took one consumer's
   # collection scope from 5 pairs to 63, 62 of them fresh within 60 seconds.
   #
-  # `{:refused, :not_listed}` stays reserved for where the venue actually SAYS so: a 400,
-  # 401, 403 or 404 with a body, handled by `refusal/2` below on the HTTP status rather
-  # than on the shape of a 200. Those genuine statements (e.g. `{:venue_error, 400,
-  # "Invalid symbol: ALGO-USD"}`) were the other 27 of the 83 and are unaffected by this.
+  # A refusal is reserved for where the venue actually SAYS so: a 400, 401, 403 or 404 with
+  # a body, handled by `refusal/2` below on the HTTP status rather than on the shape of a
+  # 200, and carried as `{:refused, {:venue_error, status, detail}}`. Those genuine
+  # statements (e.g. `{:venue_error, 400, "Invalid symbol: ALGO-USD"}`) were the other 27
+  # of the 83 and are unaffected by this. (`DpExchange.Robinhood.Fake` answers an unlisted
+  # symbol with that same `{:venue_error, 400, "Invalid symbol: ..."}` shape.)
   #
   # The row is the one naming the symbol asked for, not merely the first. Both callers
   # label the answer with the REQUESTED symbol, so a reordered or unfiltered `results`

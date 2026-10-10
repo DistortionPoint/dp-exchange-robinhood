@@ -19,6 +19,34 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Fake` refused an unlisted symbol with a shape the real package never returns.**
+  `get_top_of_book/2` and `quantization/2` answered `{:refused, :not_listed}`; the real
+  venue answers a 400 that `Rest` delivers as
+  `{:refused, {:venue_error, 400, "Invalid symbol: <SYMBOL>"}}` (measured, DpCryptoManagement
+  issue #25). A consumer matching on the fake's shape never matched production. The fake now
+  answers the measured shape.
+- **`Fake` instruments state `status: :tradable`.** `dp_exchange_core` no longer defaults an
+  unstated instrument status to `:tradable`, and every pair the fake lists is one it serves.
+
+- **`capabilities/0` provenance was stale.** `measured_at` read 2026-08-28 although the
+  order types, time-in-force values and v2 response shapes it declares were taken from the
+  vendor's OpenAPI document fetched 2026-09-29. `measured_at` is now `~D[2026-09-29]` and
+  `measured_against` says which claims come from that document, and that none has been
+  exercised against the live venue. No capability value changed.
+- **Documentation contradicted the code in several places.** `usage-rules.md` said
+  `time_in_force` is passed in `opts` (it is the request map's `:time_in_force`), omitted the
+  `{:missing_field, key}` / `{:unsupported_order_type, type}` refusals and the
+  `{:missing_required_field, :id}` answer for an order object with no `id`, listed only one
+  of the three `{:invalid_private_key, _}` reasons, and said `coverage_by_kind/1` answers an
+  empty map when the feed is down (it answers `%{top_of_book: %{}}`). `DpExchange.Robinhood`'s
+  supervision example omitted `subscriber:`, without which a feed delivers to nobody;
+  `quotes/0` was documented as the venue's settlement currencies when it is the normaliser's
+  parsing vocabulary; `Fake`'s moduledoc claimed it honours `subscribe_notices/1`'s `:to`
+  (it accepts the call and registers nothing); and the README pinned `~> 0.2.0`, which no
+  longer resolves to a current release.
+
 ## [0.3.68] - 2026-10-10
 
 ### Fixed

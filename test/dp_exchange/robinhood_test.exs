@@ -86,7 +86,9 @@ defmodule DpExchange.RobinhoodTest do
     test "provenance separates what was read here from what was inherited" do
       caps = Robinhood.capabilities()
 
-      assert caps.measured_at == ~D[2026-08-28]
+      assert caps.measured_at == ~D[2026-09-29]
+      assert caps.measured_against =~ "OpenAPI document committed"
+      assert caps.measured_against =~ "never exercised against the live venue"
       assert caps.measured_against =~ "INHERITED"
       assert caps.measured_against =~ "NOT probed"
     end
@@ -160,11 +162,15 @@ defmodule DpExchange.RobinhoodTest do
 
     test "subscribe adds to the polled set", %{name: name} do
       assert :ok = Robinhood.subscribe(["BTC-USD"], feed: name)
+      assert Robinhood.wanted(feed: name) == ["BTC-USD"]
     end
 
     test "unsubscribe and update_symbols route too", %{name: name} do
       assert :ok = Robinhood.update_symbols(["BTC-USD", "ETH-USD"], feed: name)
+      assert Enum.sort(Robinhood.wanted(feed: name)) == ["BTC-USD", "ETH-USD"]
+
       assert :ok = Robinhood.unsubscribe(["ETH-USD"], feed: name)
+      assert Robinhood.wanted(feed: name) == ["BTC-USD"]
     end
 
     test "coverage is empty until something actually arrives", %{name: name} do
@@ -496,11 +502,13 @@ defmodule DpExchange.RobinhoodTest do
 
     test "an unlisted symbol is refused, and subscribing to one pushes nothing" do
       assert Fake.get_top_of_book("NOPE-USD", credentials: @credentials) ==
-               {:refused, :not_listed}
+               {:refused, {:venue_error, 400, "Invalid symbol: NOPE-USD"}}
 
       :ok = Fake.subscribe(["NOPE-USD"])
       assert Fake.coverage() == %{}
-      refute_receive {:dp_exchange, :robinhood, _anything}, 50
+      # `Fake.subscribe/2` sends synchronously from this process, so anything it was going to
+      # push is already in the mailbox; a timed wait would only add a clock to the check.
+      refute_received {:dp_exchange, :robinhood, _anything}
     end
 
     test "everything the venue does not serve says so" do
@@ -640,7 +648,7 @@ defmodule DpExchange.RobinhoodTest do
         end
       end)
 
-      assert_receive :registered
+      assert_receive :registered, 1_000
 
       assert DpExchange.Robinhood.subscribe(["BTC-USD"], feed: name) ==
                {:error, {:feed_exited, :boom}}

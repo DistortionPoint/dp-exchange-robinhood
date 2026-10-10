@@ -10,7 +10,8 @@ which is why the citation for each file lives here instead of inline.
 full-body `example`/`examples` for any 200/201 response used here (only scalar,
 parameter-level `example`s — a query parameter's sample value, a pagination URI). So every
 fixture is "an instance built strictly from the schema's properties" per this suite's own
-rule, using **every** documented property since none is marked required, with a value of
+rule, using every documented property since none is marked required (except the order
+configs' `quote_amount`, which this package neither sends nor decodes), with a value of
 the schema's own declared `type`/`format` — a JSON number where the schema says `number`,
 a JSON string where it says `string`. That distinction is deliberate: the venue's own
 worked Python samples (embedded in the spec's `info.description`) send prices and

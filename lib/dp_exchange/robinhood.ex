@@ -57,7 +57,13 @@ defmodule DpExchange.Robinhood do
 
   ## Supervision
 
-      children = [{DpExchange.Robinhood, credentials: my_credentials(), symbols: ["BTC-USD"]}]
+      children = [
+        {DpExchange.Robinhood,
+         credentials: my_credentials(), symbols: ["BTC-USD"], subscriber: self()}
+      ]
+
+  `subscriber:` is where polled books and refusals are delivered, for the life of the tree.
+  There is no default: a feed started without one delivers data to nobody.
   """
 
   @behaviour DpExchange.Core.Venue
@@ -320,10 +326,13 @@ defmodule DpExchange.Robinhood do
       credential_benefit: :required,
       public_ceiling: %{limit: 10, per_ms: 1_000},
       authenticated_ceiling: %{limit: 10, per_ms: 1_000},
-      measured_at: ~D[2026-08-28],
+      measured_at: ~D[2026-09-29],
       measured_against:
         "endpoint set, Ed25519 signing scheme and the absence of candle, order-book and " <>
-          "volume endpoints read from the venue's Crypto Trading API documentation; the " <>
+          "volume endpoints read from the venue's Crypto Trading API documentation; order " <>
+          "types, time-in-force values and the v2 response shapes read from the vendor's " <>
+          "OpenAPI document committed at docs/reference/robinhood/openapi (fetched " <>
+          "2026-09-29) and never exercised against the live venue; the " <>
           "86-symbol USD-only catalogue is INHERITED from the prior adapter's 2026-08-05 " <>
           "walk and NOT re-measured here, since every endpoint requires credentials this " <>
           "repo does not hold; ceilings NOT probed — Robinhood's own documentation " <>
@@ -626,7 +635,7 @@ defmodule DpExchange.Robinhood do
   Robinhood cannot reproduce that discrepancy, and this implementation does not pretend
   otherwise. `capabilities().streamable` names exactly one kind, `:top_of_book`, and
   this venue's feed delivers it by poll: `Feed`'s fetcher is
-  `Rest.get_top_of_book/3`, which returns exclusively `Core.Types.TopOfBook.t()` —
+  `Rest.get_top_of_book_bulk/3`, which returns exclusively `Core.Types.TopOfBook.t()` —
   never `Core.Types.Quote.t()`, because this venue has no last-trade endpoint at all
   (see `get_price/2` above). A single-key map is therefore the honestly derived shape
   for a venue with exactly one delivery path, not a shortcut taken because there was
@@ -732,7 +741,13 @@ defmodule DpExchange.Robinhood do
   def quantization(symbol, opts \\ []),
     do: Rest.quantization(symbol, credentials(opts), with_limiter(opts))
 
-  @doc "The quote currencies this venue settles in."
+  @doc """
+  The quote codes this package's symbol normaliser recognises.
+
+  This is a parsing vocabulary, not a listing claim: it is wider than
+  `capabilities().supported_quotes`, which is `["USD"]` because that is all the catalogue
+  has ever been seen to contain.
+  """
   @spec quotes() :: [String.t()]
   def quotes, do: SymbolFormat.quotes()
 

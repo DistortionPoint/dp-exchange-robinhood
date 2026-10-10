@@ -12,7 +12,10 @@ This file is only what is **specific to Robinhood**.
 
 They carry **`:venue_time`** (the venue's own, `nil` where the venue publishes none) and
 **`:observed_at`** (when this package read it, always present) — the shape
-`Core.Types.TopOfBook` has always had. Requires `dp_exchange_core ~> 0.2.1`.
+`Core.Types.TopOfBook` has always had. (This is a family-wide change recorded for history:
+this venue returns neither type today — `get_price/2` and `get_order_book/2` are
+`:unsupported` — and its book is a `Core.Types.TopOfBook`, which has carried both fields
+from the start.)
 
 ```elixir
 # before
@@ -143,8 +146,9 @@ being *differently* capable than this venue rather than *less* capable than it, 
 test was passing against behaviour this venue cannot produce.
 
 **The private key is the base64 32-byte seed Robinhood issues**, not a 64-byte secret key.
-Passing the wrong one is refused here with `{:invalid_private_key, {:expected_32_bytes, n}}`
-rather than producing a signature the venue rejects with nothing to explain it.
+Passing the wrong one is refused here with `{:error, {:invalid_private_key, reason}}` —
+`{:expected_32_bytes, n}`, `:not_base64` or `:not_a_string` — rather than producing a
+signature the venue rejects with nothing to explain it.
 
 You hold the credentials. This package signs one request with them and keeps nothing.
 
@@ -283,12 +287,15 @@ package builds that key from the type rather than taking it from you: **a config
 wrong key is silently ignored and the order is placed with none.**
 
 A limit without a price, or a stop-limit without a stop, is refused **by field name** before
-the request.
+the request, as `{:error, {:missing_field, key}}` (`:symbol`, `:side`, `:order_type`,
+`:quantity`, `:price` or `:stop_price`). An order type outside `:market`, `:limit`, `:stop`
+(the contract's atom; the venue's own `:stop_loss` is accepted too) and `:stop_limit` is
+refused as `{:error, {:unsupported_order_type, type}}`.
 
 **`time_in_force` is real on `limit`, `stop_loss` and `stop_limit` orders**, and this
 package supports all four values the vendor's own schema documents — `:gtc`, `:day` (the
 venue's own `gfd`, "good for day"), `:gfw` and `:gfm` ("good for week" and "good for
-month") — pass any of them as `opts[:time_in_force]` on `place_order/3`'s request map.
+month") — pass any of them as the `:time_in_force` key of `place_order/3`'s request map.
 Anything else this package cannot send is refused locally as
 `{:error, {:unsupported_time_in_force, tif}}` rather than silently dropped, which would
 have placed your order under an instruction the venue never received. `market_order_config`
@@ -308,8 +315,9 @@ passed to `place_order/3`, not something you can re-derive from reading the orde
 
 **`client_order_id` is an idempotency key.** It is generated when you do not supply one, and
 re-sending the same one returns the original order instead of placing a second. If a request's
-response never reached you, retry with the *same* id — `opts[:client_order_id]` is there for
-exactly that.
+response never reached you, retry with the *same* id — the request map's `:client_order_id`
+(read first) or `opts[:client_order_id]` is there for exactly that. A blank or non-string
+value counts as absent and a fresh id is generated.
 
 ## Cancelling returns the venue's real state, not an assumed one
 
@@ -378,8 +386,10 @@ answering `200 text/html`. **Worth retrying**: nothing about the request was wro
 
 `{:error, :unexpected_response_shape}` — the body decoded and is not the thing this endpoint
 returns. From `get_order/3`, `place_order/3`, `cancel_order/3` and `get_orders/2` that means
-it was not an order object; from `get_balances/2`, that a holdings row named no asset. **Not
-retryable on its own** — the same request produces the same shape.
+it was not an order object (an object that is an order but carries no `id` is
+`{:error, {:missing_required_field, :id}}` instead); from `get_balances/2`, that a holdings
+row named no asset. **Not retryable on its own** — the same request produces the same
+shape.
 
 On `place_order/3` the distinction matters most. Neither error tells you whether an order was
 placed, and both are more honest than the empty `%Order{}` this package used to return as
@@ -527,6 +537,6 @@ makes with the source and date behind it, and the method, so any of them can be 
 `{:error, :feed_not_started}` when this venue's feed is not running (`unsubscribe/2`
 answers `:ok`: there is nothing to stop). They return `{:error, :feed_timeout}` when the
 feed is too busy to answer within its call budget, and `{:error, {:feed_exited, reason}}`
-when it dies while answering. `coverage/1` and `coverage_by_kind/1` answer an empty map in
-all three cases, which means "not observed". Treat `:feed_timeout` as transient and retry.
+when it dies while answering. `coverage/1` answers an empty map in all three cases, `coverage_by_kind/1` answers
+`%{top_of_book: %{}}` and `wanted/1` an empty list; each means "not observed". Treat `:feed_timeout` as transient and retry.
 Treat the other two as a feed your supervision tree has to bring back.

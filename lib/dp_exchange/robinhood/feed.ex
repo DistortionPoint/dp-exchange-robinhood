@@ -46,7 +46,7 @@ defmodule DpExchange.Robinhood.Feed do
   condition, but the first — what the venue actually does on a partial-bad batch — is
   still not stated anywhere this package can read.
 
-  **So this does not guess.** `fetch_all/3` below sends the bulk request and reads
+  **So this does not guess.** `fetch_all/5` below sends the bulk request and reads
   whatever comes back:
 
   - A `results` array with every row filled: published, same as before, at 1/86th the
@@ -258,8 +258,8 @@ defmodule DpExchange.Robinhood.Feed do
   the family wants this at all when Robinhood has nothing to split.
 
   Traceable to the actual struct, not assumed from the declared kind list: this feed's
-  `fetch` calls only `Rest.get_top_of_book/3`, wired in `init/1` below, and that
-  function returns exclusively `DpExchange.Core.Types.TopOfBook.t()` — never
+  fetcher calls only `Rest.get_top_of_book_bulk/3`, wired in `start_poller/1` below, and
+  that function returns exclusively `DpExchange.Core.Types.TopOfBook.t()` — never
   `DpExchange.Core.Types.Quote.t()` (see this module's own moduledoc on why not). Every
   symbol `coverage/1` reports therefore arrived through that one fetcher, so wrapping its
   map under `:top_of_book` reports what was actually produced, not a guess.

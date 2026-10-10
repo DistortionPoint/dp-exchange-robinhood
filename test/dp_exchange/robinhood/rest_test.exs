@@ -690,8 +690,9 @@ defmodule DpExchange.Robinhood.RestTest do
       assert_receive {:query, query}
       assert query =~ "symbol=BTC-USD"
       assert query =~ "symbol=ETH-USD"
-      # Exactly one request for both symbols — not one per symbol.
-      refute_receive {:query, _second_request}, 100
+      # Exactly one request for both symbols — not one per symbol. The call has returned, so
+      # a second request would already be in the mailbox.
+      refute_received {:query, _second_request}
 
       assert top1.symbol == "BTC-USD"
       assert Decimal.equal?(top1.bid, Decimal.new("77840.00"))

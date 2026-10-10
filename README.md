@@ -5,7 +5,7 @@
 > This package has **never run in production.** It is published early and openly so it
 > can be used and reported on, not because it is finished.
 >
-> - **The API may change without a major version.** Pin three-part (`~> 0.2.0`).
+> - **The API may change without a major version.** Pin three-part (`~> 0.3.68`).
 > - **Verification is uneven, and the gaps are on the expensive side.** The conformance
 >   suite passes against a fake and against a stubbed HTTP transport — **nothing here has
 >   ever run against Robinhood itself**, because every endpoint on this venue requires a
@@ -23,7 +23,7 @@ same facade every venue in the family exposes.
 ```elixir
 def deps do
   [
-    {:dp_exchange_robinhood, "~> 0.2.0"}
+    {:dp_exchange_robinhood, "~> 0.3.68"}
   ]
 end
 ```

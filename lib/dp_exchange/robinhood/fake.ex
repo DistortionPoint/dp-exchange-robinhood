@@ -26,9 +26,10 @@ defmodule DpExchange.Robinhood.Fake do
     with, fixed at boot
     — so this fake ignores it too and always delivers to the calling process, the same way
     a caller of the real facade receives from whichever process it supervised the feed
-    under. `subscribe_notices/2` is the one call on this venue that legitimately takes
-    `:to` — `DpExchange.Robinhood.Feed`'s own per-call notice registry — and this fake
-    honours it there, correctly.
+    under. `subscribe_notices/1` is the one call on this venue that legitimately takes
+    `:to` — `DpExchange.Robinhood.Feed`'s own per-call notice registry. This fake accepts
+    the call and answers `:ok` but registers nothing: it runs no feed, so it never raises a
+    notice for a registrant to receive.
 
   ## Failure injection and anonymous mode
 
@@ -135,9 +136,17 @@ defmodule DpExchange.Robinhood.Fake do
          }}
 
       :error ->
-        {:refused, :not_listed}
+        unlisted(canonical)
     end
   end
+
+  # The venue's own answer for a symbol it does not list, as `Rest` delivers it: a 400 whose
+  # detail names the symbol, measured live (DpCryptoManagement issue #25:
+  # `{:venue_error, 400, "Invalid symbol: ALGO-USD"}`). This fake answered
+  # `{:refused, :not_listed}`, a shape the real package never returns — see `Rest`'s
+  # `result_for/2` comment — so a consumer matching on it passed here and never matched there.
+  defp unlisted(canonical),
+    do: {:refused, {:venue_error, 400, "Invalid symbol: " <> canonical}}
 
   @impl true
   def get_symbols(opts \\ []) do
@@ -173,7 +182,15 @@ defmodule DpExchange.Robinhood.Fake do
   # reason `Core.Instrument`'s moduledoc calls this catalogue shape "ceremony" to require.
   defp fake_instrument(symbol) do
     [base, quote_asset] = String.split(symbol, "-", parts: 2)
-    Instrument.new(symbol: symbol, base: base, quote: quote_asset, instrument: :spot)
+    # `status:` stated: Core no longer defaults an unstated status to `:tradable`, and every
+    # pair this fake lists is one it serves.
+    Instrument.new(
+      symbol: symbol,
+      base: base,
+      quote: quote_asset,
+      instrument: :spot,
+      status: :tradable
+    )
   end
 
   @impl true
@@ -426,7 +443,7 @@ defmodule DpExchange.Robinhood.Fake do
   def quantization(symbol, opts \\ []) do
     with_injection(symbol, fn ->
       with :ok <- authenticated(opts),
-           true <- listed?(symbol) || {:refused, :not_listed} do
+           true <- listed?(symbol) || unlisted(SymbolFormat.to_canonical_symbol(symbol)) do
         {:ok,
          %{
            price_increment: Decimal.new("0.01"),
@@ -519,8 +536,9 @@ defmodule DpExchange.Robinhood.Fake do
   def coverage_by_kind(opts \\ []), do: %{top_of_book: coverage(opts)}
 
   @doc """
-  Registers `opts[:to]` for this venue's own notices. Unlike `subscribe/2`, `:to` is
-  genuine here — see this module's moduledoc.
+  Answers `:ok` for a registration of `opts[:to]` against this venue's own notices. The real
+  facade honours `:to` (unlike `subscribe/2`); this fake has no feed and raises no notices,
+  so it accepts the call and registers nothing — see this module's moduledoc.
 
   Routed through `with_injection/2`, unlike `subscribe/2`, `unsubscribe/2` and
   `update_symbols/2`: this call carries no symbol list, so there is no "one symbol in the

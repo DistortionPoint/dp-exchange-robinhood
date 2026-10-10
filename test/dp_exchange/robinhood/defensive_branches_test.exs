@@ -9,7 +9,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
   use ExUnit.Case, async: true
 
-  alias DpExchange.Core.{Config, Types}
+  alias DpExchange.Core.{Config, PollingFeed, Types}
   alias DpExchange.Robinhood
   alias DpExchange.Robinhood.{Fake, Feed, Rest}
 
@@ -234,7 +234,15 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
           start_delay_ms: 60_000
         )
 
+      poller = :sys.get_state(feed).poller
+      assert PollingFeed.status(poller).symbols == 0
+
       assert :ok = Feed.update_symbols(feed, ["BTC-USD"])
+
+      # The poller was told before `update_symbols/2` returned, so this read is ordered
+      # behind that cast.
+      assert PollingFeed.status(poller).symbols == 1
+      assert Feed.wanted(feed) == ["BTC-USD"]
     end
   end
 

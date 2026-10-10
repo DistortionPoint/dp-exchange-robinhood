@@ -1234,7 +1234,8 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert order.id == "o-1"
       assert_receive {:request, "GET", _path, _query, _raw}
-      refute_receive {:request, "GET", _path2, _second_query, _raw2}, 100
+      # The call has returned, so a second page request would already be in the mailbox.
+      refute_received {:request, "GET", _path2, _second_query, _raw2}
     end
 
     test "opts[:limit] with opts[:cursor] fetches that one page, via cursor" do

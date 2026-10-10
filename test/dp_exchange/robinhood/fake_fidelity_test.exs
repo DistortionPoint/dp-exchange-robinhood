@@ -111,8 +111,10 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     end
 
     test "quantization refuses an unlisted symbol instead of inventing increments" do
+      # The real venue's measured answer for an unlisted symbol, not an invented
+      # `:not_listed` the real package never returns.
       assert Fake.quantization("NOPE-USD", credentials: @credentials) ==
-               {:refused, :not_listed}
+               {:refused, {:venue_error, 400, "Invalid symbol: NOPE-USD"}}
 
       assert {:ok, _quantum} = Fake.quantization("btc-usd", credentials: @credentials)
     end
