@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.61] - 2026-10-10
+
 ### Fixed
 
 - **`place_order/3` ignored the request's own `client_order_id`.** Only `opts[:client_order_id]`
