@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.66] - 2026-10-10
+
 ### Fixed
 
 - **A book with no readable price was delivered as an empty book.** `get_top_of_book/3`
