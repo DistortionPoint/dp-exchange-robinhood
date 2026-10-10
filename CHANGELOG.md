@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.59] - 2026-10-10
+
 ### Fixed
 
 - **A poll whose bulk reply had an empty `results` raised.** `no_events/1` reached
