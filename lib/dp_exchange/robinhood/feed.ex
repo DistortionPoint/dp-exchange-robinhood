@@ -602,12 +602,20 @@ defmodule DpExchange.Robinhood.Feed do
     {:noreply, state}
   end
 
+  # **A symbol no longer in `state.symbols` delivers nothing.** A poll already in flight when
+  # `update_symbols/2` removed it still answered, and its book reached the subscriber after
+  # the unsubscribe returned. A late refusal put the removed symbol back into `refused`,
+  # where nothing would ever take it out. Found 2026-10-10.
   def handle_info({:dp_exchange, :robinhood, {:refused, symbol, _reason}} = message, state) do
-    {:noreply, deliver(%{state | refused: MapSet.put(state.refused, symbol)}, message)}
+    if symbol in state.symbols,
+      do: {:noreply, deliver(%{state | refused: MapSet.put(state.refused, symbol)}, message)},
+      else: {:noreply, state}
   end
 
   def handle_info({:dp_exchange, :robinhood, %{symbol: symbol}} = message, state) do
-    {:noreply, deliver(%{state | refused: MapSet.delete(state.refused, symbol)}, message)}
+    if symbol in state.symbols,
+      do: {:noreply, deliver(%{state | refused: MapSet.delete(state.refused, symbol)}, message)},
+      else: {:noreply, state}
   end
 
   def handle_info({:dp_exchange, :robinhood, _payload} = message, state) do

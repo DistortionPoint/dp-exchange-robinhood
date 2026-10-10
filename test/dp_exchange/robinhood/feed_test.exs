@@ -265,7 +265,14 @@ defmodule DpExchange.Robinhood.FeedTest do
 
     test "past its bound, a subscriber stops being sent to and its mailbox stops growing" do
       slow = stalled_subscriber()
-      feed = start_feed(subscriber: slow, max_queue_len: 3, symbols: [], start_delay_ms: 60_000)
+
+      feed =
+        start_feed(
+          subscriber: slow,
+          max_queue_len: 3,
+          symbols: ["BTC-USD"],
+          start_delay_ms: 60_000
+        )
 
       for _each <- 1..10, do: send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
       # A call is answered only after every send above has been handled.
@@ -283,7 +290,15 @@ defmodule DpExchange.Robinhood.FeedTest do
 
     test "a stalled subscriber is reported once, not once per dropped message" do
       slow = stalled_subscriber()
-      feed = start_feed(subscriber: slow, max_queue_len: 1, symbols: [], start_delay_ms: 60_000)
+
+      feed =
+        start_feed(
+          subscriber: slow,
+          max_queue_len: 1,
+          symbols: ["BTC-USD"],
+          start_delay_ms: 60_000
+        )
+
       :ok = Feed.subscribe_notices(feed, to: self())
 
       for _each <- 1..2, do: send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
@@ -1107,6 +1122,37 @@ defmodule DpExchange.Robinhood.FeedTest do
       # Proves the call actually queued behind the block rather than being answered before
       # it started — without which this would pass on the unfixed code too.
       assert waited > 5_000
+    end
+  end
+
+  describe "found 2026-10-10" do
+    test "a book or refusal for a symbol no longer wanted is dropped, not delivered" do
+      # A poll in flight when `update_symbols/2` removed the symbol still answered, and its
+      # book reached the subscriber after the removal returned.
+      feed = start_feed(symbols: ["BTC-USD"], start_delay_ms: 60_000)
+      assert :ok = Feed.update_symbols(feed, [])
+
+      send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
+      send(feed, {:dp_exchange, :robinhood, {:refused, "BTC-USD", :invalid_symbol}})
+
+      refute_receive {:dp_exchange, :robinhood, %{symbol: "BTC-USD"}}, 200
+      refute_received {:dp_exchange, :robinhood, {:refused, "BTC-USD", _reason}}
+    end
+
+    test "a feed started without :subscriber delivers to nobody, never to itself" do
+      {:ok, feed} =
+        Feed.start_link(
+          name: :"feed_#{System.unique_integer([:positive])}",
+          credentials: @credentials,
+          symbols: ["BTC-USD"],
+          start_delay_ms: 60_000
+        )
+
+      send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
+      # A self-subscribed feed looped this message forever; its queue never drained.
+      Process.sleep(50)
+      assert {:message_queue_len, 0} = Process.info(feed, :message_queue_len)
+      GenServer.stop(feed)
     end
   end
 end
