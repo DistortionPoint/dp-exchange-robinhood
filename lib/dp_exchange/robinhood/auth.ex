@@ -122,6 +122,11 @@ defmodule DpExchange.Robinhood.Auth do
 
   # The venue issues a base64 32-byte seed. Anything else is refused here rather than
   # producing a signature the venue will reject with no explanation.
+  # Not a string at all — typically `nil` from an unset env var. `Base.decode64/1` raised on
+  # it, in the caller's process, where `{:error, {:invalid_private_key, _}}` was promised.
+  defp decode_seed(private_key) when not is_binary(private_key),
+    do: {:error, {:invalid_private_key, :not_a_string}}
+
   defp decode_seed(private_key) do
     case Base.decode64(private_key) do
       {:ok, <<seed::binary-size(32)>>} ->

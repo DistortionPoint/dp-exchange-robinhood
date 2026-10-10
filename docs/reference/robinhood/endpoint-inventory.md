@@ -39,7 +39,7 @@ endpoint in the vendor's corpus that this package does not call.
 ✓ GET    /api/v2/crypto/trading/holdings/
 ✓ GET    /api/v2/crypto/trading/orders/
 ✓ POST   /api/v2/crypto/trading/orders/              ← adds fee-tier orders
-✓ GET    /api/v2/crypto/trading/orders/{order_id}/
+✓ GET    /api/v2/crypto/trading/orders/{order_id}/  ← NOT in the spec's `paths`; only its sample code
 ✓ POST   /api/v2/crypto/trading/orders/{order_id}/cancel/
 ✓ GET    /api/v2/crypto/trading/trading_pairs/
 ```

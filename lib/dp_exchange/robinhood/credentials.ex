@@ -56,8 +56,11 @@ defmodule DpExchange.Robinhood.Credentials do
   declare rather than raising — matching how `Auth.headers/5` already reads this map, by
   pattern-matching only the keys it needs.
   """
-  @spec wrap(map()) :: t()
+  @spec wrap(map() | nil) :: t()
   def wrap(%__MODULE__{} = credentials), do: credentials
+  # `credentials: nil` — an option forwarded from an unset value. Empty, so `Auth` refuses
+  # with `missing_credentials` instead of `Feed.init/1` raising and restart-looping.
+  def wrap(nil), do: %__MODULE__{}
   def wrap(credentials) when is_map(credentials), do: struct(__MODULE__, credentials)
 
   @doc """

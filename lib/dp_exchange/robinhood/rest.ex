@@ -105,7 +105,7 @@ defmodule DpExchange.Robinhood.Rest do
     path = "/api/v2/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
 
     with {:ok, body} <- get(path, credentials, opts),
-         {:ok, row} <- first_result(body) do
+         {:ok, row} <- result_for(body, native) do
       {:ok, to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)}
     end
   end
@@ -324,7 +324,7 @@ defmodule DpExchange.Robinhood.Rest do
     path = @trading_pairs_path <> "?symbol=" <> URI.encode(native)
 
     with {:ok, body} <- get(path, credentials, opts),
-         {:ok, row} <- first_result(body) do
+         {:ok, row} <- result_for(body, native) do
       {:ok,
        %{
          price_increment: decimal(row["quote_increment"]),
@@ -697,8 +697,13 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp quantity_param(value), do: decimal_string(value)
 
-  # Full notation, never scientific: `1.0e-4` is not a quantity this venue reads.
+  # Full notation, never scientific: `1.0e-4` is not a quantity this venue reads. A float
+  # goes through `Decimal` too, because `to_string(0.00001)` IS `"1.0e-5"`.
   defp decimal_string(%Decimal{} = value), do: Decimal.to_string(value, :normal)
+
+  defp decimal_string(value) when is_float(value),
+    do: value |> Decimal.from_float() |> Decimal.to_string(:normal)
+
   defp decimal_string(value), do: to_string(value)
 
   @doc """
@@ -707,8 +712,11 @@ defmodule DpExchange.Robinhood.Rest do
   `opts[:account_number]` is required by v2. `opts[:created_at_start]` and the venue's other
   filters are passed through under its own names, and none is defaulted — a start date
   chosen here would return a real list of orders over a window the caller did not ask about.
-  A `%DateTime{}` passed for `:created_at_start` or `:created_at_end` is sent as ISO 8601
-  (`DateTime.to_iso8601/1`); a string is sent unchanged.
+  The filters read are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
+  `:updated_at_end`, `:symbol`, `:side`, `:type` and `:state`. A `%DateTime{}` passed for
+  any of the four dates is sent as ISO 8601 (`DateTime.to_iso8601/1`); a string is sent
+  unchanged. `:state` takes the venue's word or a `Core` status atom, mapped back to the
+  venue's spelling (`:cancelled` is `"canceled"`, `:rejected` is `"failed"`).
 
   **Paging changed.** This used to read only the first page and return it as `{:ok, _}`,
   documented as a deliberate choice — "a caller filtering by date wants the page it asked
@@ -737,8 +745,12 @@ defmodule DpExchange.Robinhood.Rest do
         [{"account_number", account}]
         |> put_query("created_at_start", iso8601_param(Keyword.get(opts, :created_at_start)))
         |> put_query("created_at_end", iso8601_param(Keyword.get(opts, :created_at_end)))
+        |> put_query("updated_at_start", iso8601_param(Keyword.get(opts, :updated_at_start)))
+        |> put_query("updated_at_end", iso8601_param(Keyword.get(opts, :updated_at_end)))
         |> put_query("symbol", order_symbol(Keyword.get(opts, :symbol)))
-        |> put_query("state", Keyword.get(opts, :state))
+        |> put_query("side", Keyword.get(opts, :side))
+        |> put_query("type", Keyword.get(opts, :type))
+        |> put_query("state", order_state_param(Keyword.get(opts, :state)))
         |> put_query("cursor", Keyword.get(opts, :cursor))
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
@@ -773,6 +785,12 @@ defmodule DpExchange.Robinhood.Rest do
   One order — `GET /api/v2/crypto/trading/orders/{order_id}/`.
 
   `opts[:account_number]` is required by v2.
+
+  **This path is not in the vendor's OpenAPI `paths`.** It appears only in the sample client
+  in the spec's own `info.description` (its `get_order` method). Its response is decoded as
+  `V2CryptoOrder`, the schema the documented cancel path returns, and the test fixture is
+  built from that schema, not captured from the venue
+  (`test/fixtures/spec_examples/README.md`). Unmeasured.
   """
   @spec get_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
@@ -1215,6 +1233,13 @@ defmodule DpExchange.Robinhood.Rest do
   defp order_status("failed"), do: :rejected
   defp order_status(_other), do: nil
 
+  # The reverse, for the `state` filter. A `Core` status atom stringified as-is asked the
+  # venue for `"cancelled"` and `"rejected"`, words its enum does not have. A string is the
+  # venue's own word and is sent unchanged.
+  defp order_state_param(:cancelled), do: "canceled"
+  defp order_state_param(:rejected), do: "failed"
+  defp order_state_param(state), do: state
+
   defp order_time(nil), do: nil
 
   defp order_time(value) do
@@ -1333,9 +1358,27 @@ defmodule DpExchange.Robinhood.Rest do
   # 401, 403 or 404 with a body, handled by `refusal/2` below on the HTTP status rather
   # than on the shape of a 200. Those genuine statements (e.g. `{:venue_error, 400,
   # "Invalid symbol: ALGO-USD"}`) were the other 27 of the 83 and are unaffected by this.
-  defp first_result(%{"results" => [row | _rest]}) when is_map(row), do: {:ok, row}
-  defp first_result(%{"results" => []}), do: {:error, :empty_result}
-  defp first_result(_other), do: {:error, :unexpected_response_shape}
+  #
+  # The row is the one naming the symbol asked for, not merely the first. Both callers
+  # label the answer with the REQUESTED symbol, so a reordered or unfiltered `results`
+  # published another pair's bid/ask, or its increments, under this one's name. A row that
+  # names a different symbol is not this symbol's answer; a row that names none is taken
+  # only when it is the sole row, which is what a filtered single-symbol request returns.
+  defp result_for(%{"results" => []}, _native), do: {:error, :empty_result}
+
+  defp result_for(%{"results" => rows}, native) when is_list(rows) do
+    case Enum.find(rows, &match?(%{"symbol" => ^native}, &1)) do
+      nil -> unnamed_sole_row(rows)
+      row -> {:ok, row}
+    end
+  end
+
+  defp result_for(_other, _native), do: {:error, :unexpected_response_shape}
+
+  defp unnamed_sole_row([row]) when is_map(row) and not is_map_key(row, "symbol"),
+    do: {:ok, row}
+
+  defp unnamed_sole_row(_rows), do: {:error, :symbol_not_in_response}
 
   defp venue_time(row) do
     case row["timestamp"] do

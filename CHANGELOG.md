@@ -19,6 +19,34 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A poll whose bulk reply had an empty `results` raised.** `no_events/1` reached
+  `elem(nil, 1)` when no outcome was an error or a refusal. It is now an empty, successful poll.
+- **A 403 on the bulk request was bisected like a per-symbol refusal.** That cost about 2N
+  requests a cycle and marked symbols as refused when only the key's permission was at fault.
+  A 403 is now request-wide, like a 401.
+- **`get_top_of_book/3` and `quantization/3` took the first row, not the requested symbol's.**
+  A reordered or unfiltered `results` published another pair's book or increments under this
+  name. They now read the row naming the symbol. A row naming a different symbol is
+  `{:error, :symbol_not_in_response}`.
+- **`get_orders/2` dropped `:updated_at_start`, `:updated_at_end`, `:side` and `:type`**, which
+  its doc said were passed through. It returned unfiltered history as success. All four are
+  now sent, and a `Core` status for `:state` is mapped to the venue's spelling
+  (`:cancelled` → `"canceled"`, `:rejected` → `"failed"`).
+- **A float quantity or price was sent in scientific notation.** `0.00001` went out as
+  `"1.0e-5"`. Floats now go through `Decimal` in full notation.
+- **`credentials: nil` crashed `Feed.init/1`.** It now wraps to an empty credential, which
+  `Auth` refuses with `missing_credentials`. A nil `private_key` returns
+  `{:error, {:invalid_private_key, :not_a_string}}` instead of raising.
+- **A poller that crashed on every start was restarted forever.** More than five crashes in a
+  minute now stop `Feed` with `{:poller_crash_loop, reason}`, for its supervisor to handle.
+
+### Documentation
+
+- `get_order/3`'s path is not in the vendor's OpenAPI `paths`, only its sample client. The
+  endpoint inventory and the function doc now say so.
+
 ## [0.3.58] - 2026-10-05
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

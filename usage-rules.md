@@ -245,6 +245,15 @@ of walking. This venue's `GET orders` endpoint takes no `limit` query parameter 
 decides whether this package walks `next` or stops after the page it already has. Pair it
 with `opts[:cursor]` to choose which page.
 
+The filters it sends are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
+`:updated_at_end`, `:symbol`, `:side`, `:type` and `:state`. `:state` takes the venue's own
+word or a `Core` status atom: `:cancelled` is sent as `"canceled"` and `:rejected` as
+`"failed"`.
+
+`get_order/3` calls `GET /api/v2/crypto/trading/orders/{id}/`, a path the vendor's OpenAPI
+`paths` does not list. It appears only in the spec's sample client, and it has not been
+measured.
+
 ## Two prices, and the one that accounts for size
 
 - `get_top_of_book/2` — the top of the book, as the venue publishes it

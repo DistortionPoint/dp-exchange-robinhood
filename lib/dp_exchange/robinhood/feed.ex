@@ -181,6 +181,11 @@ defmodule DpExchange.Robinhood.Feed do
   tracked in `state.symbols`, updated on every `update_symbols/2` call, precisely so a
   crash-restart has something truer to rebuild from than the opts this process started
   with — and reports a `:link_down` `Core.Notice` rather than leaving the crash silent.
+
+  The restart is bounded. A poller that died on every start was restarted at once, forever,
+  one `:link_down` per turn, and no supervisor's intensity limited it because `Feed` itself
+  never died. More than five crashes within a minute stop `Feed` with
+  `{:poller_crash_loop, reason}`, handing the loop to the supervisor.
   """
 
   use GenServer
@@ -207,6 +212,11 @@ defmodule DpExchange.Robinhood.Feed do
   # fetch timeout (its 30s floor), so a bisection is never killed part-way and its
   # findings lost. See the moduledoc's "A refused batch is bisected".
   @bisect_budget_ms 20_000
+
+  # Poller restarts tolerated within one window before the crash is handed to the
+  # supervisor. See `handle_info({:EXIT, ...})`.
+  @max_poller_restarts 5
+  @poller_crash_window_ms 60_000
 
   # Every call INTO this Feed carries this explicitly, reads included, rather than taking
   # `GenServer.call/2`'s implicit five seconds.
@@ -326,6 +336,8 @@ defmodule DpExchange.Robinhood.Feed do
 
     state = %{
       poller: nil,
+      # Monotonic ms of recent poller crashes, newest first — bounds the restart loop.
+      poller_crashes: [],
       subscriber: subscriber,
       notice_subscribers: MapSet.new([subscriber]),
       # Monitor references for pid entries in `notice_subscribers`, so a dead one is dropped
@@ -453,10 +465,16 @@ defmodule DpExchange.Robinhood.Feed do
 
   defp no_events([]), do: {:ok, []}
 
+  # Every outcome can be `{:events, []}`: a 200 with an empty `results`, which is silence,
+  # not a refusal. That reached `elem(nil, 1)` and crashed the poll.
   defp no_events(outcomes) do
-    case Enum.find(outcomes, &match?({:error, _reason}, &1)) do
-      {:error, reason} -> {:error, reason}
-      nil -> {:error, outcomes |> Enum.find(&match?({:refused, _}, &1)) |> elem(1)}
+    error = Enum.find(outcomes, &match?({:error, _reason}, &1))
+    refused = Enum.find(outcomes, &match?({:refused, _reason}, &1))
+
+    case {error, refused} do
+      {{:error, reason}, _refused} -> {:error, reason}
+      {nil, {:refused, reason}} -> {:error, reason}
+      {nil, nil} -> {:ok, []}
     end
   end
 
@@ -478,10 +496,15 @@ defmodule DpExchange.Robinhood.Feed do
     end
   end
 
-  # 401 is the request being unauthenticated. Every symbol would be refused the same way,
-  # so splitting identifies nothing and only spends requests.
-  defp refused(_symbols, {:venue_error, 401} = reason, _ctx), do: [{:error, reason}]
-  defp refused(_symbols, {:venue_error, 401, _detail} = reason, _ctx), do: [{:error, reason}]
+  # 401 is the request being unauthenticated and 403 the key lacking permission. Every
+  # symbol would be refused the same way, so splitting identifies nothing, spends about 2N
+  # requests, and marks each symbol it reaches as individually refused when none is at fault.
+  defp refused(_symbols, {:venue_error, status} = reason, _ctx) when status in [401, 403],
+    do: [{:error, reason}]
+
+  defp refused(_symbols, {:venue_error, status, _detail} = reason, _ctx)
+       when status in [401, 403],
+       do: [{:error, reason}]
 
   defp refused([symbol], reason, ctx) do
     ctx.on_refusal.(symbol, reason)
@@ -594,10 +617,26 @@ defmodule DpExchange.Robinhood.Feed do
   # catch-all below and is correctly ignored.
   def handle_info({:EXIT, pid, reason}, %{poller: pid} = state) do
     notify_poller_crashed(state, reason)
+    now = System.monotonic_time(:millisecond)
+    crashes = [now | Enum.filter(state.poller_crashes, &(&1 > now - @poller_crash_window_ms))]
 
+    # Restarted straight away, a poller that dies on every start looped here forever, one
+    # `:link_down` per turn, and no supervisor's intensity bounded it because `Feed` itself
+    # never died. Past the limit the crash is handed to the supervisor, whose intensity is
+    # the bound OTP already provides.
+    if length(crashes) > @max_poller_restarts do
+      {:stop, {:poller_crash_loop, reason}, state}
+    else
+      restart_poller(state, crashes)
+    end
+  end
+
+  def handle_info(_other, state), do: {:noreply, state}
+
+  defp restart_poller(state, crashes) do
     case start_poller(state) do
       {:ok, new_poller} ->
-        {:noreply, %{state | poller: new_poller}}
+        {:noreply, %{state | poller: new_poller, poller_crashes: crashes}}
 
       # As unreachable in practice as `init/1`'s own `{:error, other}` branch — `fetch`
       # is always supplied — but this feed has no lesser fallback the way a socket-based
@@ -608,8 +647,6 @@ defmodule DpExchange.Robinhood.Feed do
         {:stop, other, state}
     end
   end
-
-  def handle_info(_other, state), do: {:noreply, state}
 
   # `coverage/1` is a READ, and a read must never be able to kill the thing it reads.
   #

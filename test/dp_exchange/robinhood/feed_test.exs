@@ -601,6 +601,36 @@ defmodule DpExchange.Robinhood.FeedTest do
       refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
     end
 
+    test "a 403 is not split either — it is the key's permission, not any symbol" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(403, Jason.encode!(%{"detail" => "Forbidden"}))
+      end
+
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD", "LTC-USD"],
+        interval_ms: 60_000,
+        retry_attempts: 0,
+        plug: plug
+      )
+
+      assert_receive {:request, first}, 1_000
+      assert length(first) == 3
+      refute_receive {:request, _split}, 300
+      refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
+    end
+
+    test "credentials: nil starts the feed and refuses the fetch instead of crashing init" do
+      feed = start_feed(credentials: nil)
+      assert Process.alive?(feed)
+      assert Feed.coverage(feed) == %{}
+    end
+
     test "a remembered symbol that starts answering rejoins" do
       {:ok, flag} = Agent.start_link(fn -> false end)
 
@@ -807,6 +837,23 @@ defmodule DpExchange.Robinhood.FeedTest do
         Process.link(poller)
         state
       end)
+    end
+
+    test "a poller that keeps crashing is handed to the supervisor, not restarted forever" do
+      Process.flag(:trap_exit, true)
+      feed = start_feed()
+      :ok = Feed.subscribe_notices(feed, to: self())
+
+      for _crash <- 1..5 do
+        Process.exit(:sys.get_state(feed).poller, :kill)
+        assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 1_000
+      end
+
+      assert Process.alive?(feed)
+
+      Process.exit(:sys.get_state(feed).poller, :kill)
+
+      assert_receive {:EXIT, ^feed, {:poller_crash_loop, :killed}}, 1_000
     end
 
     test "the feed survives its linked poller being killed" do
