@@ -9,6 +9,8 @@ defmodule DpExchange.RobinhoodTest do
 
   @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<5>>, 32))}
 
+  @order %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"}
+
   describe "the declaration" do
     test "names every callback exactly once" do
       declared = Robinhood.capabilities().endpoints |> Map.keys() |> Enum.sort()
@@ -360,7 +362,7 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.get_balances(%{}, account) == {:error, {:missing_credentials, :robinhood}}
       assert Fake.get_accounts(%{}, []) == {:error, {:missing_credentials, :robinhood}}
 
-      assert Fake.place_order(%{}, %{}, account) ==
+      assert Fake.place_order(%{}, @order, account) ==
                {:error, {:missing_credentials, :robinhood}}
 
       assert Fake.cancel_order(%{}, "id", []) == {:error, {:missing_credentials, :robinhood}}
@@ -373,7 +375,7 @@ defmodule DpExchange.RobinhoodTest do
       # And they all succeed once credentials are actually given.
       assert {:ok, _balances} = Fake.get_balances(@credentials, account)
       assert {:ok, _accounts} = Fake.get_accounts(@credentials, [])
-      assert {:ok, _order} = Fake.place_order(@credentials, %{}, account)
+      assert {:ok, _order} = Fake.place_order(@credentials, @order, account)
       assert {:ok, _order} = Fake.cancel_order(@credentials, "id", [])
       assert {:ok, _order} = Fake.get_order(@credentials, "id", account)
       assert {:ok, _orders} = Fake.get_orders(@credentials, account)

@@ -9,7 +9,9 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
   alias DpExchange.Core.FakeInjection
   alias DpExchange.Robinhood.Fake
 
-  @credentials %{api_key: "k", private_key: "s"}
+  @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<7>>, 32))}
+
+  @order %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"}
 
   describe "whole-call injection reaches every function with a real success path" do
     test "get_symbols/1" do
@@ -107,7 +109,7 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
 
       assert {:ok, _balances} = Fake.get_balances(%{}, account_number: "1")
       assert {:ok, _accounts} = Fake.get_accounts(%{}, [])
-      assert {:ok, _order} = Fake.place_order(%{}, %{}, account_number: "1")
+      assert {:ok, _order} = Fake.place_order(%{}, @order, account_number: "1")
       assert {:ok, _order} = Fake.cancel_order(%{}, "id", [])
       assert {:ok, _order} = Fake.get_order(%{}, "id", account_number: "1")
       assert {:ok, _orders} = Fake.get_orders(%{}, account_number: "1")
@@ -157,7 +159,7 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
     end
 
     test "place_order/3" do
-      assert Fake.place_order(%{}, %{}, account_number: "1") ==
+      assert Fake.place_order(%{}, @order, account_number: "1") ==
                {:error, {:missing_credentials, :robinhood}}
     end
 

@@ -383,9 +383,14 @@ defmodule DpExchange.Robinhood.Feed do
           :req_adapter,
           :base_url,
           :retry_attempts,
-          :rate_limit_blocking
+          :timeout,
+          :log_requests
         ])
-        |> Keyword.put_new(:rate_limit_blocking, true)
+        # `Config.opt/3`, not `put_new/3`: a forwarded `rate_limit_blocking: nil` is a
+        # PRESENT key, which `put_new/3` keeps, and `HttpClient` reads `nil` as `false` — the
+        # `check/3` path this default exists to keep the poll off. An explicit `false` is
+        # still honoured.
+        |> Keyword.put(:rate_limit_blocking, Config.opt(opts, :rate_limit_blocking, true))
         # **Always named, never left to `Core.HttpClient`'s own default.** The supervisor
         # starts this venue's limiter under `Supervisor.limiter_name/1` and hands the feed
         # only the consumer's opts, so a consumer who never passed `:limiter` (the normal

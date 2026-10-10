@@ -19,6 +19,29 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A forwarded `limiter: nil` bypassed this venue's rate limiter on every facade call.**
+  `with_limiter/1` used `Keyword.put_new/3`, which keeps a present `nil`; `Core.HttpClient`
+  then resolved it to Core's global default limiter, which this package never starts, and the
+  call failed closed against a limiter that was running. It now always names the supervisor's
+  limiter (the caller's own, when set).
+- **A forwarded `rate_limit_blocking: nil` put the supervised poll back on `check/3`.** The
+  feed's `put_new(:rate_limit_blocking, true)` kept the `nil`, which `HttpClient` reads as
+  `false`, the 87-of-87-to-8-of-87 failure that default exists to prevent. An explicit `false`
+  is still honoured. The feed also now forwards `:timeout` and `:log_requests` to its requests,
+  as the facade's REST calls already did; a consumer's `timeout:` on the child was ignored by
+  the poll.
+- **`Fake` accepted what the real path refuses.** It now applies the real rules, through new
+  public validators (`Auth.validate_credentials/1`, `Rest.validate_order_request/1`):
+  a blank `api_key` or a `private_key` that is not the base64 32-byte seed is refused;
+  `place_order/3` refuses a request with a missing field, an unsupported type or an
+  unrepresentable time in force (after the account check, before the credential check, as
+  `Rest.place_order/3` does) instead of answering an open order; a lower-case symbol is
+  served under its canonical name; `quantization/2` refuses an unlisted symbol; and
+  `get_balances/2` honours `:asset_codes` for the holding as well as the cash. The fake's
+  `subscribe/2` no longer routes through the credential gate with a throwaway key.
+
 ## [0.3.67] - 2026-10-10
 
 ### Fixed

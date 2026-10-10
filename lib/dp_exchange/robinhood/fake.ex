@@ -52,6 +52,7 @@ defmodule DpExchange.Robinhood.Fake do
   @behaviour DpExchange.Core.Venue
 
   alias DpExchange.Core.{Capabilities, FakeInjection, Instrument, Types, Venue}
+  alias DpExchange.Robinhood.{Auth, Rest, SymbolFormat}
 
   # Every symbol here is presumed API-tradable. `Rest.get_symbols/2` and
   # `Rest.list_instruments/2` both read the real venue's `is_api_tradable` field
@@ -99,32 +100,43 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_top_of_book(symbol, opts \\ []) do
     with_injection(symbol, fn ->
-      with :ok <- authenticated(opts) do
-        case Map.fetch(@price, symbol) do
-          {:ok, price} ->
-            {:ok,
-             %Types.TopOfBook{
-               symbol: symbol,
-               # A spread straddling the traded price, equal to neither side.
-               bid: Decimal.sub(Decimal.new(price), Decimal.new("0.01")),
-               ask: Decimal.add(Decimal.new(price), Decimal.new("0.01")),
-               bid_size: nil,
-               ask_size: nil,
-               # `nil`, always — matching `Rest.get_top_of_book/3` exactly. v2's
-               # `best_bid_ask` schema (`V2BestBidAsk`) has no `timestamp` property at
-               # all, so the real venue can never populate this field; a fake that filled
-               # it with `@at` would hand a consumer's freshness check a value the real
-               # venue can never produce. See this module's `Rest.get_top_of_book/3` doc.
-               venue_time: nil,
-               observed_at: @at,
-               provider: :robinhood
-             }}
-
-          :error ->
-            {:refused, :not_listed}
-        end
-      end
+      with :ok <- authenticated(opts), do: listed_book(symbol)
     end)
+  end
+
+  # The book for a symbol, with no credential check — `get_top_of_book/2` gates it and
+  # `subscribe/2` (whose real counterpart holds its credentials from boot) calls it directly.
+  #
+  # Canonicalised the way the real path is: `Rest.get_top_of_book/3` sends
+  # `SymbolFormat.to_exchange_symbol/1` and answers under `to_canonical_symbol/1`, so `btc-usd`
+  # is served as `BTC-USD`. Looked up verbatim, this fake refused `:not_listed` for a symbol
+  # the real package serves.
+  defp listed_book(symbol) do
+    canonical = SymbolFormat.to_canonical_symbol(symbol)
+
+    case Map.fetch(@price, canonical) do
+      {:ok, price} ->
+        {:ok,
+         %Types.TopOfBook{
+           symbol: canonical,
+           # A spread straddling the traded price, equal to neither side.
+           bid: Decimal.sub(Decimal.new(price), Decimal.new("0.01")),
+           ask: Decimal.add(Decimal.new(price), Decimal.new("0.01")),
+           bid_size: nil,
+           ask_size: nil,
+           # `nil`, always — matching `Rest.get_top_of_book/3` exactly. v2's
+           # `best_bid_ask` schema (`V2BestBidAsk`) has no `timestamp` property at
+           # all, so the real venue can never populate this field; a fake that filled
+           # it with `@at` would hand a consumer's freshness check a value the real
+           # venue can never produce. See this module's `Rest.get_top_of_book/3` doc.
+           venue_time: nil,
+           observed_at: @at,
+           provider: :robinhood
+         }}
+
+      :error ->
+        {:refused, :not_listed}
+    end
   end
 
   @impl true
@@ -187,14 +199,18 @@ defmodule DpExchange.Robinhood.Fake do
         # reason: the venue states no total cash figure, only what is available.
         asset_codes = List.wrap(Keyword.get(opts, :asset_codes, []))
 
-        if asset_codes == [] or @cash_currency in asset_codes do
-          {:ok, [holding, fake_cash_balance()]}
-        else
-          {:ok, [holding]}
-        end
+        # `:asset_codes` narrows the holdings too — the real path sends them as `asset_code`
+        # query parameters and the venue returns only those assets. Answering BTC to a caller
+        # who asked for ETH was a holding the real venue would not have sent.
+        holdings = if narrowed_to?(asset_codes, holding.currency), do: [holding], else: []
+        cash = if narrowed_to?(asset_codes, @cash_currency), do: [fake_cash_balance()], else: []
+
+        {:ok, holdings ++ cash}
       end
     end)
   end
+
+  defp narrowed_to?(asset_codes, currency), do: asset_codes == [] or currency in asset_codes
 
   defp fake_cash_balance do
     %Types.Balance{
@@ -232,7 +248,12 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def place_order(credentials, request, opts) do
     with_injection(fn ->
+      # Account, then the order itself, then credentials: the order `Rest.place_order/3`
+      # refuses in (`required_account/1`, `order_body/2`, and only then the signer). An
+      # empty request used to be accepted here and answered with an open order of all-`nil`
+      # fields, a success the real package can never give.
       with {:ok, _account} <- fake_account(opts),
+           :ok <- Rest.validate_order_request(request),
            :ok <- authenticated_credentials(credentials) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
@@ -404,7 +425,8 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def quantization(symbol, opts \\ []) do
     with_injection(symbol, fn ->
-      with :ok <- authenticated(opts) do
+      with :ok <- authenticated(opts),
+           true <- listed?(symbol) || {:refused, :not_listed} do
         {:ok,
          %{
            price_increment: Decimal.new("0.01"),
@@ -438,7 +460,7 @@ defmodule DpExchange.Robinhood.Fake do
     caller = self()
 
     for symbol <- symbols, symbol in @symbols do
-      case get_top_of_book(symbol, credentials: %{api_key: "fake", private_key: "fake"}) do
+      case listed_book(symbol) do
         {:ok, book} -> send(caller, {:dp_exchange, :robinhood, book})
         _refused -> :ok
       end
@@ -515,6 +537,8 @@ defmodule DpExchange.Robinhood.Fake do
 
   defp subscribed, do: Process.get(__MODULE__, MapSet.new())
 
+  defp listed?(symbol), do: Map.has_key?(@price, SymbolFormat.to_canonical_symbol(symbol))
+
   # Every function that reaches a real endpoint on this venue is signed, market data
   # included — there is no anonymous endpoint to fall back to. `{:error,
   # {:missing_credentials, :robinhood}}` matches `DpExchange.Robinhood.Auth.headers/5`'s
@@ -527,10 +551,10 @@ defmodule DpExchange.Robinhood.Fake do
     if FakeInjection.credentials_bypassed?(:robinhood) do
       :ok
     else
-      case credentials do
-        %{api_key: _key, private_key: _private} -> :ok
-        _absent -> {:error, {:missing_credentials, :robinhood}}
-      end
+      # The real path's own rules (`Auth.validate_credentials/1`): a blank key is
+      # `:missing_credentials` and a private key that is not the base64 32-byte seed is
+      # `:invalid_private_key`. Any map with both keys used to pass here.
+      Auth.validate_credentials(credentials)
     end
   end
 

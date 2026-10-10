@@ -890,11 +890,33 @@ defmodule DpExchange.Robinhood.Rest do
   defp order_symbol(nil), do: nil
   defp order_symbol(symbol), do: SymbolFormat.to_exchange_symbol(symbol)
 
-  defp order_body(request, opts) do
+  @doc """
+  Whether `request` is an order this package would send, answered with the refusal
+  `place_order/3` would give and without sending anything.
+
+  `:ok`, `{:error, {:missing_field, key}}` for an absent `symbol`, `side`, `order_type`,
+  `quantity`, or the `price` / `stop_price` the type needs, `{:error,
+  {:unsupported_order_type, type}}` or `{:error, {:unsupported_time_in_force, tif}}`. It is
+  the same code `place_order/3` builds its body with, exposed so
+  `DpExchange.Robinhood.Fake` refuses exactly what the real path refuses instead of
+  accepting an empty request and handing back an open order.
+  """
+  @spec validate_order_request(map()) :: :ok | {:error, term()}
+  def validate_order_request(request) when is_map(request) do
+    with {:ok, _parts} <- order_parts(request), do: :ok
+  end
+
+  defp order_parts(request) do
     with {:ok, symbol} <- order_field(request, :symbol),
          {:ok, side} <- order_field(request, :side),
          {:ok, type} <- order_field(request, :order_type),
          {:ok, config} <- order_config(type, request) do
+      {:ok, {symbol, side, type, config}}
+    end
+  end
+
+  defp order_body(request, opts) do
+    with {:ok, {symbol, side, type, config}} <- order_parts(request) do
       wire_type = wire_order_type(type)
 
       {:ok,

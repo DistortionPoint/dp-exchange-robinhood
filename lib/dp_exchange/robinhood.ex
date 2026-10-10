@@ -785,8 +785,13 @@ defmodule DpExchange.Robinhood do
   # request — this venue has no anonymous endpoint to fall back to.
   defp credentials(opts), do: Keyword.get(opts, :credentials, %{})
 
+  # `Keyword.put/3`, not `put_new/3`: `limiter_name/1` already returns the caller's own
+  # `:limiter` when it is set, and `put_new/3` keeps a PRESENT `limiter: nil` — which this
+  # family forwards by convention — so the call reached `Core.HttpClient` carrying `nil`, was
+  # resolved there to Core's global default limiter, which this package never starts, and
+  # failed closed against a venue limiter that was running the whole time.
   defp with_limiter(opts) do
-    Keyword.put_new(opts, :limiter, DpExchange.Robinhood.Supervisor.limiter_name(opts))
+    Keyword.put(opts, :limiter, DpExchange.Robinhood.Supervisor.limiter_name(opts))
   end
 
   # --- Declared but not yet implemented -----------------------------------

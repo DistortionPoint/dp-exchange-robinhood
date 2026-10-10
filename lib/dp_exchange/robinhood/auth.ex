@@ -65,8 +65,7 @@ defmodule DpExchange.Robinhood.Auth do
       when is_binary(method) and is_binary(path) and is_binary(body) and is_binary(api_key) do
     timestamp = opts |> Keyword.get(:timestamp, System.system_time(:second)) |> to_string()
 
-    with {:ok, _present} <- present(api_key),
-         {:ok, seed} <- decode_seed(private_key) do
+    with {:ok, seed} <- credential_seed(api_key, private_key) do
       signed_payload = payload(api_key, timestamp, path, method, body)
       {_public, secret} = :crypto.generate_key(:eddsa, :ed25519, seed)
       signature = :crypto.sign(:eddsa, :none, signed_payload, [secret, :ed25519])
@@ -82,6 +81,28 @@ defmodule DpExchange.Robinhood.Auth do
 
   def headers(_method, _path, _body, _credentials, _opts),
     do: {:error, {:missing_credentials, :robinhood}}
+
+  @doc """
+  Whether `credentials` could sign a request, answered with the refusal `headers/5` would
+  give and without signing anything.
+
+  `:ok`, `{:error, {:missing_credentials, :robinhood}}` for an absent, partial or blank
+  credential, or `{:error, {:invalid_private_key, reason}}` for a key that is not the base64
+  32-byte seed. It exists so `DpExchange.Robinhood.Fake` refuses exactly what the real path
+  refuses, from the one set of rules, instead of keeping a second hand-written copy that
+  accepts `private_key: "x"` where the venue package would not.
+  """
+  @spec validate_credentials(term()) :: :ok | {:error, term()}
+  def validate_credentials(%{api_key: api_key, private_key: private_key})
+      when is_binary(api_key) do
+    with {:ok, _seed} <- credential_seed(api_key, private_key), do: :ok
+  end
+
+  def validate_credentials(_credentials), do: {:error, {:missing_credentials, :robinhood}}
+
+  defp credential_seed(api_key, private_key) do
+    with {:ok, _present} <- present(api_key), do: decode_seed(private_key)
+  end
 
   # The `@doc` above promises `{:missing_credentials, :robinhood}` "rather than signing with
   # a partial credential ... clearer than the 401 they would otherwise become", and an empty
