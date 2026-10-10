@@ -19,18 +19,16 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
-<<<<<<< Updated upstream
-## [0.3.64] - 2026-10-10
-
-_No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._
-=======
 ### Fixed
 
 - **A book or refusal for a symbol already removed was still delivered.** A poll in flight
   when `update_symbols/2` dropped the symbol answered afterwards, and its book reached the
   subscriber. A late refusal put the removed symbol back into the refused set, where nothing
   would ever take it out. Both are now dropped.
->>>>>>> Stashed changes
+
+## [0.3.64] - 2026-10-10
+
+_No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._
 
 ## [0.3.63] - 2026-10-10
 
