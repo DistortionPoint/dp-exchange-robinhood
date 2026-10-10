@@ -332,14 +332,18 @@ defmodule DpExchange.Robinhood.Feed do
     # state)` below is what this flag makes reachable at all.
     Process.flag(:trap_exit, true)
 
-    subscriber = Config.opt(opts, :subscriber, self())
+    # **No default, and never `self()`.** Inside `init/1` `self()` is this Feed, so a feed
+    # started without `:subscriber` delivered each polled book to itself, where `deliver/2`
+    # sent it to itself again, forever: a busy loop that delivered nothing to anyone (found
+    # 2026-10-10). Without one, data goes to nobody and notices only to `subscribe_notices/2`.
+    subscriber = Config.opt(opts, :subscriber, nil)
 
     state = %{
       poller: nil,
       # Monotonic ms of recent poller crashes, newest first — bounds the restart loop.
       poller_crashes: [],
       subscriber: subscriber,
-      notice_subscribers: MapSet.new([subscriber]),
+      notice_subscribers: if(subscriber, do: MapSet.new([subscriber]), else: MapSet.new()),
       # Monitor references for pid entries in `notice_subscribers`, so a dead one is dropped
       # rather than walked on every notice for the life of this feed — see the `:DOWN`
       # clause below and `Core.Fanout.watch/2`.
@@ -721,7 +725,7 @@ defmodule DpExchange.Robinhood.Feed do
   # dropped.
   defp deliver(state, message) do
     {_sent, dropping, transitions} =
-      Fanout.deliver([state.subscriber], message, state.dropping,
+      Fanout.deliver(List.wrap(state.subscriber), message, state.dropping,
         max_queue_len: state.max_queue_len
       )
 

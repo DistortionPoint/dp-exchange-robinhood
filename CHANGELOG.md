@@ -19,6 +19,14 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `Feed` started without `:subscriber` delivered to itself, in a loop.** The default was
+  `self()` inside `init/1`, which is the Feed, so each polled book went back to its own
+  mailbox and was delivered again, forever, and reached nobody. There is now no default: a
+  feed without `:subscriber` delivers data to nobody, and notices only to `subscribe_notices`
+  registrations. The host already passes one.
+
 ## [0.3.62] - 2026-10-10
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

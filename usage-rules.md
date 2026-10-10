@@ -60,6 +60,11 @@ this venue's budget, and a second loop doubles the request count for no extra da
 
 ## A monitoring process can subscribe to notices separately from market data
 
+**Pass `subscriber:`, because there is no default.** A feed started without one delivers
+data to nobody, and sends notices only to `subscribe_notices/2` registrations. It used to
+default to the Feed itself, which then delivered each book back to its own mailbox in a loop
+and to nobody else.
+
 `subscribe/2` has no `to:` of its own — the `subscriber:` given to the supervision tree
 above is where quotes and refusals go, for the life of the process. `subscribe_notices/1`
 is different: it registers `opts[:to]` (default: the caller) for this feed's own
