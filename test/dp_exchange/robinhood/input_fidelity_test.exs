@@ -135,4 +135,53 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
       assert Credentials.wrap(nil) == %Credentials{}
     end
   end
+
+  describe "order identity and history completeness" do
+    test "the request's own client_order_id is the one sent" do
+      request = %{
+        symbol: "BTC-USD",
+        side: :buy,
+        order_type: :market,
+        quantity: Decimal.new("0.1"),
+        client_order_id: "11111111-2222-4333-a444-555555555555"
+      }
+
+      _result =
+        Rest.place_order(@credentials, request,
+          account_number: "RH-1",
+          plug: capturing(%{}, self()),
+          retry_attempts: 0
+        )
+
+      assert_receive {:request, _query, raw}
+      assert Jason.decode!(raw)["client_order_id"] == "11111111-2222-4333-a444-555555555555"
+    end
+
+    test "a forwarded limit: nil walks every page, not one" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:page, conn.query_string})
+
+        body =
+          if conn.query_string =~ "cursor=next",
+            do: %{"results" => [], "next" => nil},
+            else: %{"results" => [], "next" => "https://trading.robinhood.com/x?cursor=next"}
+
+        Req.Test.json(conn, body)
+      end
+
+      assert {:ok, []} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 limit: nil,
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert_received {:page, _first}
+      assert_received {:page, second}
+      assert second =~ "cursor=next"
+    end
+  end
 end

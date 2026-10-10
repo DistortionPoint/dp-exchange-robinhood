@@ -19,6 +19,15 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`place_order/3` ignored the request's own `client_order_id`.** Only `opts[:client_order_id]`
+  was read, so a caller who put the key on the request, where the other venues take it, got a
+  fresh one every call, and a caller-level retry after a timeout placed a second order. The
+  request's key is now read first, then the option, then one is generated.
+- **`get_orders(limit: nil)` fetched one page.** A forwarded `nil` took the one-page branch and
+  returned a truncated history as complete. It now walks every page, as an absent `:limit` does.
+
 ## [0.3.60] - 2026-10-10
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

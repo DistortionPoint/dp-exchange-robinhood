@@ -755,7 +755,9 @@ defmodule DpExchange.Robinhood.Rest do
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
 
-      if Keyword.has_key?(opts, :limit) do
+      # `Config.opt/3`, not `Keyword.has_key?/2`: a forwarded `limit: nil` is an absent
+      # option, and took the one-page branch, returning a truncated history as complete.
+      if Config.opt(opts, :limit, nil) != nil do
         get_orders_one_page(path, credentials, opts)
       else
         with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_order_pages) do
@@ -876,7 +878,7 @@ defmodule DpExchange.Robinhood.Rest do
 
       {:ok,
        %{
-         "client_order_id" => client_order_id(opts),
+         "client_order_id" => client_order_id(request, opts),
          "side" => to_string(side),
          "type" => wire_type,
          "symbol" => SymbolFormat.to_exchange_symbol(symbol),
@@ -1009,8 +1011,13 @@ defmodule DpExchange.Robinhood.Rest do
   # `dp_exchange_coinbase` reads `Map.get(request, :client_order_id) || generate()` and
   # `dp_exchange_webull` matches `nil ->` explicitly. Anything that is not a non-empty
   # string is treated as absent — an empty key is a key every order would share.
-  defp client_order_id(opts) do
-    case Config.opt(opts, :client_order_id, nil) do
+  #
+  # **The request's own key first**, as `dp_exchange_coinbase` and `dp_exchange_gemini` read
+  # it. Only `opts[:client_order_id]` was read, so a caller who put the key on the request
+  # (where the other venues take it) got a fresh one on every call, and a caller-level retry
+  # after a timeout placed a second order: the protection the key exists for, gone.
+  defp client_order_id(request, opts) do
+    case Map.get(request, :client_order_id) || Config.opt(opts, :client_order_id, nil) do
       id when is_binary(id) and id != "" -> id
       _absent -> generate_client_order_id()
     end
