@@ -19,6 +19,17 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The supervised feed polled without this venue's rate limiter.** `Feed` forwarded
+  `:limiter` only when the consumer passed one, but the supervisor starts the limiter under
+  `DpExchange.Robinhood.RateLimiter` and hands the feed just the consumer's options. A
+  consumer who never named a limiter (the documented `{DpExchange.Robinhood, credentials: ...}`
+  child) had every poll metered against `DefaultRateLimiter`'s own default-named process,
+  which this package never starts, so each poll failed `:rate_limiter_unavailable` and the
+  feed delivered nothing. The feed now defaults `:limiter` to the supervisor's limiter, as
+  the facade's REST calls already did.
+
 ## [0.3.66] - 2026-10-10
 
 ### Fixed

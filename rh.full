@@ -1,0 +1,73 @@
+Compiling 8 files (.ex)
+Generated dp_exchange_robinhood app
+Checking 26 source files ...
+
+Please report incorrect results: https://github.com/rrrene/credo/issues
+
+Analysis took 0.6 seconds (0.1s to load, 0.5s running 67 checks on 26 files)
+524 mods/funs, found no issues.
+
+Use `mix credo explain` to explain issues, `mix credo --help` for options.
+Compiling 1 file (.ex)
+Generated dp_exchange_robinhood app
+Finding suitable PLTs
+Checking PLT...
+[:asn1, :compiler, :crypto, :decimal, :dp_exchange_core, :dp_exchange_robinhood, :eex, :elixir, :ex_ast, :ex_unit, :finch, :glob_ex, :hpax, :igniter, :inets, :jason, :kernel, :logger, :mime, :mint, :mix, :nimble_options, :nimble_pool, :owl, :public_key, :req, :rewrite, :sourceror, :spitfire, :ssl, :stdlib, :telemetry, :text_diff, :tools, :usage_rules]
+PLT is up to date!
+No :ignore_warnings opt specified in mix.exs and default does not exist.
+
+Starting Dialyzer
+[
+  check_plt: false,
+  init_plt: ~c"/Volumes/Dev/development/dp-exchange-robinhood/priv/plts/dialyzer.plt",
+  files: [~c"/Volumes/Dev/development/dp-exchange-robinhood/_build/dev/lib/dp_exchange_robinhood/ebin/Elixir.DpExchange.Robinhood.Auth.beam",
+   ~c"/Volumes/Dev/development/dp-exchange-robinhood/_build/dev/lib/dp_exchange_robinhood/ebin/Elixir.DpExchange.Robinhood.Credentials.beam",
+   ~c"/Volumes/Dev/development/dp-exchange-robinhood/_build/dev/lib/dp_exchange_robinhood/ebin/Elixir.DpExchange.Robinhood.Fake.beam",
+   ~c"/Volumes/Dev/development/dp-exchange-robinhood/_build/dev/lib/dp_exchange_robinhood/ebin/Elixir.DpExchange.Robinhood.Feed.beam",
+   ~c"/Volumes/Dev/development/dp-exchange-robinhood/_build/dev/lib/dp_exchange_robinhood/ebin/Elixir.DpExchange.Robinhood.Rest.beam",
+   ...],
+  warnings: [:unknown]
+]
+Total errors: 0, Skipped: 0, Unnecessary Skips: 0
+done in 0m3.09s
+done (passed successfully)
+Checking Sobelow version...
+
+WARNING: Sobelow cannot find the router. If this is a Phoenix application
+please use the `--router` flag to specify the router's location.
+
+##############################################
+#                                            #
+#          Running Sobelow - v0.15.0         #
+#  Created by Griffin Byatt - @griffinbyatt  #
+#     NCC Group - https://nccgroup.trust     #
+#                                            #
+##############################################
+
+... SCAN COMPLETE ...
+
+Cover compiling modules ...
+Running ExUnit with seed: 228105, max_cases: 20
+Excluding tags: [:tier2]
+
+.................................................................................................................................................................................................................................................................................................................................................................................................................
+Finished in 12.4 seconds (12.3s async, 0.07s sync)
+401 tests, 0 failures
+
+Generating cover results ...
+
+Percentage | Module
+-----------|--------------------------
+    93.75% | DpExchange.Robinhood.Feed
+    93.80% | DpExchange.Robinhood
+    94.22% | DpExchange.Robinhood.Rest
+    95.89% | DpExchange.Robinhood.Fake
+   100.00% | DpExchange.Robinhood.Auth
+   100.00% | DpExchange.Robinhood.Credentials
+   100.00% | DpExchange.Robinhood.Supervisor
+   100.00% | DpExchange.Robinhood.SymbolFormat
+   100.00% | Inspect.DpExchange.Robinhood.Credentials
+-----------|--------------------------
+    94.69% | Total
+
+Generated HTML coverage results in "cover" directory

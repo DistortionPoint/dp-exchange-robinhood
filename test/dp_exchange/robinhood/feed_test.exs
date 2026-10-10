@@ -176,6 +176,21 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  describe "the poll meters against this venue's own limiter" do
+    test "a feed given no :limiter polls through the limiter the supervisor starts" do
+      feed = start_feed(limiter: nil, start_delay_ms: 600_000)
+
+      assert :sys.get_state(feed).request_opts[:limiter] ==
+               DpExchange.Robinhood.Supervisor.limiter_name([])
+    end
+
+    test "a caller's :limiter is kept" do
+      feed = start_feed(limiter: :my_limiter, start_delay_ms: 600_000)
+
+      assert :sys.get_state(feed).request_opts[:limiter] == :my_limiter
+    end
+  end
+
   describe "a dead notice subscriber is dropped, not walked forever" do
     # `Core.Fanout.resolve/1` already skipped a dead subscriber at send time, so no NOTICES
     # accumulated — but nothing removed the pid, so a supervised watcher that restarts left

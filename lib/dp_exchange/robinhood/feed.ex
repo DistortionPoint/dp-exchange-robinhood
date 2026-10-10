@@ -379,7 +379,6 @@ defmodule DpExchange.Robinhood.Feed do
       request_opts:
         opts
         |> Keyword.take([
-          :limiter,
           :plug,
           :req_adapter,
           :base_url,
@@ -387,6 +386,14 @@ defmodule DpExchange.Robinhood.Feed do
           :rate_limit_blocking
         ])
         |> Keyword.put_new(:rate_limit_blocking, true)
+        # **Always named, never left to `Core.HttpClient`'s own default.** The supervisor
+        # starts this venue's limiter under `Supervisor.limiter_name/1` and hands the feed
+        # only the consumer's opts, so a consumer who never passed `:limiter` (the normal
+        # case) reached here with no limiter at all. `HttpClient` then asked
+        # `DefaultRateLimiter`'s own default-named process, which this package never starts:
+        # every poll failed `:rate_limiter_unavailable` and the feed delivered nothing. The
+        # facade's REST calls already default it (`with_limiter/1`); the poll must too.
+        |> Keyword.put(:limiter, DpExchange.Robinhood.Supervisor.limiter_name(opts))
     }
 
     case start_poller(state) do
