@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.65] - 2026-10-10
+
 ### Fixed
 
 - **A book or refusal for a symbol already removed was still delivered.** A poll in flight
