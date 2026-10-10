@@ -106,7 +106,7 @@ defmodule DpExchange.Robinhood.Rest do
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- result_for(body, native) do
-      {:ok, to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)}
+      to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)
     end
   end
 
@@ -157,22 +157,43 @@ defmodule DpExchange.Robinhood.Rest do
   # function has to tolerate. A row missing `symbol` entirely is dropped rather than
   # published under a fabricated one: `Core.Types.TopOfBook.symbol` is how every consumer
   # keys coverage, and a nil key there is worse than one fewer row this cycle.
-  defp row_to_top_of_book(%{"symbol" => symbol} = row) when is_binary(symbol),
-    do: to_top_of_book(SymbolFormat.to_canonical_symbol(symbol), row)
+  #
+  # A row whose bid AND ask both fail to decode is dropped the same way, for the same
+  # reason: it would be published as a well-formed book with no prices.
+  defp row_to_top_of_book(%{"symbol" => symbol} = row) when is_binary(symbol) do
+    case to_top_of_book(SymbolFormat.to_canonical_symbol(symbol), row) do
+      {:ok, book} -> book
+      {:error, _unreadable} -> nil
+    end
+  end
 
   defp row_to_top_of_book(_row), do: nil
 
+  # Found 2026-10-10 by reading the path: nothing checked that `bid` or `ask` was readable.
+  # A renamed field (v1's names against the v2 path were exactly this once), an empty string
+  # or a `NaN` all decode to `nil`, and the result was a `TopOfBook{bid: nil, ask: nil}`
+  # delivered as `{:ok, _}` — an empty book that reads as a quiet market rather than a
+  # parser that has stopped understanding the venue. Both sides unreadable is refused; one
+  # side is a real one-sided book and is still returned.
   defp to_top_of_book(symbol, row) do
-    %TopOfBook{
-      symbol: symbol,
-      bid: decimal(row["bid"]),
-      ask: decimal(row["ask"]),
-      bid_size: nil,
-      ask_size: nil,
-      venue_time: top_of_book_time(row),
-      observed_at: DateTime.utc_now(),
-      provider: :robinhood
-    }
+    bid = decimal(row["bid"])
+    ask = decimal(row["ask"])
+
+    if is_nil(bid) and is_nil(ask) do
+      {:error, {:missing_required_field, :bid_ask}}
+    else
+      {:ok,
+       %TopOfBook{
+         symbol: symbol,
+         bid: bid,
+         ask: ask,
+         bid_size: nil,
+         ask_size: nil,
+         venue_time: top_of_book_time(row),
+         observed_at: DateTime.utc_now(),
+         provider: :robinhood
+       }}
+    end
   end
 
   # `V2BestBidAsk` — the schema the venue's own OpenAPI document names for this response —

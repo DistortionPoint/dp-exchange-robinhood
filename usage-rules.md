@@ -169,6 +169,10 @@ documented surface is nine operations in total, and none of the other eight is a
 `{:error, :not_supported}`, and `venue_does_not_serve/0` lists it as the venue's own
 absence, not a gap in this package.
 
+A book whose `bid` AND `ask` are both unreadable (renamed field, empty, `NaN`) is refused as
+`{:error, {:missing_required_field, :bid_ask}}` by `get_top_of_book/2`, and dropped from the
+bulk/feed path — never delivered as an empty book. One readable side is a real one-sided book.
+
 `bid` and `ask` are both real and both still live — through `get_top_of_book/2` and the
 `:top_of_book` poll above. If your code wants "the price," pick one of `bid` or `ask`
 deliberately rather than reaching for a `price` field that no longer exists: **it is not a

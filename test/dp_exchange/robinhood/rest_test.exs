@@ -124,17 +124,16 @@ defmodule DpExchange.Robinhood.RestTest do
       refute Map.has_key?(top, :price)
     end
 
-    test "a missing bid or ask decodes as nil, not as an error" do
+    test "both sides missing is an error, not an empty book (changed 2026-10-10)" do
+      # This used to pin `{:ok, %TopOfBook{bid: nil, ask: nil}}`, the exact shape the v1→v2
+      # field rename produced every poll. One missing side is still a one-sided book.
       body = quote_body() |> put_in(["results"], [%{"symbol" => "BTC-USD"}])
 
-      assert {:ok, top} =
+      assert {:error, {:missing_required_field, :bid_ask}} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(body),
                  retry_attempts: 0
                )
-
-      assert top.bid == nil
-      assert top.ask == nil
     end
 
     test "venue_time is nil against a real v2 response — the venue sends no timestamp here" do
@@ -632,6 +631,40 @@ defmodule DpExchange.Robinhood.RestTest do
     end
   end
 
+  describe "get_top_of_book/3 — a book with no readable price is refused" do
+    test "renamed fields refuse rather than returning bid: nil, ask: nil" do
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid_price" => "1", "ask_price" => "2"}]}
+
+      assert {:error, {:missing_required_field, :bid_ask}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+    end
+
+    test "NaN on both sides refuses" do
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "NaN", "ask" => "Inf"}]}
+
+      assert {:error, {:missing_required_field, :bid_ask}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+    end
+
+    test "one readable side is still a real one-sided book" do
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "", "ask" => "2"}]}
+
+      assert {:ok, %{bid: nil, ask: ask}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert Decimal.equal?(ask, Decimal.new(2))
+    end
+  end
+
   describe "get_top_of_book_bulk/3 — the repeatable-symbol bulk form of best_bid_ask" do
     test "one signed request carries every symbol, via a repeated symbol param" do
       body = %{
@@ -712,6 +745,24 @@ defmodule DpExchange.Robinhood.RestTest do
 
       assert {:ok, [top]} =
                Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD"], @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert top.symbol == "BTC-USD"
+    end
+
+    test "a row whose bid and ask are both unreadable is dropped, not published as empty" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"},
+          %{"symbol" => "ETH-USD", "bid_price" => "3", "ask_price" => "4"},
+          %{"symbol" => "LTC-USD", "bid" => "NaN", "ask" => ""}
+        ]
+      }
+
+      assert {:ok, [top]} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD", "LTC-USD"], @credentials,
                  plug: responding(body),
                  retry_attempts: 0
                )

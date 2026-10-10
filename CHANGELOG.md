@@ -19,6 +19,20 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A book with no readable price was delivered as an empty book.** `get_top_of_book/3`
+  returned `TopOfBook{bid: nil, ask: nil}` when both fields were renamed, empty or `NaN`.
+  It now answers `{:error, {:missing_required_field, :bid_ask}}`; `get_top_of_book_bulk/3`
+  (and so the feed) drops such a row like a row with no symbol. A one-sided book is still
+  returned.
+
+### Changed
+
+- **`dp_exchange_core` 0.3.61.** The poll's `[:dp_exchange, :link, …]` telemetry now names
+  `provider: :robinhood`, the same atom as its notices, instead of the label string
+  `"robinhood"`. A telemetry handler matching the string must match the atom.
+
 ## [0.3.65] - 2026-10-10
 
 ### Fixed

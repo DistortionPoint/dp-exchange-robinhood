@@ -1045,10 +1045,11 @@ defmodule DpExchange.Robinhood.FeedTest do
       # a total depressed by every poller reporting a confident zero.
       test_pid = self()
       handler_id = "rh-link-#{System.unique_integer([:positive])}"
-      # This feed hardcodes its PollingFeed label, so the handler scopes to that rather than
-      # a unique one. Safe here because the assertion is positive: a stray event from another
-      # concurrent robinhood test satisfies the same three properties being asserted.
-      label = "robinhood"
+      # Core 0.3.61 names the poll's telemetry by its `:provider`, which this feed sets to
+      # `:robinhood`, the same atom as its notices. It used to carry the label string
+      # "robinhood". Scoped to the shared atom; safe because the assertion is positive: a
+      # stray event from another concurrent robinhood test satisfies the same properties.
+      label = :robinhood
 
       :telemetry.attach(
         handler_id,
