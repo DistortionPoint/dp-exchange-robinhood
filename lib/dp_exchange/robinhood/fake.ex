@@ -76,6 +76,12 @@ defmodule DpExchange.Robinhood.Fake do
   @cash_currency "USD"
   @cash_amount "1000.00"
 
+  # The one account the fake holds. `get_balances/2` answers only for it, as
+  # `Rest.get_balances/2` answers only for an account `get_accounts/2` lists and otherwise
+  # returns `{:account_not_found, account}`. Accepting any number let a consumer that
+  # passed the wrong account see a portfolio here and a refusal against the venue.
+  @account_number "RH-1"
+
   @impl true
   def child_spec(opts),
     do: %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
@@ -196,8 +202,9 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_balances(credentials, opts) do
     with_injection(fn ->
-      with {:ok, _account} <- fake_account(opts),
-           :ok <- authenticated_credentials(credentials) do
+      with {:ok, account} <- fake_account(opts),
+           :ok <- authenticated_credentials(credentials),
+           :ok <- held_account(account) do
         # Total above available: the difference is a balance sitting in an open order, which
         # is the case a consumer reading only one of them gets wrong. `hold` stays nil, as in
         # the package — the venue publishes no such figure.
@@ -247,7 +254,7 @@ defmodule DpExchange.Robinhood.Fake do
         {:ok,
          [
            %{
-             "account_number" => "RH-1",
+             "account_number" => @account_number,
              "status" => "active",
              "buying_power" => @cash_amount,
              "buying_power_currency" => @cash_currency
@@ -274,25 +281,53 @@ defmodule DpExchange.Robinhood.Fake do
            :ok <- authenticated_credentials(credentials) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
-        {:ok,
-         %Types.Order{
-           id: "rh-order-1",
-           symbol: Map.get(request, :symbol),
-           side: Map.get(request, :side),
-           order_type: Map.get(request, :order_type),
-           time_in_force: nil,
-           quantity: Map.get(request, :quantity),
-           filled_quantity: Decimal.new("0"),
-           average_price: nil,
-           status: :open,
-           fee: nil,
-           fee_currency: nil,
-           created_at: DateTime.utc_now(),
-           provider: :robinhood
-         }}
+        {:ok, fake_order(request)}
       end
     end)
   end
+
+  # The order as `Rest` decodes it from the venue's reply, not the request echoed back:
+  # a canonical symbol, `Decimal` amounts (a `Types.Order` carries no float or string
+  # amount, and this echoed `quantity: "1"` and `0.00001` verbatim), the contract's own
+  # `:stop` for the venue's `stop_loss`, and `price` / `stop_price` / `time_in_force` only for
+  # the types whose config carries them -- `limit_order_config` echoes no `time_in_force`
+  # on a read (`Rest`'s comment above `@tif_names`), and a market order has no price at all.
+  # The request has already passed `Rest.validate_order_request/1`, so every amount parses.
+  defp fake_order(request) do
+    type = fake_order_type(Map.get(request, :order_type))
+
+    %Types.Order{
+      id: "rh-order-1",
+      symbol: SymbolFormat.to_canonical_symbol(Map.get(request, :symbol)),
+      side: fake_side(Map.get(request, :side)),
+      order_type: type,
+      time_in_force: if(type in [:stop, :stop_limit], do: Map.get(request, :time_in_force)),
+      quantity: fake_decimal(Map.get(request, :quantity)),
+      price: if(type in [:limit, :stop_limit], do: fake_decimal(Map.get(request, :price))),
+      stop_price:
+        if(type in [:stop, :stop_limit], do: fake_decimal(Map.get(request, :stop_price))),
+      filled_quantity: Decimal.new("0"),
+      average_price: nil,
+      status: :open,
+      fee: nil,
+      fee_currency: nil,
+      created_at: DateTime.utc_now(),
+      provider: :robinhood
+    }
+  end
+
+  defp fake_side(side) when side in [:buy, "buy"], do: :buy
+  defp fake_side(side) when side in [:sell, "sell"], do: :sell
+
+  defp fake_order_type(type) when type in [:market, "market"], do: :market
+  defp fake_order_type(type) when type in [:limit, "limit"], do: :limit
+  defp fake_order_type(type) when type in [:stop, :stop_loss, "stop_loss"], do: :stop
+  defp fake_order_type(type) when type in [:stop_limit, "stop_limit"], do: :stop_limit
+
+  defp fake_decimal(%Decimal{} = value), do: value
+  defp fake_decimal(value) when is_integer(value), do: Decimal.new(value)
+  defp fake_decimal(value) when is_float(value), do: Decimal.from_float(value)
+  defp fake_decimal(value) when is_binary(value), do: Decimal.new(value)
 
   @impl true
   def place_orders(_credentials, _requests, _opts), do: Venue.not_supported()
@@ -327,7 +362,8 @@ defmodule DpExchange.Robinhood.Fake do
       # No account check, matching `Rest.cancel_order/3`: this is the one order call that
       # takes no `account_number` — but it is still signed, so credentials are still
       # required.
-      with :ok <- authenticated_credentials(credentials) do
+      with :ok <- fake_order_id(id),
+           :ok <- authenticated_credentials(credentials) do
         {:ok,
          %Types.Order{
            id: id,
@@ -346,6 +382,7 @@ defmodule DpExchange.Robinhood.Fake do
   def get_order(credentials, id, opts) do
     with_injection(fn ->
       with {:ok, _account} <- fake_account(opts),
+           :ok <- fake_order_id(id),
            :ok <- authenticated_credentials(credentials) do
         {:ok,
          %Types.Order{
@@ -375,6 +412,17 @@ defmodule DpExchange.Robinhood.Fake do
            do: {:ok, []}
     end)
   end
+
+  # `Rest.get_order/3` and `Rest.cancel_order/3` refuse a blank id before signing anything
+  # (an empty path segment is a different endpoint). The fake answered an order for `""`.
+  defp fake_order_id(id) when is_binary(id) do
+    if String.trim(id) == "", do: {:error, {:missing_field, :id}}, else: :ok
+  end
+
+  # After credentials, as in `Rest.get_balances/2`: the lookup needs the signed
+  # `get_accounts/2` reply before it can say an account is not there.
+  defp held_account(@account_number), do: :ok
+  defp held_account(account), do: {:error, {:account_not_found, account}}
 
   # v2 takes the account number where v1 took none. A fake that answered without it would
   # let a v1 habit pass here and fail against the venue.

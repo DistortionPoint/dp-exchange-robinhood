@@ -47,7 +47,9 @@ defmodule DpExchange.Robinhood.Rest do
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
   @base_url "https://trading.robinhood.com"
+  @host "trading.robinhood.com"
   @trading_pairs_path "/api/v2/crypto/trading/trading_pairs/"
+  @accounts_path "/api/v2/crypto/trading/accounts/"
 
   # The vendor's own OpenAPI schema carries `time_in_force` as an enum of
   # `["gtc", "gfd", "gfw", "gfm"]` on `AddOrderV2.limit_order_config`,
@@ -102,7 +104,9 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
   def get_top_of_book(symbol, credentials, opts) do
     native = SymbolFormat.to_exchange_symbol(symbol)
-    path = "/api/v2/crypto/marketdata/best_bid_ask/?symbol=" <> URI.encode(native)
+    # `query_string/1`, not `URI.encode/1`: that leaves `&`, `=`, `#` and `/` alone, so a
+    # symbol like `"BTC-USD&symbol=ETH-USD"` smuggled a second parameter into a SIGNED path.
+    path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string([{"symbol", native}])
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- result_for(body, native) do
@@ -342,14 +346,31 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, map()} | {:error, term()} | {:refused, term()}
   def quantization(symbol, credentials, opts) do
     native = SymbolFormat.to_exchange_symbol(symbol)
-    path = @trading_pairs_path <> "?symbol=" <> URI.encode(native)
+    path = @trading_pairs_path <> query_string([{"symbol", native}])
 
     with {:ok, body} <- get(path, credentials, opts),
          {:ok, row} <- result_for(body, native) do
+      to_quantization(row)
+    end
+  end
+
+  # Found 2026-10-10 by reading the path: a row whose `quote_increment` AND `asset_increment`
+  # were both unreadable (renamed, empty, `NaN`) answered `{:ok, %{price_increment: nil,
+  # quantity_increment: nil, ...}}` -- rounding rules that state no rounding at all, which a
+  # caller reads as "any precision is accepted". One unreadable increment is still returned
+  # as `nil` (the other is real); both unreadable means the parser has stopped understanding
+  # the row, and is refused.
+  defp to_quantization(row) do
+    price_increment = decimal(row["quote_increment"])
+    quantity_increment = decimal(row["asset_increment"])
+
+    if is_nil(price_increment) and is_nil(quantity_increment) do
+      {:error, {:missing_required_field, :increments}}
+    else
       {:ok,
        %{
-         price_increment: decimal(row["quote_increment"]),
-         quantity_increment: decimal(row["asset_increment"]),
+         price_increment: price_increment,
+         quantity_increment: quantity_increment,
          # The schema names no unit minimum — see the moduledoc above.
          min_quantity: nil,
          max_quantity: decimal(row["max_order_size"]),
@@ -414,49 +435,72 @@ defmodule DpExchange.Robinhood.Rest do
     if path in seen do
       {:error, {:pagination_loop, path}}
     else
-      case get(path, credentials, opts) do
-        {:ok, %{"results" => results} = body} when is_list(results) ->
-          # Pages are accumulated as a list OF PAGES and concatenated once at the end.
-          # This was `acc ++ results`, which copies the whole accumulator on every page —
-          # quadratic in the number of rows, for a walk whose entire job is to grow a list.
-          # `seen` stays a plain list: the scan is linear, but @max_pages now bounds it at
-          # 50 entries, so a MapSet buys nothing measurable — and it cost a dialyzer opacity
-          # warning, which is a worse trade than the scan it removed.
-          pages = [results | pages]
+      with {:ok, body} <- get(path, credentials, opts),
+           {:ok, results} <- page_results(body),
+           {:ok, next} <- next_path(body, opts) do
+        # Pages are accumulated as a list OF PAGES and concatenated once at the end.
+        # This was `acc ++ results`, which copies the whole accumulator on every page —
+        # quadratic in the number of rows, for a walk whose entire job is to grow a list.
+        # `seen` stays a plain list: the scan is linear, but @max_pages now bounds it at
+        # 50 entries, so a MapSet buys nothing measurable — and it cost a dialyzer opacity
+        # warning, which is a worse trade than the scan it removed.
+        pages = [results | pages]
 
-          case next_path(body) do
-            nil -> {:ok, pages |> Enum.reverse() |> Enum.concat()}
-            next -> walk(next, credentials, opts, pages, page + 1, [path | seen], too_many_error)
-          end
-
-        # `"results": null` is an empty page, the same convention `account_rows/1` and
-        # `order_rows/1` both give their own single-page endpoints — carried here so a
-        # WALKED endpoint (holdings) reads a null page identically rather than refusing a
-        # page that said nothing was wrong. `trading_pairs` and `orders` have never been
-        # observed to send this; harmless for them either way.
-        {:ok, %{"results" => nil} = body} ->
-          case next_path(body) do
-            nil -> {:ok, pages |> Enum.reverse() |> Enum.concat()}
-            next -> walk(next, credentials, opts, pages, page + 1, [path | seen], too_many_error)
-          end
-
-        {:ok, _unexpected} ->
-          {:error, :unexpected_response_shape}
-
-        error ->
-          error
+        case next do
+          nil -> {:ok, pages |> Enum.reverse() |> Enum.concat()}
+          next -> walk(next, credentials, opts, pages, page + 1, [path | seen], too_many_error)
+        end
       end
     end
   end
 
+  # `"results": null` is an empty page, the same convention `account_rows/1` and
+  # `order_rows/1` both give their own single-page endpoints — carried here so a WALKED
+  # endpoint (holdings) reads a null page identically rather than refusing a page that said
+  # nothing was wrong. Anything else that is not a list is not a page.
+  defp page_results(%{"results" => results}) when is_list(results), do: {:ok, results}
+  defp page_results(%{"results" => nil}), do: {:ok, []}
+  defp page_results(_unexpected), do: {:error, :unexpected_response_shape}
+
   # The venue returns an absolute URL for the next page; the signature covers a path, so
-  # only the path-and-query part is carried forward.
-  defp next_path(%{"next" => next}) when is_binary(next) and next != "" do
-    uri = URI.parse(next)
-    if uri.query, do: uri.path <> "?" <> uri.query, else: uri.path
+  # only the path-and-query part is carried forward, and it is requested from THIS
+  # package's own base URL -- never from the host the cursor names.
+  #
+  # **A cursor is the venue's word, and it is checked before it is followed.** Three ways
+  # it used to go wrong, each reachable from a response body alone:
+  #
+  #   * A `next` on another host was followed anyway, with its path silently re-homed onto
+  #     the base URL. Not a request to the foreign host, but not the walk the venue
+  #     described either: the page fetched was one nobody offered. Refused instead.
+  #   * A `next` with no path (`"?cursor=2"`, or a bare host) raised in `<>` on `nil`, inside
+  #     the caller's process. Refused instead.
+  #   * A `next` that was present but not a string (a number, an object) was treated as "no
+  #     more pages", so a truncated list came back as complete. `nil` and `""` are the only
+  #     spellings of "no more"; anything else is unreadable.
+  #
+  # The host must be the configured base URL's or the venue's own (`trading.robinhood.com`,
+  # which is what the venue's cursors actually name when a test or proxy overrides the base).
+  defp next_path(%{"next" => next}, opts) when is_binary(next) and next != "" do
+    with {:ok, %URI{path: path, query: query}} <- cursor_uri(URI.parse(next), opts),
+         :ok <- cursor_path(path) do
+      {:ok, if(query, do: path <> "?" <> query, else: path)}
+    end
   end
 
-  defp next_path(_no_more), do: nil
+  defp next_path(%{"next" => next}, _opts) when next in [nil, ""], do: {:ok, nil}
+  defp next_path(%{"next" => _unreadable}, _opts), do: {:error, :unexpected_response_shape}
+  defp next_path(_no_next_key, _opts), do: {:ok, nil}
+
+  defp cursor_uri(%URI{host: nil} = uri, _opts), do: {:ok, uri}
+
+  defp cursor_uri(%URI{host: host} = uri, opts) do
+    if host in [@host, URI.parse(base_url(opts)).host],
+      do: {:ok, uri},
+      else: {:error, {:foreign_next_url, host}}
+  end
+
+  defp cursor_path("/api/" <> _rest), do: :ok
+  defp cursor_path(path), do: {:error, {:unexpected_next_path, path}}
 
   # --- accounts, holdings and trading (v2) --------------------------------
 
@@ -470,20 +514,35 @@ defmodule DpExchange.Robinhood.Rest do
 
   Returned as the venue's own map.
 
-  **Deliberately does not walk `next`/`previous`, unlike `get_symbols/2`.**
-  `V2AccountsResponse` carries the same cursor fields the trading-pairs response does, so
-  the shape supports paging. This does not follow it: one account per credential is this
-  venue's common case (a crypto brokerage account is singular by design), the risk of a
-  truncated result silently reads as "the credential's one account" either way, and walking
-  here would be undischarged complexity against a case that has never been observed. This is
-  a recorded decision, not an oversight — revisit if a credential is ever seen with more than
-  one page.
+  **Walks `next` when the venue offers one.** `V2AccountsResponse` carries the same cursor
+  fields the trading-pairs response does. This used to read the first page only, recorded as
+  a decision ("one account per credential is the common case"). That decision was wrong in
+  the way that matters: `get_balances/2` finds its account by number in this list, so an
+  account on page two read as `{:error, {:account_not_found, _}}` -- and `get_accounts/2`
+  itself answered a truncated list as the complete one. Pages after the first are fetched
+  with the same bounded, loop-guarded, host-checked `walk/7` as every other cursor here, and
+  fail closed (`{:error, :too_many_account_pages}`) on the bound.
   """
   @spec get_accounts(map(), keyword()) ::
           {:ok, [map()]} | {:error, term()} | {:refused, term()}
   def get_accounts(credentials, opts) do
-    with {:ok, body} <- get("/api/v2/crypto/trading/accounts/", credentials, opts) do
-      account_rows(body)
+    with {:ok, body} <- get(@accounts_path, credentials, opts),
+         {:ok, rows} <- account_rows(body),
+         {:ok, more} <- remaining_account_rows(body, credentials, opts) do
+      {:ok, rows ++ more}
+    end
+  end
+
+  defp remaining_account_rows(body, credentials, opts) do
+    case next_path(body, opts) do
+      {:ok, nil} ->
+        {:ok, []}
+
+      {:ok, next} ->
+        walk(next, credentials, opts, [], 1, [@accounts_path], :too_many_account_pages)
+
+      error ->
+        error
     end
   end
 
@@ -501,7 +560,13 @@ defmodule DpExchange.Robinhood.Rest do
   # about accounts.
   defp account_rows(%{"results" => nil}), do: {:ok, []}
   defp account_rows(%{"results" => _unreadable}), do: {:error, :unexpected_response_shape}
-  defp account_rows(%{} = row), do: {:ok, [row]}
+  # A bare object is an account only if it NAMES one. `V2AccountsResponse` is always a page,
+  # so a bare object is already off-spec; `{}` or an error-shaped `{"detail": ...}` answered
+  # with a 200 became `{:ok, [%{}]}` -- a phantom account, whose absent number a caller then
+  # fails to find (or worse, passes on to every account-scoped call).
+  defp account_rows(%{"account_number" => number} = row) when is_binary(number) and number != "",
+    do: {:ok, [row]}
+
   defp account_rows(_other), do: {:error, :unexpected_response_shape}
 
   @doc """
@@ -693,40 +758,118 @@ defmodule DpExchange.Robinhood.Rest do
   `side` is the venue's own `bid`, `ask` or `both`. Several quantities can be asked at once:
   the venue takes them comma-separated, and asking for `0.1,1,10` in one request is how a
   caller sees the slope rather than three points taken at three times.
+
+  **Refused locally, before anything is signed:** a `side` outside `bid`/`ask`/`both`
+  (atom or string), a `quantity` that is not a positive finite number (zero, negative, `NaN`,
+  `Infinity`, unparseable text, an empty list) as `{:error, {:invalid_field, :quantity}}`,
+  and a `symbol` that is not a string. Each used to go on the wire as whatever `to_string/1`
+  made of it.
+
+  **The numeric fields of each result row come back as `Decimal`, not float.** The venue
+  sends `quantity`, `bid`, `ask`, `fee_ratio`, `est_fee`, `est_total_cost` and
+  `est_total_credit` as JSON numbers, which decode to floats -- money in binary floating
+  point. A float is converted with `Decimal.from_float/1`, which is the shortest decimal that
+  round-trips, so the value is the one on the wire. Every other key is returned as sent.
   """
   @spec get_estimated_price(
           String.t(),
-          String.t(),
-          String.t() | [String.t()],
+          atom() | String.t(),
+          Decimal.t() | number() | String.t() | [Decimal.t() | number() | String.t()],
           map(),
           keyword()
         ) ::
           {:ok, map()} | {:error, term()} | {:refused, term()}
   def get_estimated_price(symbol, side, quantity, credentials, opts) do
-    query = [
-      {"symbol", SymbolFormat.to_exchange_symbol(symbol)},
-      {"side", to_string(side)},
-      {"quantity", quantity_param(quantity)}
-    ]
-
-    path = "/api/v2/crypto/trading/estimated_price/" <> query_string(query)
-
-    with {:ok, body} <- get(path, credentials, opts), do: {:ok, body}
+    with {:ok, native} <- native_symbol(symbol),
+         {:ok, side} <- estimate_side(side),
+         {:ok, quantity} <- quantity_param(quantity),
+         path = estimate_path(native, side, quantity),
+         {:ok, body} <- get(path, credentials, opts) do
+      estimate_body(body)
+    end
   end
 
-  defp quantity_param(list) when is_list(list),
-    do: list |> Enum.map(&decimal_string/1) |> Enum.join(",")
+  defp estimate_path(native, side, quantity) do
+    query = [{"symbol", native}, {"side", side}, {"quantity", quantity}]
+    "/api/v2/crypto/trading/estimated_price/" <> query_string(query)
+  end
 
-  defp quantity_param(value), do: decimal_string(value)
+  defp native_symbol(symbol) when is_binary(symbol) and symbol != "",
+    do: {:ok, SymbolFormat.to_exchange_symbol(symbol)}
 
-  # Full notation, never scientific: `1.0e-4` is not a quantity this venue reads. A float
-  # goes through `Decimal` too, because `to_string(0.00001)` IS `"1.0e-5"`.
-  defp decimal_string(%Decimal{} = value), do: Decimal.to_string(value, :normal)
+  defp native_symbol(_other), do: {:error, {:invalid_field, :symbol}}
 
-  defp decimal_string(value) when is_float(value),
-    do: value |> Decimal.from_float() |> Decimal.to_string(:normal)
+  defp estimate_side(side) when side in [:bid, :ask, :both], do: {:ok, Atom.to_string(side)}
+  defp estimate_side(side) when side in ["bid", "ask", "both"], do: {:ok, side}
+  defp estimate_side(side), do: {:error, {:unsupported_side, side}}
 
-  defp decimal_string(value), do: to_string(value)
+  defp quantity_param([_first | _rest] = list) do
+    list
+    |> Enum.map(&positive_string/1)
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, string}, {:ok, acc} -> {:cont, {:ok, [string | acc]}}
+      :error, _acc -> {:halt, {:error, {:invalid_field, :quantity}}}
+    end)
+    |> case do
+      {:ok, strings} -> {:ok, strings |> Enum.reverse() |> Enum.join(",")}
+      error -> error
+    end
+  end
+
+  defp quantity_param(value) when is_list(value), do: {:error, {:invalid_field, :quantity}}
+
+  defp quantity_param(value) do
+    case positive_string(value) do
+      {:ok, string} -> {:ok, string}
+      :error -> {:error, {:invalid_field, :quantity}}
+    end
+  end
+
+  @estimate_numbers ~w(quantity bid ask fee_ratio est_fee est_total_cost est_total_credit)
+
+  defp estimate_body(%{"results" => rows} = body) when is_list(rows),
+    do: {:ok, %{body | "results" => Enum.map(rows, &estimate_row/1)}}
+
+  defp estimate_body(%{} = body), do: {:ok, body}
+  defp estimate_body(_other), do: {:error, :unexpected_response_shape}
+
+  defp estimate_row(row) when is_map(row) do
+    Enum.reduce(@estimate_numbers, row, fn key, acc ->
+      case acc do
+        %{^key => value} when is_number(value) -> Map.put(acc, key, decimal(value))
+        _other -> acc
+      end
+    end)
+  end
+
+  defp estimate_row(other), do: other
+
+  # A quantity or price this package is about to put on the wire: a positive, finite number
+  # in full notation, never scientific -- `1.0e-4` is not a quantity this venue reads, and a
+  # float goes through `Decimal` too because `to_string(0.00001)` IS `"1.0e-5"`.
+  #
+  # **Anything else is `:error`, and used to be sent.** The fallback clause was
+  # `to_string(value)`, so `"abc"`, `"NaN"`, `"-1"` and `"0"` all went into a
+  # SIGNED order body, on a call that moves funds, to be refused (or worse, interpreted) by
+  # the venue. `0` and negatives are not quantities, and `NaN`/`Infinity` are not numbers.
+  # The venue's own bounds (`max_order_size`, increments) are its to state, not guessed here.
+  defp positive_string(value) do
+    case input_decimal(value) do
+      %Decimal{} = amount ->
+        if Decimal.positive?(amount),
+          do: {:ok, Decimal.to_string(amount, :normal)},
+          else: :error
+
+      nil ->
+        :error
+    end
+  end
+
+  defp input_decimal(%Decimal{} = value),
+    do: if(Decimal.nan?(value) or Decimal.inf?(value), do: nil, else: value)
+
+  defp input_decimal(value) when is_number(value) or is_binary(value), do: decimal(value)
+  defp input_decimal(_other), do: nil
 
   @doc """
   Orders on one account — `GET /api/v2/crypto/trading/orders/`.
@@ -735,7 +878,8 @@ defmodule DpExchange.Robinhood.Rest do
   filters are passed through under its own names, and none is defaulted — a start date
   chosen here would return a real list of orders over a window the caller did not ask about.
   The filters read are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
-  `:updated_at_end`, `:symbol`, `:side`, `:type` and `:state`. A `%DateTime{}` passed for
+  `:updated_at_end`, `:symbol`, `:side`, `:type` (`:stop` is sent as the venue's
+  `"stop_loss"`) and `:state` (the venue also knows `"pending"`). A `%DateTime{}` passed for
   any of the four dates is sent as ISO 8601 (`DateTime.to_iso8601/1`); a string is sent
   unchanged. `:state` takes the venue's word or a `Core` status atom, mapped back to the
   venue's spelling (`:cancelled` is `"canceled"`, `:rejected` is `"failed"`).
@@ -771,7 +915,7 @@ defmodule DpExchange.Robinhood.Rest do
         |> put_query("updated_at_end", iso8601_param(Keyword.get(opts, :updated_at_end)))
         |> put_query("symbol", order_symbol(Keyword.get(opts, :symbol)))
         |> put_query("side", Keyword.get(opts, :side))
-        |> put_query("type", Keyword.get(opts, :type))
+        |> put_query("type", order_type_param(Keyword.get(opts, :type)))
         |> put_query("state", order_state_param(Keyword.get(opts, :state)))
         |> put_query("cursor", Keyword.get(opts, :cursor))
 
@@ -819,13 +963,25 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
   def get_order(credentials, order_id, opts) when is_binary(order_id) do
-    with {:ok, account} <- required_account(opts) do
+    with {:ok, account} <- required_account(opts),
+         {:ok, segment} <- order_id_segment(order_id) do
       path =
         "/api/v2/crypto/trading/orders/" <>
-          URI.encode(order_id) <> "/" <> query_string([{"account_number", account}])
+          segment <> "/" <> query_string([{"account_number", account}])
 
       with {:ok, body} <- get(path, credentials, opts), do: to_order(body)
     end
+  end
+
+  # An order id is ONE path segment, and it is part of what is signed. `URI.encode/1` leaves
+  # `/`, `?`, `#` and `&` alone, so an id like `"x/cancel/?y"` rewrote the signed path into a
+  # different endpoint's: a `get_order/3` that cancelled, or a `cancel_order/3` aimed at
+  # another resource. Every reserved character is percent-encoded instead. A blank id would
+  # collapse the segment (`/orders//cancel/`) and is refused rather than sent.
+  defp order_id_segment(order_id) do
+    if String.trim(order_id) == "",
+      do: {:error, {:missing_field, :id}},
+      else: {:ok, URI.encode(order_id, &URI.char_unreserved?/1)}
   end
 
   @doc """
@@ -848,8 +1004,13 @@ defmodule DpExchange.Robinhood.Rest do
   `{:error, {:unsupported_order_type, type}}`. `request.time_in_force` (`:gtc`, `:day`,
   `:gfw` or `:gfm`) is sent on the three non-market types and refused as
   `{:error, {:unsupported_time_in_force, tif}}` for anything else; a market order never
-  sends one. The response body must be an order with an `id`, otherwise
-  `{:error, {:missing_required_field, :id}}` (an object without one) or
+  sends one. Also refused locally, before anything is signed: a `side` other than
+  `buy`/`sell` as `{:error, {:unsupported_side, side}}`, a quantity or price that is not a
+  positive finite number (`0`, negative, `NaN`, unparseable text) as `{:error,
+  {:invalid_field, key}}`, a `symbol` that is not a non-empty string, and a request that is
+  not a map as `{:error, {:invalid_request, :not_a_map}}`. The body is sent with
+  `content-type: application/json`, as the vendor's own client sends it. The response body
+  must be an order with an `id`, otherwise `{:error, {:missing_required_field, :id}}` (an object without one) or
   `{:error, :unexpected_response_shape}` (not an object).
   """
   @spec place_order(map(), map(), keyword()) ::
@@ -867,7 +1028,9 @@ defmodule DpExchange.Robinhood.Rest do
   Cancels an order — `POST /api/v2/crypto/trading/orders/{order_id}/cancel/`.
 
   **A POST, not a DELETE**, and it takes no account number where every other order call
-  does.
+  does. It sends **no body** (signed as the empty string), as the vendor's own client does.
+  The id is one percent-encoded path segment; a blank id is refused as `{:error,
+  {:missing_field, :id}}` rather than sent as `/orders//cancel/`.
 
   **v2's cancel response is a full `V2CryptoOrder`, decoded the same way `get_order/3` and
   `place_order/3` decode theirs** — confirmed against the vendor's own OpenAPI document,
@@ -884,9 +1047,11 @@ defmodule DpExchange.Robinhood.Rest do
   @spec cancel_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
   def cancel_order(credentials, order_id, opts) when is_binary(order_id) do
-    path = "/api/v2/crypto/trading/orders/" <> URI.encode(order_id) <> "/cancel/"
+    with {:ok, segment} <- order_id_segment(order_id) do
+      path = "/api/v2/crypto/trading/orders/" <> segment <> "/cancel/"
 
-    with {:ok, body} <- post(path, %{}, credentials, opts), do: to_order(body)
+      with {:ok, body} <- post(path, nil, credentials, opts), do: to_order(body)
+    end
   end
 
   defp required_account(opts) do
@@ -910,17 +1075,54 @@ defmodule DpExchange.Robinhood.Rest do
   `DpExchange.Robinhood.Fake` refuses exactly what the real path refuses instead of
   accepting an empty request and handing back an open order.
   """
-  @spec validate_order_request(map()) :: :ok | {:error, term()}
-  def validate_order_request(request) when is_map(request) do
+  @spec validate_order_request(term()) :: :ok | {:error, term()}
+  def validate_order_request(request) do
     with {:ok, _parts} <- order_parts(request), do: :ok
   end
 
+  # A request that is not a map used to raise (`BadMapError`) inside the caller's process,
+  # on the call that moves funds; it is a refusal like any other malformed order.
+  defp order_parts(request) when not is_map(request),
+    do: {:error, {:invalid_request, :not_a_map}}
+
   defp order_parts(request) do
-    with {:ok, symbol} <- order_field(request, :symbol),
-         {:ok, side} <- order_field(request, :side),
+    with {:ok, symbol} <- order_symbol_field(request),
+         {:ok, side} <- order_side_field(request),
          {:ok, type} <- order_field(request, :order_type),
          {:ok, config} <- order_config(type, request) do
       {:ok, {symbol, side, type, config}}
+    end
+  end
+
+  # `SymbolFormat` raises on a non-string, and a blank one builds `"symbol": ""`.
+  defp order_symbol_field(request) do
+    case order_field(request, :symbol) do
+      {:ok, symbol} when is_binary(symbol) and symbol != "" -> {:ok, symbol}
+      {:ok, _unusable} -> {:error, {:invalid_field, :symbol}}
+      error -> error
+    end
+  end
+
+  # The venue's `side` enum is `buy`/`sell`. Any other atom used to go out as
+  # `to_string(side)` -- `:hold` became `"hold"` -- in a signed order body.
+  defp order_side_field(request) do
+    with {:ok, side} <- order_field(request, :side) do
+      case side do
+        side when side in [:buy, "buy"] -> {:ok, :buy}
+        side when side in [:sell, "sell"] -> {:ok, :sell}
+        other -> {:error, {:unsupported_side, other}}
+      end
+    end
+  end
+
+  # A quantity or price: present AND a positive, finite number, as the wire string. See
+  # `positive_string/1`.
+  defp order_amount(request, key) do
+    with {:ok, value} <- order_field(request, key) do
+      case positive_string(value) do
+        {:ok, string} -> {:ok, string}
+        :error -> {:error, {:invalid_field, key}}
+      end
     end
   end
 
@@ -966,18 +1168,16 @@ defmodule DpExchange.Robinhood.Rest do
   # order never gets one — even if the caller supplied one, it would have nowhere honest to
   # go.
   defp order_config(type, request) when type in [:market, "market"] do
-    with {:ok, quantity} <- order_field(request, :quantity) do
-      {:ok, %{"asset_quantity" => decimal_string(quantity)}}
+    with {:ok, quantity} <- order_amount(request, :quantity) do
+      {:ok, %{"asset_quantity" => quantity}}
     end
   end
 
   defp order_config(type, request) when type in [:limit, "limit"] do
-    with {:ok, quantity} <- order_field(request, :quantity),
-         {:ok, price} <- order_field(request, :price),
+    with {:ok, quantity} <- order_amount(request, :quantity),
+         {:ok, price} <- order_amount(request, :price),
          {:ok, tif} <- order_time_in_force(request) do
-      {:ok,
-       %{"asset_quantity" => decimal_string(quantity), "limit_price" => decimal_string(price)}
-       |> put_time_in_force(tif)}
+      {:ok, %{"asset_quantity" => quantity, "limit_price" => price} |> put_time_in_force(tif)}
     end
   end
 
@@ -988,26 +1188,20 @@ defmodule DpExchange.Robinhood.Rest do
   # `:stop` -> `"STOP_LOSS"` — was refused with `{:unsupported_order_type, :stop}` on a
   # venue that serves it. Both are accepted; the venue's own spelling is not withdrawn.
   defp order_config(type, request) when type in [:stop, :stop_loss, "stop_loss"] do
-    with {:ok, quantity} <- order_field(request, :quantity),
-         {:ok, stop} <- order_field(request, :stop_price),
+    with {:ok, quantity} <- order_amount(request, :quantity),
+         {:ok, stop} <- order_amount(request, :stop_price),
          {:ok, tif} <- order_time_in_force(request) do
-      {:ok,
-       %{"asset_quantity" => decimal_string(quantity), "stop_price" => decimal_string(stop)}
-       |> put_time_in_force(tif)}
+      {:ok, %{"asset_quantity" => quantity, "stop_price" => stop} |> put_time_in_force(tif)}
     end
   end
 
   defp order_config(type, request) when type in [:stop_limit, "stop_limit"] do
-    with {:ok, quantity} <- order_field(request, :quantity),
-         {:ok, price} <- order_field(request, :price),
-         {:ok, stop} <- order_field(request, :stop_price),
+    with {:ok, quantity} <- order_amount(request, :quantity),
+         {:ok, price} <- order_amount(request, :price),
+         {:ok, stop} <- order_amount(request, :stop_price),
          {:ok, tif} <- order_time_in_force(request) do
       {:ok,
-       %{
-         "asset_quantity" => decimal_string(quantity),
-         "limit_price" => decimal_string(price),
-         "stop_price" => decimal_string(stop)
-       }
+       %{"asset_quantity" => quantity, "limit_price" => price, "stop_price" => stop}
        |> put_time_in_force(tif)}
     end
   end
@@ -1290,6 +1484,12 @@ defmodule DpExchange.Robinhood.Rest do
   defp order_status("filled"), do: :filled
   defp order_status("canceled"), do: :cancelled
   defp order_status("failed"), do: :rejected
+  # `pending` is not in `OrderResponse.state`'s enum, but it IS in the `state` filter's enum
+  # on the same endpoint (`open`, `canceled`, `filled`, `failed`, `pending`), so the venue
+  # does name the word for an order. It is Core's own `:pending`, the same meaning under the
+  # same name -- not a nearest match -- and decoding it as `nil` hid an order the venue had
+  # accepted but not yet opened.
+  defp order_status("pending"), do: :pending
   defp order_status(_other), do: nil
 
   # The reverse, for the `state` filter. A `Core` status atom stringified as-is asked the
@@ -1298,6 +1498,13 @@ defmodule DpExchange.Robinhood.Rest do
   defp order_state_param(:cancelled), do: "canceled"
   defp order_state_param(:rejected), do: "failed"
   defp order_state_param(state), do: state
+
+  # The `type` filter's enum is the venue's `market`/`limit`/`stop_loss`/`stop_limit`. The
+  # shared contract's `:stop` stringified as-is asked for `"stop"`, a word the enum does not
+  # have, so a caller filtering for stop orders by the atom `capabilities/0` declares got a
+  # refusal (or, worse, no rows). Mapped the same way `wire_order_type/1` maps it on a POST.
+  defp order_type_param(type) when type in [:stop, "stop"], do: "stop_loss"
+  defp order_type_param(type), do: type
 
   defp order_time(nil), do: nil
 
@@ -1316,17 +1523,26 @@ defmodule DpExchange.Robinhood.Rest do
   # that never arrives reads as though it had been tested.
   defp query_string(pairs), do: "?" <> URI.encode_query(pairs)
 
+  # **A JSON body travels with `content-type: application/json`; no body travels with
+  # none.** The vendor's own sample client posts with `requests.post(..., json=...)`, which
+  # sets that header, and for the bodiless cancel posts nothing at all
+  # (`json=json.loads(body) if body else None`). This sent a JSON body with NO content-type
+  # (`Req` sets none for a binary body, and `Auth.headers/5` is the three signature headers
+  # only), which an API that parses by content type is entitled to refuse as 415 -- on the
+  # one call that moves funds. And cancel sent `{}` where the vendor's sample sends nothing,
+  # signed as `{}` rather than as the empty string the vendor's example signs. `body: nil`
+  # is no body: signed as `""` and sent as none, exactly as the vendor's client does.
   defp post(path, body, credentials, opts) do
-    encoded = Jason.encode!(body)
+    {encoded, wire_body, extra} = post_body(body)
 
-    # Signed per attempt, not once: see `signer/4`.
+    # Signed per attempt, not once: see `signer/6`.
     url = base_url(opts) <> path
 
     case HttpClient.request(
            :post,
            url,
-           signer("POST", path, encoded, credentials, opts),
-           encoded,
+           signer("POST", path, encoded, credentials, opts, extra),
+           wire_body,
            request_opts(opts)
          ) do
       {:ok, %{status: status, body: response}} when status in 200..299 ->
@@ -1356,8 +1572,20 @@ defmodule DpExchange.Robinhood.Rest do
   # and the venue refused it as unauthorised: `{:refused, _}`, a credential problem the
   # caller does not have. Passing a function makes the client sign each attempt afresh. A
   # write stays safe to retry because `client_order_id` is this venue's idempotency key.
-  defp signer(method, path, body, credentials, opts),
-    do: fn -> Auth.headers(method, path, body, credentials, opts) end
+  defp signer(method, path, body, credentials, opts, extra \\ []) do
+    fn ->
+      with {:ok, headers} <- Auth.headers(method, path, body, credentials, opts) do
+        {:ok, headers ++ extra}
+      end
+    end
+  end
+
+  defp post_body(nil), do: {"", nil, []}
+
+  defp post_body(body) do
+    encoded = Jason.encode!(body)
+    {encoded, encoded, [{"content-type", "application/json"}]}
+  end
 
   # --- request ------------------------------------------------------------
 

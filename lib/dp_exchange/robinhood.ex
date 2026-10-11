@@ -459,12 +459,14 @@ defmodule DpExchange.Robinhood do
   Venue-specific: the second of this venue's two prices, and the only one that accounts for
   size — `get_price/2` is `:unsupported`, so there is no third.
   See `DpExchange.Robinhood.Rest.get_estimated_price/5` — **the endpoint moved from
-  `marketdata` to `trading` between v1 and v2.**
+  `marketdata` to `trading` between v1 and v2.** `side` is `bid`, `ask` or `both`; a
+  `quantity` that is not a positive finite number is refused as `{:error, {:invalid_field,
+  :quantity}}`, and the numeric fields of each result row are returned as `Decimal`.
   """
   @spec get_estimated_price(
           String.t(),
-          String.t(),
-          String.t() | [String.t()],
+          atom() | String.t(),
+          Decimal.t() | number() | String.t() | [Decimal.t() | number() | String.t()],
           map(),
           keyword()
         ) ::

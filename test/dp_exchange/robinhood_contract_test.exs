@@ -23,7 +23,7 @@ defmodule DpExchange.RobinhoodContractTest do
     # `:account_hash` inside the contract would be exactly the venue-specific knowledge the
     # contract exists to keep out of Core.
     endpoint_opts: %{
-      {:get_balances, 2} => [account_number: "contract-account"],
+      {:get_balances, 2} => [account_number: "RH-1"],
       {:get_orders, 2} => [account_number: "contract-account"],
       {:place_order, 3} => [account_number: "contract-account"],
       {:get_order, 3} => [account_number: "contract-account"]

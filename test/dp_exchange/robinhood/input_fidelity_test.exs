@@ -163,10 +163,12 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
       plug = fn conn ->
         send(test_pid, {:page, conn.query_string})
 
+        next = "https://trading.robinhood.com/api/v2/crypto/trading/orders/?cursor=next"
+
         body =
           if conn.query_string =~ "cursor=next",
             do: %{"results" => [], "next" => nil},
-            else: %{"results" => [], "next" => "https://trading.robinhood.com/x?cursor=next"}
+            else: %{"results" => [], "next" => next}
 
         Req.Test.json(conn, body)
       end

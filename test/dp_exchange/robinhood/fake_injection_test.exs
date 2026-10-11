@@ -107,7 +107,7 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
     test "covers the account and trading surface too, not only market data" do
       FakeInjection.bypass_credentials(:robinhood)
 
-      assert {:ok, _balances} = Fake.get_balances(%{}, account_number: "1")
+      assert {:ok, _balances} = Fake.get_balances(%{}, account_number: "RH-1")
       assert {:ok, _accounts} = Fake.get_accounts(%{}, [])
       assert {:ok, _order} = Fake.place_order(%{}, @order, account_number: "1")
       assert {:ok, _order} = Fake.cancel_order(%{}, "id", [])

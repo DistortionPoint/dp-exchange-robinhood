@@ -380,6 +380,12 @@ defmodule DpExchange.RobinhoodTest do
 
       # And they all succeed once credentials are actually given.
       assert {:ok, _balances} = Fake.get_balances(@credentials, account)
+
+      # An account the fake does not hold is refused as `Rest.get_balances/2` refuses one
+      # `get_accounts/2` does not list — not answered with someone's portfolio.
+      assert Fake.get_balances(@credentials, account_number: "RH-2") ==
+               {:error, {:account_not_found, "RH-2"}}
+
       assert {:ok, _accounts} = Fake.get_accounts(@credentials, [])
       assert {:ok, _order} = Fake.place_order(@credentials, @order, account)
       assert {:ok, _order} = Fake.cancel_order(@credentials, "id", [])

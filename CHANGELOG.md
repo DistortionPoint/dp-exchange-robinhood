@@ -19,6 +19,69 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- `Fake.get_balances/2` refuses an account it does not hold with
+  `{:error, {:account_not_found, account}}`, as `Rest.get_balances/2` refuses an account
+  `get_accounts/2` does not list. It answered a portfolio for any account number.
+- The signer is pinned to the vendor's published signature vector. Measured: the published
+  `x-signature` is reproduced only over the Python repr of the example body (what the
+  vendor's snippet actually signs), not the compact JSON its table shows.
+
+Found by reading the signing, order, holdings, account, estimated-price and pagination paths
+against the committed vendor OpenAPI document (2026-10-10).
+
+- **An order id could rewrite the signed path.** `get_order/3` and `cancel_order/3` used
+  `URI.encode/1`, which leaves `/`, `?`, `#` and `&` alone, so an id like `"x/cancel/?y"`
+  signed and sent a different endpoint. The id is now one percent-encoded segment, and a blank
+  id is refused as `{:error, {:missing_field, :id}}` instead of sent as `/orders//cancel/`.
+  `get_top_of_book/3` and `quantization/3` built their `symbol` query the same way and now go
+  through `URI.encode_query/1`, so a symbol cannot smuggle a second parameter into a signed
+  path.
+- **A signed POST went out with no `content-type`.** The vendor's own client sends order
+  bodies as `application/json`; this package sent none. And cancel sent a `{}` body signed as
+  `{}` where the vendor's client sends no body at all (signed as the empty string). An order
+  now carries `content-type: application/json`; cancel sends no body and no content type.
+- **Pagination followed whatever the venue's `next` said.** A `next` on another host was
+  followed with its path re-homed onto the base URL; one with no path raised on `nil <> "?"`;
+  and a `next` that was present but not a string was read as "no more pages", returning a
+  truncated list as complete. A foreign host is now `{:error, {:foreign_next_url, host}}`, a
+  path outside `/api/` is `{:error, {:unexpected_next_path, path}}`, and an unreadable `next`
+  is `{:error, :unexpected_response_shape}`. The host must be the base URL's or
+  `trading.robinhood.com`.
+- **`get_accounts/2` returned the first page as if it were all of them.** It now walks
+  `next` with the same bounded, loop-guarded walk as every other cursor
+  (`{:error, :too_many_account_pages}` on the bound). `get_balances/2` finds its account by
+  number in that list, so an account on page two used to read as
+  `{:error, {:account_not_found, _}}`. A bare object is an account only if it names one: `{}`
+  or `{"detail": ...}` answered with a 200 used to come back as a phantom account.
+- **A quantity or price was sent as whatever `to_string/1` made of it.** `"NaN"`, `"abc"`,
+  `"0"`, `"-1"` and `""` went into the signed body of an order. `place_order/3` (and
+  `Fake.place_order/3`, which shares the validation) now refuses a quantity, price or stop
+  price that is not a positive finite number as `{:error, {:invalid_field, key}}`, a `side`
+  outside `buy`/`sell` as `{:error, {:unsupported_side, side}}`, a blank or non-string `symbol`
+  as `{:error, {:invalid_field, :symbol}}`, and a request that is not a map as
+  `{:error, {:invalid_request, :not_a_map}}` (it raised `BadMapError`).
+- **`get_estimated_price/5` sent unvalidated input and returned float money.** `side` must be
+  `bid`/`ask`/`both` and `quantity` a positive finite number (or a non-empty list of them),
+  refused locally otherwise. The numeric fields of each result row (`quantity`, `bid`, `ask`,
+  `fee_ratio`, `est_fee`, `est_total_cost`, `est_total_credit`) now come back as `Decimal`
+  rather than float. **Behaviour change** for a caller that read them as floats.
+- **`"pending"` orders decoded as an unknown state.** The `state` filter's enum on the orders
+  endpoint includes `pending`; it now decodes as Core's `:pending`.
+- **The `:type` order filter sent `"stop"`** for the contract's `:stop`, a word the venue's
+  enum does not have. It is sent as `"stop_loss"`, as a POST already was.
+- **`quantization/3` answered success for a row with no readable increment**, a rounding rule
+  that states no rounding. Both increments unreadable is now
+  `{:error, {:missing_required_field, :increments}}`; one unreadable is still `nil`.
+- **`Auth.headers/5` with a forwarded `timestamp: nil`** produced an empty `x-timestamp` and a
+  signature over a payload with no timestamp. `nil` is now an absent option.
+- **`Fake.place_order/3` echoed the request** (`quantity: "1"`, `symbol: "btc-usd"`,
+  `:stop_loss`) where the real path returns the decoded order: a canonical symbol, `Decimal`
+  amounts, `:stop`, and `price` / `stop_price` / `time_in_force` only for the types whose
+  config carries them. `Fake.get_order/3` and `Fake.cancel_order/3` now refuse a blank id as
+  the real path does.
+
 ## [0.3.69] - 2026-10-10
 
 ### Fixed

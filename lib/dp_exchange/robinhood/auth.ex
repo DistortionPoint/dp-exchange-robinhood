@@ -63,7 +63,7 @@ defmodule DpExchange.Robinhood.Auth do
 
   def headers(method, path, body, %{api_key: api_key, private_key: private_key}, opts)
       when is_binary(method) and is_binary(path) and is_binary(body) and is_binary(api_key) do
-    timestamp = opts |> Keyword.get(:timestamp, System.system_time(:second)) |> to_string()
+    timestamp = opts |> request_timestamp() |> to_string()
 
     with {:ok, seed} <- credential_seed(api_key, private_key) do
       signed_payload = payload(api_key, timestamp, path, method, body)
@@ -81,6 +81,18 @@ defmodule DpExchange.Robinhood.Auth do
 
   def headers(_method, _path, _body, _credentials, _opts),
     do: {:error, {:missing_credentials, :robinhood}}
+
+  # `Keyword.get(opts, :timestamp, now)` substitutes `now` only for an ABSENT key. This
+  # family forwards `opts` unchanged through every layer, so a forwarded `timestamp: nil`
+  # reached `to_string/1` as `""`: an `x-timestamp:` header that is empty and a signature
+  # over a payload with no timestamp in it, which the venue refuses as unauthorised -- a
+  # credential problem the caller does not have. `nil` is an absent option.
+  defp request_timestamp(opts) do
+    case Keyword.get(opts, :timestamp) do
+      nil -> System.system_time(:second)
+      timestamp -> timestamp
+    end
+  end
 
   @doc """
   Whether `credentials` could sign a request, answered with the refusal `headers/5` would

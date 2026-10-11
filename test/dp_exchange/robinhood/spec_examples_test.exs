@@ -346,7 +346,7 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
              }
     end
 
-    test "response: the example row's values, returned unmodified" do
+    test "response: the example row's values; numbers come back as Decimal, not float" do
       assert {:ok, body} =
                Rest.get_estimated_price(
                  "BTC-USD",
@@ -360,14 +360,23 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
       assert [row] = body["results"]
       assert row["symbol"] == "BTC-USD"
       assert row["side"] == "ask"
-      assert row["quantity"] == 0.1
       assert row["timestamp"] == "2026-09-06T12:34:56Z"
-      assert row["bid"] == 77_800.25
-      assert row["ask"] == 77_850.75
-      assert row["fee_ratio"] == 0.0035
-      assert row["est_fee"] == 27.25
-      assert row["est_total_cost"] == 7812.5
-      assert row["est_total_credit"] == 7780.0
+
+      # Money is not a float: each number comes back as the decimal the wire carried.
+      expected = %{
+        "quantity" => "0.1",
+        "bid" => "77800.25",
+        "ask" => "77850.75",
+        "fee_ratio" => "0.0035",
+        "est_fee" => "27.25",
+        "est_total_cost" => "7812.5",
+        "est_total_credit" => "7780"
+      }
+
+      for {key, text} <- expected do
+        assert %Decimal{} = row[key]
+        assert Decimal.equal?(row[key], Decimal.new(text))
+      end
     end
   end
 
@@ -456,7 +465,7 @@ defmodule DpExchange.Robinhood.SpecExamplesTest do
 
       assert_receive {:spec_request, "POST", path, _query, raw_body}
       assert path == "/api/v2/crypto/trading/orders/#{@order_id}/cancel/"
-      assert Jason.decode!(raw_body) == %{}
+      assert raw_body == ""
     end
 
     test "response: the example's canceled limit order — its nullable average_price, and its limit_price read back" do

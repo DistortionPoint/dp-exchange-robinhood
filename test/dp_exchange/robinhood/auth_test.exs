@@ -31,6 +31,37 @@ defmodule DpExchange.Robinhood.AuthTest do
     end
   end
 
+  describe "the vendor's published signature vector" do
+    # docs/reference/robinhood/openapi/crypto-trading.openapi.json, "Example Signature".
+    # The published header was produced by the vendor's Python snippet, which formats the
+    # body DICT with `f"{body}"` — Python's repr, single-quoted — not the compact JSON the
+    # table shows. Measured: the table's JSON does not reproduce the header; the repr
+    # does. So the vector pins the scheme (field order, uppercase method, Ed25519 over the
+    # 32-byte seed, base64) with the repr as the body bytes. What this package signs is
+    # the exact JSON it sends, which is what the venue verifies against.
+    @vector_body "{'client_order_id': '131de903-5a9c-4260-abc1-28d562a5dcf0', " <>
+                   "'side': 'buy', 'symbol': 'BTC-USD', 'type': 'market', " <>
+                   "'market_order_config': {'asset_quantity': '0.1'}}"
+
+    test "reproduces the published x-signature byte for byte" do
+      credentials = %{
+        api_key: "rh-api-6148effc-c0b1-486c-8940-a1d099456be6",
+        private_key: "xQnTJVeQLmw1/Mg2YimEViSpw/SdJcgNXZ5kQkAXNPU="
+      }
+
+      assert {:ok, headers} =
+               Auth.headers("POST", "/api/v1/crypto/trading/orders/", @vector_body, credentials,
+                 timestamp: 1_698_708_981
+               )
+
+      assert header(headers, "x-timestamp") == "1698708981"
+
+      assert header(headers, "x-signature") ==
+               "q/nEtxp/P2Or3hph3KejBqnw5o9qeuQ+hYRnB56FaHbjDsNUY9KhB1asMxohDnzdVFSD7" <>
+                 "StaTqjSd9U9HvaRAw=="
+    end
+  end
+
   describe "headers/5" do
     test "carries the three headers the venue requires" do
       assert {:ok, headers} =
