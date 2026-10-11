@@ -103,14 +103,17 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_top_of_book(String.t(), map(), keyword()) ::
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
   def get_top_of_book(symbol, credentials, opts) do
-    native = SymbolFormat.to_exchange_symbol(symbol)
-    # `query_string/1`, not `URI.encode/1`: that leaves `&`, `=`, `#` and `/` alone, so a
-    # symbol like `"BTC-USD&symbol=ETH-USD"` smuggled a second parameter into a SIGNED path.
-    path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string([{"symbol", native}])
+    # A symbol that is not a non-empty string is refused before anything is signed;
+    # `SymbolFormat` raised on it in the caller's process, and `""` built `symbol=`.
+    with {:ok, native} <- native_symbol(symbol) do
+      # `query_string/1`, not `URI.encode/1`: that leaves `&`, `=`, `#` and `/` alone, so a
+      # symbol like `"BTC-USD&symbol=ETH-USD"` smuggled a second parameter into a SIGNED path.
+      path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string([{"symbol", native}])
 
-    with {:ok, body} <- get(path, credentials, opts),
-         {:ok, row} <- result_for(body, native) do
-      to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)
+      with {:ok, body} <- get(path, credentials, opts),
+           {:ok, row} <- result_for(body, native) do
+        to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)
+      end
     end
   end
 
@@ -143,14 +146,36 @@ defmodule DpExchange.Robinhood.Rest do
   def get_top_of_book_bulk([], _credentials, _opts), do: {:ok, []}
 
   def get_top_of_book_bulk(symbols, credentials, opts) do
-    query = Enum.map(symbols, &{"symbol", SymbolFormat.to_exchange_symbol(&1)})
-    path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string(query)
+    with {:ok, natives} <- native_symbols(symbols) do
+      path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string(natives)
 
-    with {:ok, body} <- get(path, credentials, opts),
-         {:ok, rows} <- bulk_rows(body) do
-      {:ok, rows |> Enum.map(&row_to_top_of_book/1) |> Enum.reject(&is_nil/1)}
+      with {:ok, body} <- get(path, credentials, opts),
+           {:ok, rows} <- bulk_rows(body) do
+        {:ok, rows |> Enum.map(&row_to_top_of_book/1) |> Enum.reject(&is_nil/1)}
+      end
     end
   end
+
+  # Every symbol is a non-empty string, or the whole call is refused; a repeated symbol is
+  # asked for once.
+  defp native_symbols(symbols) when is_list(symbols) do
+    symbols
+    |> Enum.reduce_while({:ok, []}, fn symbol, {:ok, acc} ->
+      case native_symbol(symbol) do
+        {:ok, native} -> {:cont, {:ok, [native | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, natives} ->
+        {:ok, natives |> Enum.reverse() |> Enum.uniq() |> Enum.map(&{"symbol", &1})}
+
+      error ->
+        error
+    end
+  end
+
+  defp native_symbols(_not_a_list), do: {:error, {:invalid_field, :symbols}}
 
   defp bulk_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
   defp bulk_rows(_other), do: {:error, :unexpected_response_shape}
@@ -345,12 +370,13 @@ defmodule DpExchange.Robinhood.Rest do
   @spec quantization(String.t(), map(), keyword()) ::
           {:ok, map()} | {:error, term()} | {:refused, term()}
   def quantization(symbol, credentials, opts) do
-    native = SymbolFormat.to_exchange_symbol(symbol)
-    path = @trading_pairs_path <> query_string([{"symbol", native}])
+    with {:ok, native} <- native_symbol(symbol) do
+      path = @trading_pairs_path <> query_string([{"symbol", native}])
 
-    with {:ok, body} <- get(path, credentials, opts),
-         {:ok, row} <- result_for(body, native) do
-      to_quantization(row)
+      with {:ok, body} <- get(path, credentials, opts),
+           {:ok, row} <- result_for(body, native) do
+        to_quantization(row)
+      end
     end
   end
 
@@ -908,17 +934,10 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_orders(map(), keyword()) ::
           {:ok, [Order.t()]} | {:error, term()} | {:refused, term()}
   def get_orders(credentials, opts) do
-    with {:ok, account} <- required_account(opts) do
+    with {:ok, account} <- required_account(opts),
+         {:ok, filters} <- order_filters(opts) do
       query =
-        [{"account_number", account}]
-        |> put_query("created_at_start", iso8601_param(Keyword.get(opts, :created_at_start)))
-        |> put_query("created_at_end", iso8601_param(Keyword.get(opts, :created_at_end)))
-        |> put_query("updated_at_start", iso8601_param(Keyword.get(opts, :updated_at_start)))
-        |> put_query("updated_at_end", iso8601_param(Keyword.get(opts, :updated_at_end)))
-        |> put_query("symbol", order_symbol(Keyword.get(opts, :symbol)))
-        |> put_query("side", Keyword.get(opts, :side))
-        |> put_query("type", order_type_param(Keyword.get(opts, :type)))
-        |> put_query("state", order_state_param(Keyword.get(opts, :state)))
+        ([{"account_number", account}] ++ filters)
         |> put_query("cursor", Keyword.get(opts, :cursor))
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
@@ -948,8 +967,86 @@ defmodule DpExchange.Robinhood.Rest do
   # `String.Chars` rendering, not the `T`-separated wire format the vendor's schema
   # documents. A string the caller already built is sent exactly as given; only a
   # `%DateTime{}` struct is reformatted here.
-  defp iso8601_param(%DateTime{} = value), do: DateTime.to_iso8601(value)
-  defp iso8601_param(value), do: value
+  #
+  # Anything else (a `NaiveDateTime`, a `Date`, a number) used to go through `to_string/1` in
+  # Elixir's own format, which the venue does not document: refused instead.
+  defp iso8601_param(nil), do: {:ok, nil}
+  defp iso8601_param(%DateTime{} = value), do: {:ok, DateTime.to_iso8601(value)}
+  defp iso8601_param(value) when is_binary(value), do: {:ok, value}
+  defp iso8601_param(_other), do: :error
+
+  # The `side`, `type` and `state` filters are enums in the committed spec
+  # (docs/reference/robinhood/openapi, `GET /api/v2/crypto/trading/orders/`): side `buy`,
+  # `sell`; type `market`, `limit`, `stop_loss`, `stop_limit`; state `open`, `canceled`,
+  # `filled`, `failed`, `pending` (v2's filter has no `partially_filled`). Contract atoms map
+  # to the venue's words; anything else is refused before signing. `symbol` must be a
+  # non-empty string.
+  defp filter_symbol(nil), do: {:ok, nil}
+
+  defp filter_symbol(symbol) when is_binary(symbol) and symbol != "",
+    do: {:ok, SymbolFormat.to_exchange_symbol(symbol)}
+
+  defp filter_symbol(_other), do: :error
+
+  defp filter_side(nil), do: {:ok, nil}
+  defp filter_side(side) when side in [:buy, "buy"], do: {:ok, "buy"}
+  defp filter_side(side) when side in [:sell, "sell"], do: {:ok, "sell"}
+  defp filter_side(_other), do: :error
+
+  defp filter_type(nil), do: {:ok, nil}
+  defp filter_type(type) when type in [:market, "market"], do: {:ok, "market"}
+  defp filter_type(type) when type in [:limit, "limit"], do: {:ok, "limit"}
+
+  defp filter_type(type) when type in [:stop, :stop_loss, "stop", "stop_loss"],
+    do: {:ok, "stop_loss"}
+
+  defp filter_type(type) when type in [:stop_limit, "stop_limit"], do: {:ok, "stop_limit"}
+  defp filter_type(_other), do: :error
+
+  defp filter_state(nil), do: {:ok, nil}
+  defp filter_state(state) when state in [:open, "open"], do: {:ok, "open"}
+
+  defp filter_state(state) when state in [:cancelled, :canceled, "canceled"],
+    do: {:ok, "canceled"}
+
+  defp filter_state(state) when state in [:filled, "filled"], do: {:ok, "filled"}
+  defp filter_state(state) when state in [:rejected, :failed, "failed"], do: {:ok, "failed"}
+  defp filter_state(state) when state in [:pending, "pending"], do: {:ok, "pending"}
+  defp filter_state(_other), do: :error
+
+  defp order_filters(opts) do
+    Enum.reduce_while(filter_converters(), {:ok, []}, fn {key, convert}, {:ok, acc} ->
+      case convert.(Keyword.get(opts, key)) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, value} -> {:cont, {:ok, acc ++ [{Atom.to_string(key), value}]}}
+        :error -> {:halt, {:error, {:invalid_field, key}}}
+      end
+    end)
+  end
+
+  defp filter_converters do
+    [
+      created_at_start: &iso8601_param/1,
+      created_at_end: &iso8601_param/1,
+      updated_at_start: &iso8601_param/1,
+      updated_at_end: &iso8601_param/1,
+      symbol: &filter_symbol/1,
+      side: &filter_side/1,
+      type: &filter_type/1,
+      state: &filter_state/1
+    ]
+  end
+
+  @doc """
+  Whether the order filters in `opts` (`:created_at_start`, `:created_at_end`,
+  `:updated_at_start`, `:updated_at_end`, `:symbol`, `:side`, `:type`, `:state`) are ones
+  `get_orders/2` would send, answered with its refusal, `{:error, {:invalid_field, key}}`,
+  and without sending anything. Exposed so `DpExchange.Robinhood.Fake` refuses the same.
+  """
+  @spec validate_order_filters(keyword()) :: :ok | {:error, {:invalid_field, atom()}}
+  def validate_order_filters(opts) do
+    with {:ok, _filters} <- order_filters(opts), do: :ok
+  end
 
   @doc """
   One order — `GET /api/v2/crypto/trading/orders/{order_id}/`.
@@ -964,7 +1061,7 @@ defmodule DpExchange.Robinhood.Rest do
   """
   @spec get_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
-  def get_order(credentials, order_id, opts) when is_binary(order_id) do
+  def get_order(credentials, order_id, opts) do
     with {:ok, account} <- required_account(opts),
          {:ok, segment} <- order_id_segment(order_id) do
       path =
@@ -980,11 +1077,15 @@ defmodule DpExchange.Robinhood.Rest do
   # different endpoint's: a `get_order/3` that cancelled, or a `cancel_order/3` aimed at
   # another resource. Every reserved character is percent-encoded instead. A blank id would
   # collapse the segment (`/orders//cancel/`) and is refused rather than sent.
-  defp order_id_segment(order_id) do
+  defp order_id_segment(order_id) when is_binary(order_id) do
     if String.trim(order_id) == "",
       do: {:error, {:missing_field, :id}},
       else: {:ok, URI.encode(order_id, &URI.char_unreserved?/1)}
   end
+
+  # `nil` or an atom raised `FunctionClauseError` in the caller's process, on a call that
+  # moves funds; it is a missing id like a blank one.
+  defp order_id_segment(_not_a_string), do: {:error, {:missing_field, :id}}
 
   @doc """
   Places an order — `POST /api/v2/crypto/trading/orders/`. **This moves funds.**
@@ -1012,8 +1113,8 @@ defmodule DpExchange.Robinhood.Rest do
   {:invalid_field, key}}`, a `symbol` that is not a non-empty string, and a request that is
   not a map as `{:error, {:invalid_request, :not_a_map}}`. The body is sent with
   `content-type: application/json`, as the vendor's own client sends it. The response body
-  must be an order with an `id`, otherwise `{:error, {:missing_required_field, :id}}` (an object without one) or
-  `{:error, :unexpected_response_shape}` (not an object).
+  must be an order with an `id`, otherwise `{:error, {:missing_required_field, :id}}` (an
+  object without one) or `{:error, :unexpected_response_shape}` (not an object).
   """
   @spec place_order(map(), map(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
@@ -1048,7 +1149,7 @@ defmodule DpExchange.Robinhood.Rest do
   """
   @spec cancel_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
-  def cancel_order(credentials, order_id, opts) when is_binary(order_id) do
+  def cancel_order(credentials, order_id, opts) do
     with {:ok, segment} <- order_id_segment(order_id) do
       path = "/api/v2/crypto/trading/orders/" <> segment <> "/cancel/"
 
@@ -1057,14 +1158,18 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   defp required_account(opts) do
+    # A blank account number is no account number: `account_number=` went out signed and the
+    # venue answered for nothing it could name.
     case Keyword.get(opts, :account_number) do
-      account when is_binary(account) -> {:ok, account}
-      _missing -> {:error, {:account_number_required, :robinhood}}
+      account when is_binary(account) ->
+        if String.trim(account) == "",
+          do: {:error, {:account_number_required, :robinhood}},
+          else: {:ok, account}
+
+      _missing ->
+        {:error, {:account_number_required, :robinhood}}
     end
   end
-
-  defp order_symbol(nil), do: nil
-  defp order_symbol(symbol), do: SymbolFormat.to_exchange_symbol(symbol)
 
   @doc """
   Whether `request` is an order this package would send, answered with the refusal
@@ -1520,20 +1625,6 @@ defmodule DpExchange.Robinhood.Rest do
   # accepted but not yet opened.
   defp order_status("pending"), do: :pending
   defp order_status(_other), do: nil
-
-  # The reverse, for the `state` filter. A `Core` status atom stringified as-is asked the
-  # venue for `"cancelled"` and `"rejected"`, words its enum does not have. A string is the
-  # venue's own word and is sent unchanged.
-  defp order_state_param(:cancelled), do: "canceled"
-  defp order_state_param(:rejected), do: "failed"
-  defp order_state_param(state), do: state
-
-  # The `type` filter's enum is the venue's `market`/`limit`/`stop_loss`/`stop_limit`. The
-  # shared contract's `:stop` stringified as-is asked for `"stop"`, a word the enum does not
-  # have, so a caller filtering for stop orders by the atom `capabilities/0` declares got a
-  # refusal (or, worse, no rows). Mapped the same way `wire_order_type/1` maps it on a POST.
-  defp order_type_param(type) when type in [:stop, "stop"], do: "stop_loss"
-  defp order_type_param(type), do: type
 
   defp order_time(nil), do: nil
 

@@ -817,7 +817,7 @@ defmodule DpExchange.Robinhood do
   # caller's to fix.
   defp checked_symbols(symbols) when is_list(symbols) do
     if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
-      do: {:ok, Enum.map(symbols, &String.upcase/1)},
+      do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
       else: {:error, {:invalid_field, :symbols}}
   end
 

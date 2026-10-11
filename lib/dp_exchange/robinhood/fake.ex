@@ -107,7 +107,10 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_top_of_book(symbol, opts \\ []) do
     with_injection(symbol, fn ->
-      with :ok <- authenticated(opts), do: listed_book(symbol)
+      with :ok <- fake_symbol(symbol),
+           :ok <- authenticated(opts) do
+        listed_book(symbol)
+      end
     end)
   end
 
@@ -409,6 +412,7 @@ defmodule DpExchange.Robinhood.Fake do
   def get_orders(credentials, opts) do
     with_injection(fn ->
       with {:ok, _account} <- fake_account(opts),
+           :ok <- Rest.validate_order_filters(opts),
            :ok <- authenticated_credentials(credentials) do
         placed = @orders_key |> Process.get(%{}) |> Map.values() |> Enum.sort_by(& &1.id)
         {:ok, Enum.filter(placed, &order_matches?(&1, opts))}
@@ -456,6 +460,13 @@ defmodule DpExchange.Robinhood.Fake do
     if String.trim(id) == "", do: {:error, {:missing_field, :id}}, else: :ok
   end
 
+  defp fake_order_id(_not_a_string), do: {:error, {:missing_field, :id}}
+
+  # `Rest` refuses a symbol that is not a non-empty string before signing; the canonicaliser
+  # raises on one.
+  defp fake_symbol(symbol) when is_binary(symbol) and symbol != "", do: :ok
+  defp fake_symbol(_not_a_symbol), do: {:error, {:invalid_field, :symbol}}
+
   # After credentials, as in `Rest.get_balances/2`: the lookup needs the signed
   # `get_accounts/2` reply before it can say an account is not there.
   defp held_account(@account_number), do: :ok
@@ -465,8 +476,13 @@ defmodule DpExchange.Robinhood.Fake do
   # let a v1 habit pass here and fail against the venue.
   defp fake_account(opts) do
     case Keyword.get(opts, :account_number) do
-      account when is_binary(account) -> {:ok, account}
-      _missing -> {:error, {:account_number_required, :robinhood}}
+      account when is_binary(account) ->
+        if String.trim(account) == "",
+          do: {:error, {:account_number_required, :robinhood}},
+          else: {:ok, account}
+
+      _missing ->
+        {:error, {:account_number_required, :robinhood}}
     end
   end
 
@@ -527,7 +543,8 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def quantization(symbol, opts \\ []) do
     with_injection(symbol, fn ->
-      with :ok <- authenticated(opts),
+      with :ok <- fake_symbol(symbol),
+           :ok <- authenticated(opts),
            true <- listed?(symbol) || unlisted(SymbolFormat.to_canonical_symbol(symbol)) do
         {:ok,
          %{
@@ -803,7 +820,7 @@ defmodule DpExchange.Robinhood.Fake do
   # real `Feed`); the fake used to raise on a non-list and accept a non-binary element.
   defp checked_symbols(symbols) when is_list(symbols) do
     if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
-      do: {:ok, Enum.map(symbols, &String.upcase/1)},
+      do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
       else: {:error, {:invalid_field, :symbols}}
   end
 

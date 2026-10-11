@@ -19,6 +19,32 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Calls with unusable arguments raised in the caller's process or went out with an empty
+  parameter.** `Rest.get_top_of_book/3` and `quantization/3` raised `FunctionClauseError`
+  on a symbol that was not a string and signed `symbol=` for `""`; `get_order/3` and
+  `cancel_order/3` raised on an id that was not a string; `get_top_of_book_bulk/3` raised on
+  any non-string symbol in its list. They now refuse locally, before anything is signed:
+  `{:error, {:invalid_field, :symbol}}`, `{:error, {:missing_field, :id}}` and
+  `{:error, {:invalid_field, :symbol}}` / `{:invalid_field, :symbols}` respectively.
+- **A blank `:account_number` (`""`, `"  "`) was signed and sent as `account_number=`.** It is
+  now refused as `{:error, {:account_number_required, :robinhood}}`, like an absent one.
+- **A repeated symbol was asked for twice.** The bulk `best_bid_ask` read sends each symbol
+  once, and `subscribe/2`, `unsubscribe/2` and `update_symbols/2` de-duplicate after
+  upper-casing (`["btc-usd", "BTC-USD"]` was two entries in the polled set).
+- **`get_orders/2` sent filters the venue's enums do not have.** `side` (`buy`, `sell`),
+  `type` (`market`, `limit`, `stop_loss`, `stop_limit`; `:stop` is sent as `stop_loss`) and
+  `state` (`open`, `canceled`, `filled`, `failed`, `pending`; `:cancelled` and `:rejected`
+  are mapped) are checked against the committed spec. Anything else, including
+  `partially_filled` (not in v2's filter enum), is refused as `{:error, {:invalid_field,
+  key}}` before signing; so is a `symbol` that is not a non-empty string. The four date
+  filters take a `%DateTime{}` (ISO 8601) or a string; a `NaiveDateTime`, `Date` or number
+  was sent in Elixir's own format and is now refused the same way.
+  `Rest.validate_order_filters/1` is public for the Fake.
+- `DpExchange.Robinhood.Fake` mirrors all of the above (symbol, order id, blank account,
+  order filters).
+
 ## [0.3.74] - 2026-10-11
 
 ### Fixed
