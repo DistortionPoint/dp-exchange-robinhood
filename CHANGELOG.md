@@ -19,6 +19,30 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `:bisect_budget_ms` that was not a positive integer broke every cycle.** A string, a
+  float, `0` or a negative number made the deadline arithmetic raise inside the fetch, so the
+  feed delivered nothing, every cycle, with only a fetch failure to show for it. The feed now
+  refuses to start: `{:error, {:invalid_option, :bisect_budget_ms}}`.
+- **A rejected key still cost a second request.** When the cycle's main request came back 401
+  or 403 and symbols were remembered as refused, those were asked for as well, to be told the
+  same. They are not asked for after an authentication failure.
+- **`Fake.subscribe_notices/1` accepted a `:to` the real feed refuses.** A string, a `{:via,
+  ...}` tuple or a number answered `:ok`; it is now `{:error, {:invalid_field, :to}}`, with
+  `nil` meaning the caller, as in `Feed`.
+- Docs: `Feed.start_link/1` and `Feed.child_spec/1` have `@doc`; the README pin is
+  `~> 0.3.77`; `usage-rules.md` states the poll's cadence, its refusal handling and its
+  options.
+
+### Changed
+
+- Tests: the "dropping the refused symbol" test passed whether or not the symbol was dropped
+  (the remembered-refusal path sends the same bulk request); it now also requires that the
+  symbol is no longer asked for on its own. The `credentials: nil` feed test asserts that no
+  request is sent and no book delivered. Waits on spawned processes use 5_000 ms, and the
+  facade's notice-registration test no longer races the first failed cycle.
+
 ## [0.3.77] - 2026-10-11
 
 ### Fixed

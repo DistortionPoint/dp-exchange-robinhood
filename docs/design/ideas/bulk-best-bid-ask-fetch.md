@@ -42,7 +42,8 @@ signed requests a cycle before, 1 after.
 **2026-09-24: the per-symbol fallback was replaced.** As first shipped, a refused bulk call
 fell back to one request per symbol, sequentially, inside `PollingFeed`'s fetch, for every
 cycle the bad symbol stayed in scope. That fetch is killed at 30s and this venue's limiter
-allows 10 requests a second, so a large enough universe could not finish. A killed fetch
+was then declared at 10 requests a second (it is now the vendor's documented 100 a minute,
+bursts of 300), so a large enough universe could not finish. A killed fetch
 publishes nothing, so one bad symbol silenced every symbol, every cycle. It also fell back
 on a 401, where every symbol is refused alike. Now `Feed.fetch_all/5` bisects a refused
 batch within a 20s budget, remembers a refused symbol (`state.refused`) so the next bulk

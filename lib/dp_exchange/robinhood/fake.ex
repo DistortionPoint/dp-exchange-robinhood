@@ -729,11 +729,19 @@ defmodule DpExchange.Robinhood.Fake do
   `{:error, :feed_not_started}` — the real facade's answer when its feed is not running —
   reachable here at all: `FakeInjection.fail_always(:robinhood, {:error, :feed_not_started})`
   or `queue_failures/2,3` produces it, exactly as they produce any other queued outcome.
-  With nothing queued, this fake has no feed of its own to be down, so it answers `:ok`.
+  With nothing queued, this fake has no feed of its own to be down, so it answers `:ok` --
+  except for a `:to` that is neither a pid nor a registered name, which is refused as
+  `{:error, {:invalid_field, :to}}`, as the real feed refuses it.
   """
   @impl true
-  def subscribe_notices(_opts \\ []) do
-    with_injection(fn -> :ok end)
+  def subscribe_notices(opts \\ []) do
+    with_injection(fn ->
+      # Refuses what the real feed refuses: a `:to` that is neither a pid nor a registered
+      # name (`nil` means the caller, as there).
+      to = DpExchange.Core.Config.opt(opts, :to, self())
+
+      if is_pid(to) or is_atom(to), do: :ok, else: {:error, {:invalid_field, :to}}
+    end)
   end
 
   defp subscribed, do: Process.get(__MODULE__, MapSet.new())

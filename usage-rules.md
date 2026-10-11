@@ -61,6 +61,16 @@ The one visible difference is `coverage/1`, which reports **`:internal_poll`** r
 Do not build a poll of your own on top of this. The package already polls, paced against
 this venue's budget, and a second loop doubles the request count for no extra data.
 
+**Cadence and cost.** One cycle every 30 seconds (`interval_ms:`, default `30_000`), and each
+cycle is ONE signed request carrying every wanted symbol. If the venue refuses the whole
+request (400 or 404), the batch is split in half and asked again, down to single symbols, for
+at most `bisect_budget_ms:` (default `20_000`; a positive integer or the feed does not start,
+`{:invalid_option, :bisect_budget_ms}`). A symbol the venue refused alone is delivered to
+`subscriber:` as `{:dp_exchange, :robinhood, {:refused, symbol, reason}}`, left out of the
+bulk request from then on, and asked for by itself each cycle until it answers again or you
+drop it. A 401 or 403 is not split and blames no symbol: it is the cycle's error. A symbol the
+venue simply omits from a response is silence, retried next cycle, never a refusal.
+
 ## A monitoring process can subscribe to notices separately from market data
 
 **Pass `subscriber:`, because there is no default.** A feed started without one delivers

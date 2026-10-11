@@ -328,7 +328,10 @@ defmodule DpExchange.RobinhoodTest do
           subscriber: inert_subscriber,
           credentials: @credentials,
           symbols: ["BTC-USD"],
-          start_delay_ms: 0,
+          # A start delay, not 0: the outage notice fires once, on the first failed cycle,
+          # and a feed that polled at once could raise it before the registration below
+          # reached it, which would then never be sent again.
+          start_delay_ms: 300,
           interval_ms: 40,
           retry_attempts: 0,
           limiter: permissive_notice_limiter(),
@@ -340,7 +343,7 @@ defmodule DpExchange.RobinhoodTest do
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Notice{kind: :coverage_change, severity: :warning} =
                         notice},
-                     500
+                     5_000
 
       assert notice.message =~ "delivered nothing"
     end
@@ -625,6 +628,16 @@ defmodule DpExchange.RobinhoodTest do
       DpExchange.Core.FakeInjection.fail_always(:robinhood, {:error, :feed_not_started})
 
       assert Fake.subscribe_notices(to: self()) == {:error, :feed_not_started}
+    end
+
+    test "subscribe_notices/1 refuses a :to the real feed refuses, and defaults nil to the caller" do
+      for bad <- ["watcher", {:via, Registry, {:r, :k}}, 5] do
+        assert Fake.subscribe_notices(to: bad) == {:error, {:invalid_field, :to}}
+      end
+
+      assert Fake.subscribe_notices(to: nil) == :ok
+      assert Fake.subscribe_notices(to: self()) == :ok
+      assert Fake.subscribe_notices(to: :some_registered_name) == :ok
     end
   end
 

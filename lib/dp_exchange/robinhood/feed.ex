@@ -106,9 +106,10 @@ defmodule DpExchange.Robinhood.Feed do
     asked for in a request of their own, and bisected again if more than one, so one that
     starts answering rejoins at once, and one still refused is reported again, once per
     cycle, as before.
-  - **A 401 is not split.** An unauthenticated request is refused for every symbol alike.
-    It is returned as the cycle's error, and `PollingFeed`'s "delivering nothing" notice
-    says so, with no per-symbol refusals attributed to symbols that did nothing wrong.
+  - **A 401 or 403 is not split.** An unauthenticated request is refused for every symbol
+    alike. It is returned as the cycle's error, and `PollingFeed`'s "delivering nothing"
+    notice says so, with no per-symbol refusals attributed to symbols that did nothing wrong.
+    The remembered-refused symbols are not asked for in that cycle either.
 
   ## `acquire`, not `check`
 
@@ -232,11 +233,21 @@ defmodule DpExchange.Robinhood.Feed do
   # behind something should WAIT for it, never die of it.
   @call_timeout 15_000
 
+  @doc """
+  Starts the feed, registered as `opts[:name]` (default: this module).
+
+  Refuses to start, as `{:error, {:invalid_option, key}}`, when `:symbols` is not a list of
+  non-blank strings, `:subscriber` is neither a pid nor a registered name, or
+  `:bisect_budget_ms` is not a positive integer.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
+  @doc """
+  The child spec for supervising this feed directly, with `opts[:credentials]` wrapped.
+  """
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   # `Credentials.wrap_opt/1` for the same reason the venue module's own `child_spec/1` does
   # it (dp-exchange-core issue #29): whatever supervises this child stores these args and
@@ -344,12 +355,20 @@ defmodule DpExchange.Robinhood.Feed do
     symbols = boot_symbols(Config.opt(opts, :symbols, []))
     subscriber? = subscriber?(Config.opt(opts, :subscriber, nil))
 
-    case {symbols, subscriber?} do
-      {{:ok, symbols}, true} -> init_feed(opts, symbols)
-      {:error, _subscriber?} -> {:stop, {:invalid_option, :symbols}}
-      {{:ok, _symbols}, false} -> {:stop, {:invalid_option, :subscriber}}
+    budget? = valid_budget?(Config.opt(opts, :bisect_budget_ms, @bisect_budget_ms))
+
+    case {symbols, subscriber?, budget?} do
+      {{:ok, symbols}, true, true} -> init_feed(opts, symbols)
+      {:error, _subscriber?, _budget?} -> {:stop, {:invalid_option, :symbols}}
+      {{:ok, _symbols}, false, _budget?} -> {:stop, {:invalid_option, :subscriber}}
+      {{:ok, _symbols}, true, false} -> {:stop, {:invalid_option, :bisect_budget_ms}}
     end
   end
+
+  # A budget that is not a positive integer made every cycle's deadline arithmetic raise in the
+  # fetch task, so the feed delivered nothing, cycle after cycle, with only a fetch failure to
+  # show for it. Refused at start instead.
+  defp valid_budget?(budget), do: is_integer(budget) and budget > 0
 
   # A pid, a registered name, or none. Anything else has no `Core.Fanout.resolve/1` clause and
   # would crash this feed on its first delivery.
@@ -521,12 +540,27 @@ defmodule DpExchange.Robinhood.Feed do
     }
 
     # Only the cycle's first request runs on the caller's own timeout.
-    outcomes = resolve(active, ctx, false) ++ resolve(suspect, ctx, true)
+    active_outcomes = resolve(active, ctx, false)
+
+    # A credential the venue rejected is rejected for the remembered symbols too, so asking
+    # for them as well would spend a request to learn what the first one already said.
+    outcomes =
+      if auth_failure?(active_outcomes),
+        do: active_outcomes,
+        else: active_outcomes ++ resolve(suspect, ctx, true)
 
     case for({:events, events} <- outcomes, do: events) |> List.flatten() do
       [] -> no_events(outcomes)
       events -> {:ok, events}
     end
+  end
+
+  defp auth_failure?(outcomes) do
+    Enum.any?(outcomes, fn
+      {:error, {:venue_error, status}} when status in [401, 403] -> true
+      {:error, {:venue_error, status, _detail}} when status in [401, 403] -> true
+      _other -> false
+    end)
   end
 
   defp no_events([]), do: {:ok, []}

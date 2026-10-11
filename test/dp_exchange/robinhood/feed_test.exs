@@ -92,8 +92,8 @@ defmodule DpExchange.Robinhood.FeedTest do
       ^expected ->
         :ok
 
-      other when waited >= 2_000 ->
-        flunk("coverage was #{inspect(other)}, not #{inspect(expected)}, after 2000ms")
+      other when waited >= 5_000 ->
+        flunk("coverage was #{inspect(other)}, not #{inspect(expected)}, after 5000ms")
 
       _other ->
         Process.sleep(10)
@@ -325,7 +325,8 @@ defmodule DpExchange.Robinhood.FeedTest do
       _settled = :sys.get_state(feed)
 
       assert_receive {:dp_exchange, :robinhood,
-                      %Notice{kind: :degraded, severity: :warning, details: details}}
+                      %Notice{kind: :degraded, severity: :warning, details: details}},
+                     5_000
 
       assert details.bound == 1
       assert details.dropping == :newest
@@ -548,7 +549,14 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 5_000
       :ok = Feed.update_symbols(feed, ["BTC-USD", "ETH-USD"])
 
+      # Two cycles of the reduced set, not one. The refused symbol is remembered, so the
+      # bulk request without it is sent whether or not it was dropped; what dropping changes
+      # is that it is no longer asked for on its own. A request for it that was already in
+      # flight at the update is consumed by the first wait, and the second cycle began
+      # after the update, so a `[bad_symbol]` request right behind it means it was kept.
       assert_bulk_request_for(["BTC-USD", "ETH-USD"])
+      assert_bulk_request_for(["BTC-USD", "ETH-USD"])
+      refute_receive {:request, [^bad_symbol]}, 300
     end
 
     # A venue that refuses any request containing `bad` (400 for a batch, 404 alone) and
@@ -669,9 +677,72 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
 
     test "credentials: nil starts the feed and refuses the fetch instead of crashing init" do
-      feed = start_feed(credentials: nil)
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+        responding(@good_book).(conn)
+      end
+
+      feed = start_feed(credentials: nil, interval_ms: 60, plug: plug)
       assert Process.alive?(feed)
+
+      # Several cycles pass, and none of them reaches the venue or delivers a book: the
+      # fetch is refused before anything is signed.
+      refute_receive {:request, _symbols}, 500
+      refute_received {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
       assert Feed.coverage(feed) == %{}
+    end
+
+    test "a remembered symbol is not asked for after the key itself was refused" do
+      {:ok, unauthorized} = Agent.start_link(fn -> false end)
+      test_pid = self()
+      bulk_plug = refusing("LTC-USD")
+
+      plug = fn conn ->
+        if Agent.get(unauthorized, & &1) do
+          send(test_pid, {:request, query_symbols(conn.query_string)})
+
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(401, Jason.encode!(%{"detail" => "Not authenticated"}))
+        else
+          bulk_plug.(conn)
+        end
+      end
+
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD", "LTC-USD"],
+        interval_ms: 800,
+        retry_attempts: 0,
+        plug: plug
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 5_000
+
+      # The cycle that produced the refusal has sent every request it will send.
+      _cycle_one = drain_requests()
+      Agent.update(unauthorized, fn _was -> true end)
+
+      # The next cycle asks for the two live symbols, is told 401, and stops: the remembered
+      # symbol would only be told the same.
+      assert_receive {:request, ["BTC-USD", "ETH-USD"]}, 5_000
+      refute_receive {:request, ["LTC-USD"]}, 300
+    end
+
+    test "a :bisect_budget_ms that is not a positive integer stops the feed at init" do
+      Process.flag(:trap_exit, true)
+
+      for bad <- [0, -1, "20", 1.5, :infinity] do
+        assert {:error, {:invalid_option, :bisect_budget_ms}} =
+                 Feed.start_link(
+                   name: :"feed_#{System.unique_integer([:positive])}",
+                   credentials: @credentials,
+                   symbols: [],
+                   bisect_budget_ms: bad,
+                   start_delay_ms: 60_000
+                 )
+      end
     end
 
     test "a remembered symbol that starts answering rejoins" do
