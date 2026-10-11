@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.77] - 2026-10-11
+
 ### Fixed
 
 - **A non-UUID `client_order_id` was sent.** The spec types it `format: uuid` and the venue
