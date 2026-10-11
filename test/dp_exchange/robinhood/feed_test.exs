@@ -1382,14 +1382,122 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  describe "data subscribers registered by add_symbols/3 (the facade's subscribe/2 `to:`)" do
+    # A process that forwards every message it gets to the test, tagged with `tag`, so the
+    # test can tell recipients apart.
+    defp relay(tag) do
+      me = self()
+
+      spawn(fn ->
+        relay_loop = fn loop ->
+          receive do
+            message ->
+              send(me, {tag, message})
+              loop.(loop)
+          end
+        end
+
+        relay_loop.(relay_loop)
+      end)
+    end
+
+    test "a registered pid receives the polled books beside the boot :subscriber" do
+      feed = start_feed(symbols: [], interval_ms: 100)
+      other = relay(:other)
+      on_exit(fn -> Process.exit(other, :kill) end)
+
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD"], other)
+
+      assert_receive {:other,
+                      {:dp_exchange, :robinhood,
+                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}}},
+                     5_000
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     5_000
+    end
+
+    test "add_symbols with no subscriber registers nobody and the boot subscriber keeps receiving" do
+      feed = start_feed(symbols: [], interval_ms: 100)
+
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD"])
+      assert :sys.get_state(feed).data_subscribers == MapSet.new()
+
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+    end
+
+    test "registering the boot subscriber again neither duplicates delivery nor monitors it" do
+      feed = start_feed(symbols: [], interval_ms: 100)
+
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD"], self())
+
+      state = :sys.get_state(feed)
+      assert state.data_subscribers == MapSet.new()
+      assert state.monitors == %{}
+    end
+
+    test "a registered pid that dies is removed and its monitor forgotten" do
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+      other = spawn(fn -> Process.sleep(:infinity) end)
+
+      assert :ok = Feed.add_symbols(feed, [], other)
+      assert MapSet.member?(:sys.get_state(feed).data_subscribers, other)
+      assert Map.has_key?(:sys.get_state(feed).monitors, other)
+
+      ref = Process.monitor(other)
+      Process.exit(other, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^other, _reason}, 5_000
+
+      # A call is answered only after the feed's own `:DOWN` has been handled.
+      state = :sys.get_state(feed)
+      refute MapSet.member?(state.data_subscribers, other)
+      refute Map.has_key?(state.monitors, other)
+      assert Process.alive?(feed)
+    end
+
+    test "a registered name is kept and never monitored" do
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+      name = :"rh_data_name_#{System.unique_integer([:positive])}"
+
+      assert :ok = Feed.add_symbols(feed, [], name)
+
+      state = :sys.get_state(feed)
+      assert MapSet.member?(state.data_subscribers, name)
+      assert state.monitors == %{}
+    end
+
+    test "a subscriber that is not a pid or a name is refused and nothing changes" do
+      feed = start_feed(symbols: ["BTC-USD"], start_delay_ms: 60_000)
+
+      for bad <- ["watcher", 5, true, false, {:via, Registry, {:r, :k}}] do
+        assert Feed.add_symbols(feed, ["ETH-USD"], bad) == {:error, {:invalid_subscriber, bad}}
+      end
+
+      assert Feed.wanted(feed) == ["BTC-USD"]
+      assert :sys.get_state(feed).data_subscribers == MapSet.new()
+    end
+
+    test "a bad symbol list registers nobody" do
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+      other = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(other, :kill) end)
+
+      assert Feed.add_symbols(feed, :nope, other) == {:error, {:invalid_symbols, :nope}}
+      assert :sys.get_state(feed).data_subscribers == MapSet.new()
+    end
+  end
+
   describe "the feed's own calls refuse what would crash it" do
     test "a symbol list that is not non-blank strings is refused and the set is kept" do
       feed = start_feed(symbols: ["BTC-USD"], start_delay_ms: 60_000)
 
-      for bad <- [:btc, "BTC-USD", [nil], [:btc], [""], ["ETH-USD", "  "]] do
-        assert Feed.update_symbols(feed, bad) == {:error, {:invalid_field, :symbols}}
-        assert Feed.add_symbols(feed, bad) == {:error, {:invalid_field, :symbols}}
-        assert Feed.remove_symbols(feed, bad) == {:error, {:invalid_field, :symbols}}
+      for bad <- [:btc, "BTC-USD", nil, [nil], [:btc], [""], ["ETH-USD", "  "], ["A" | "B"]] do
+        expected = {:error, {:invalid_symbols, bad}}
+
+        assert Feed.update_symbols(feed, bad) == expected
+        assert Feed.add_symbols(feed, bad) == expected
+        assert Feed.remove_symbols(feed, bad) == expected
       end
 
       assert Process.alive?(feed)
@@ -1412,12 +1520,27 @@ defmodule DpExchange.Robinhood.FeedTest do
     test "a notice subscriber that is not a pid or a name is refused, not stored" do
       feed = start_feed(symbols: [], start_delay_ms: 60_000)
 
-      for bad <- ["watcher", {:via, Registry, {:r, :k}}, 5] do
-        assert Feed.subscribe_notices(feed, to: bad) == {:error, {:invalid_field, :to}}
+      for bad <- ["watcher", {:via, Registry, {:r, :k}}, 5, true, false] do
+        assert Feed.subscribe_notices(feed, to: bad) == {:error, {:invalid_subscriber, bad}}
       end
 
       assert MapSet.size(:sys.get_state(feed).notice_subscribers) == 1
       assert Process.alive?(feed)
+    end
+
+    test "a :subscriber of true or false stops the feed at init" do
+      Process.flag(:trap_exit, true)
+
+      for bad <- [true, false] do
+        assert {:error, {:invalid_option, :subscriber}} =
+                 Feed.start_link(
+                   name: :"feed_#{System.unique_integer([:positive])}",
+                   credentials: @credentials,
+                   symbols: [],
+                   subscriber: bad,
+                   start_delay_ms: 60_000
+                 )
+      end
     end
 
     test "a :subscriber that is not a pid or a name stops the feed at init" do

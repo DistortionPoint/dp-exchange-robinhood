@@ -48,7 +48,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
 
       assert Robinhood.coverage(feed: feed) == %{}
       assert Robinhood.wanted(feed: feed) == []
-      assert Robinhood.coverage_by_kind(feed: feed) == %{top_of_book: %{}}
+      assert Robinhood.coverage_by_kind(feed: feed) == %{}
     end
   end
 
@@ -70,8 +70,15 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
       assert Fake.get_balances(bad, @account) == expected
     end
 
-    test "a nil private key is refused rather than accepted" do
+    test "a nil private key is missing credentials, as in the real signer" do
       bad = %{@credentials | private_key: nil}
+
+      assert Fake.get_accounts(bad, []) == {:error, {:missing_credentials, :robinhood}}
+      assert Auth.validate_credentials(bad) == {:error, {:missing_credentials, :robinhood}}
+    end
+
+    test "a private key of another type is not_a_string" do
+      bad = %{@credentials | private_key: 5}
 
       assert Fake.get_accounts(bad, []) == {:error, {:invalid_private_key, :not_a_string}}
     end

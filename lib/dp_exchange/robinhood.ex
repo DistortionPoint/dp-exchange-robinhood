@@ -600,10 +600,20 @@ defmodule DpExchange.Robinhood do
   # restarted from its boot-time opts, so every later subscription and every notice
   # registration was lost to one bad argument. A non-binary or blank element would have been
   # polled as a symbol, and a bulk request carrying it is refused whole.
+  #
+  # **`opts[:to]` is honoured** (default: the calling process). The market data this feed
+  # polls reaches every pid that called `subscribe/2`, and the `:subscriber` the feed was
+  # started with. This used to ignore `to:` and deliver only to that boot-time subscriber,
+  # against `c:DpExchange.Core.Venue.subscribe/2`'s "events arrive as messages to the
+  # subscribing process, or to a pid given in `opts`". Arguments are checked, symbols then
+  # subscriber, before the feed is looked at, so a bad argument answers the same whether or
+  # not a feed is running: `{:error, {:invalid_symbols, value}}` or `{:error,
+  # {:invalid_subscriber, value}}`. `subscribe([])` registers the subscriber and polls nothing.
   def subscribe(symbols, opts \\ []) do
-    with {:ok, symbols} <- checked_symbols(symbols) do
+    with {:ok, symbols} <- Feed.canonical_symbols(symbols),
+         {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
       feed_call(
-        fn -> Feed.add_symbols(feed(opts), symbols) end,
+        fn -> Feed.add_symbols(feed(opts), symbols, to) end,
         {:error, :feed_not_started}
       )
     end
@@ -611,14 +621,14 @@ defmodule DpExchange.Robinhood do
 
   @impl true
   def unsubscribe(symbols, opts \\ []) do
-    with {:ok, symbols} <- checked_symbols(symbols) do
+    with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
       feed_call(fn -> Feed.remove_symbols(feed(opts), symbols) end, :ok)
     end
   end
 
   @impl true
   def update_symbols(symbols, opts \\ []) do
-    with {:ok, symbols} <- checked_symbols(symbols) do
+    with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
       feed_call(
         fn -> Feed.update_symbols(feed(opts), symbols) end,
         {:error, :feed_not_started}
@@ -677,9 +687,9 @@ defmodule DpExchange.Robinhood do
   def coverage_by_kind(opts \\ []) do
     feed = feed(opts)
 
-    if alive?(feed),
-      do: feed_read(fn -> Feed.coverage_by_kind(feed) end, %{top_of_book: %{}}),
-      else: %{top_of_book: %{}}
+    # No feed (or one that does not answer) is `%{}`, as on every other venue: nothing is
+    # observed, so no kind is reported. A running feed reports `%{top_of_book: coverage}`.
+    if alive?(feed), do: feed_read(fn -> Feed.coverage_by_kind(feed) end, %{}), else: %{}
   end
 
   @doc """
@@ -695,13 +705,16 @@ defmodule DpExchange.Robinhood do
 
   `{:error, :feed_not_started}` when this venue's feed is not running, matching
   `subscribe/2` and `update_symbols/2` rather than silently discarding the registration.
-  A `:to` that is neither a pid nor a registered name is `{:error, {:invalid_field, :to}}`.
+  A `:to` that is neither a pid nor a registered name (`true` and `false` are not names) is
+  `{:error, {:invalid_subscriber, to}}`, checked before the feed is looked at.
   """
   @impl true
   @spec subscribe_notices(keyword()) :: :ok | {:error, term()}
   def subscribe_notices(opts \\ []) do
-    feed = feed(opts)
-    feed_call(fn -> Feed.subscribe_notices(feed, opts) end, {:error, :feed_not_started})
+    with {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
+      feed = feed(opts)
+      feed_call(fn -> Feed.subscribe_notices(feed, to: to) end, {:error, :feed_not_started})
+    end
   end
 
   # --- health ------------------------------------------------------------
@@ -784,7 +797,11 @@ defmodule DpExchange.Robinhood do
 
   defp feed(opts), do: Config.opt(opts, :feed, DpExchange.Robinhood.Supervisor.feed_name(opts))
 
-  defp alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+  # `Process.alive?/1` raises for a pid on another node. Whether a remote feed is up is not
+  # something this facade can read without a call, so it is reported as not running: the
+  # read-side answers are the empty ones.
+  defp alive?(pid) when is_pid(pid) and node(pid) == node(), do: Process.alive?(pid)
+  defp alive?(pid) when is_pid(pid), do: false
   # A registered name, `{:global, _}` or `{:via, _, _}`: anything `GenServer.whereis/1` reads.
   defp alive?(server), do: is_pid(GenServer.whereis(server))
 
@@ -813,21 +830,6 @@ defmodule DpExchange.Robinhood do
   catch
     :exit, _reason -> empty
   end
-
-  # **Symbols are upper-cased on the way in.** Canonical symbols are upper case, and `Feed`
-  # drops a payload whose symbol it does not want. So a caller who subscribed `btc-usd` got
-  # nothing at all, because the venue delivers `BTC-USD`. Until 2026-09-27 that same caller
-  # was delivered to, because nothing compared the two. Measured 2026-09-28:
-  # `update_symbols(["btc-usd"])`, then a `BTC-USD` quote, and `coverage/1` was `%{}`.
-  # Case is the one difference normalised here. Anything else that is not canonical is the
-  # caller's to fix.
-  defp checked_symbols(symbols) when is_list(symbols) do
-    if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
-      do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
-      else: {:error, {:invalid_field, :symbols}}
-  end
-
-  defp checked_symbols(_not_a_list), do: {:error, {:invalid_field, :symbols}}
 
   # An absent map reaches `Auth` and is refused there rather than producing an unsigned
   # request — this venue has no anonymous endpoint to fall back to.

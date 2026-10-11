@@ -192,6 +192,25 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.wanted(feed: name) == ["BTC-USD"]
     end
 
+    test "subscribe registers opts[:to], defaulting to the caller", %{name: name, feed: feed} do
+      other = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(other, :kill) end)
+
+      assert :ok = Robinhood.subscribe(["BTC-USD"], feed: name, to: other)
+      assert :ok = Robinhood.subscribe(["ETH-USD"], feed: name)
+
+      registered = :sys.get_state(feed).data_subscribers
+      assert MapSet.member?(registered, other)
+      assert MapSet.member?(registered, self())
+    end
+
+    test "subscribe([]) registers the subscriber and polls nothing", %{name: name, feed: feed} do
+      assert :ok = Robinhood.subscribe([], feed: name)
+
+      assert MapSet.member?(:sys.get_state(feed).data_subscribers, self())
+      assert Robinhood.wanted(feed: name) == []
+    end
+
     test "unsubscribe and update_symbols route too", %{name: name} do
       assert :ok = Robinhood.update_symbols(["BTC-USD", "ETH-USD"], feed: name)
       assert Enum.sort(Robinhood.wanted(feed: name)) == ["BTC-USD", "ETH-USD"]
@@ -245,9 +264,15 @@ defmodule DpExchange.RobinhoodTest do
       :ok = Robinhood.subscribe(["BTC-USD"], feed: name)
 
       for bad <- [:BTC, "BTC-USD", nil, [nil], [:btc], [""], ["  "], ["BTC-USD", 5]] do
-        assert Robinhood.subscribe(bad, feed: name) == {:error, {:invalid_field, :symbols}}
-        assert Robinhood.unsubscribe(bad, feed: name) == {:error, {:invalid_field, :symbols}}
-        assert Robinhood.update_symbols(bad, feed: name) == {:error, {:invalid_field, :symbols}}
+        expected = {:error, {:invalid_symbols, bad}}
+
+        assert Robinhood.subscribe(bad, feed: name) == expected
+        assert Robinhood.unsubscribe(bad, feed: name) == expected
+        assert Robinhood.update_symbols(bad, feed: name) == expected
+        # Bad input answers the same whether or not a feed is running.
+        assert Robinhood.subscribe(bad, feed: :no_such_feed_rh) == expected
+        assert Robinhood.unsubscribe(bad, feed: :no_such_feed_rh) == expected
+        assert Robinhood.update_symbols(bad, feed: :no_such_feed_rh) == expected
       end
 
       assert Process.alive?(feed)
@@ -255,10 +280,45 @@ defmodule DpExchange.RobinhoodTest do
     end
 
     test "the fake refuses a malformed symbol list the same way" do
-      assert Fake.subscribe(:BTC, []) == {:error, {:invalid_field, :symbols}}
-      assert Fake.subscribe([nil], []) == {:error, {:invalid_field, :symbols}}
-      assert Fake.unsubscribe("BTC-USD", []) == {:error, {:invalid_field, :symbols}}
-      assert Fake.update_symbols([5], []) == {:error, {:invalid_field, :symbols}}
+      assert Fake.subscribe(:BTC, []) == {:error, {:invalid_symbols, :BTC}}
+      assert Fake.subscribe([nil], []) == {:error, {:invalid_symbols, [nil]}}
+      assert Fake.unsubscribe("BTC-USD", []) == {:error, {:invalid_symbols, "BTC-USD"}}
+      assert Fake.unsubscribe(nil, []) == {:error, {:invalid_symbols, nil}}
+      assert Fake.update_symbols([5], []) == {:error, {:invalid_symbols, [5]}}
+    end
+
+    test "a bad subscriber is {:invalid_subscriber, to}, after the symbol list", %{name: name} do
+      for bad <- [true, false, "pid", 5, {:via, :x, :y}, []] do
+        expected = {:error, {:invalid_subscriber, bad}}
+
+        assert Robinhood.subscribe(["BTC-USD"], feed: name, to: bad) == expected
+        # Validated before the feed is looked at.
+        assert Robinhood.subscribe(["BTC-USD"], feed: :no_such_feed_rh, to: bad) == expected
+        assert Robinhood.subscribe_notices(feed: name, to: bad) == expected
+        assert Robinhood.subscribe_notices(feed: :no_such_feed_rh, to: bad) == expected
+        assert Fake.subscribe(["BTC-USD"], to: bad) == expected
+      end
+
+      assert Robinhood.subscribe(:bad, feed: name, to: true) == {:error, {:invalid_symbols, :bad}}
+      assert Robinhood.wanted(feed: name) == []
+    end
+
+    test "coverage_by_kind with no feed is an empty map, and a remote pid does not raise" do
+      assert Robinhood.coverage_by_kind(feed: :no_such_feed_rh) == %{}
+      assert Robinhood.coverage(feed: :no_such_feed_rh) == %{}
+
+      remote = remote_pid()
+      assert Robinhood.coverage(feed: remote) == %{}
+      assert Robinhood.coverage_by_kind(feed: remote) == %{}
+      assert Robinhood.wanted(feed: remote) == []
+    end
+
+    # A pid on a node that is not this one, built from the external term format (NEW_PID_EXT)
+    # so the test needs no distribution. `Process.alive?/1` raises on it.
+    defp remote_pid do
+      node = "rh_remote@nowhere"
+
+      :erlang.binary_to_term(<<131, 88, 119, byte_size(node), node::binary, 1::32, 0::32, 1::32>>)
     end
   end
 
@@ -495,16 +555,54 @@ defmodule DpExchange.RobinhoodTest do
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
     end
 
-    test "subscribe/2 ignores opts[:to] — unlike the real venue, this fake never had a :to to honour" do
-      # The real `c:subscribe/2` has no notion of a per-call recipient at all; only
-      # `subscribe_notices/2` does. This fake used to read `opts[:to]` here and redirect
-      # delivery to it — a capability the real venue's `subscribe/2` does not have.
-      other = spawn(fn -> Process.sleep(:infinity) end)
-      on_exit(fn -> Process.exit(other, :kill) end)
+    test "subscribe/2 delivers to opts[:to], not the caller, as the real facade does" do
+      me = self()
+
+      other =
+        spawn(fn ->
+          receive do
+            message -> send(me, {:relayed, message})
+          end
+        end)
 
       :ok = Fake.subscribe(["BTC-USD"], to: other)
 
-      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}
+      assert_receive {:relayed, {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}},
+                     5_000
+
+      refute_received {:dp_exchange, :robinhood, _anything}
+      assert Fake.coverage() == %{"BTC-USD" => :internal_poll}
+    end
+
+    test "subscribe/2 to a registered name nobody holds is skipped, never raised on" do
+      name = :"rh_fake_nobody_#{System.unique_integer([:positive])}"
+
+      assert :ok = Fake.subscribe(["BTC-USD"], to: name)
+      assert Fake.coverage() == %{}
+      refute_received {:dp_exchange, :robinhood, _anything}
+    end
+
+    test "subscribe([]) registers the subscriber and delivers nothing" do
+      assert :ok = Fake.subscribe([])
+      assert Fake.coverage() == %{}
+      refute_received {:dp_exchange, :robinhood, _anything}
+
+      # The registered caller then receives what update_symbols adds.
+      assert :ok = Fake.update_symbols(["ETH-USD"])
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "ETH-USD"}},
+                     5_000
+
+      assert Fake.coverage() == %{"ETH-USD" => :internal_poll}
+    end
+
+    test "update_symbols/2 with nobody subscribed delivers nothing and covers nothing" do
+      assert :ok = Fake.update_symbols(["BTC-USD", "ETH-USD"])
+
+      assert Fake.coverage() == %{}
+      assert Fake.coverage_by_kind() == %{top_of_book: %{}}
+      refute_received {:dp_exchange, :robinhood, _anything}
     end
 
     test "coverage_by_kind reports a delivering symbol under :top_of_book" do
@@ -631,8 +729,8 @@ defmodule DpExchange.RobinhoodTest do
     end
 
     test "subscribe_notices/1 refuses a :to the real feed refuses, and defaults nil to the caller" do
-      for bad <- ["watcher", {:via, Registry, {:r, :k}}, 5] do
-        assert Fake.subscribe_notices(to: bad) == {:error, {:invalid_field, :to}}
+      for bad <- ["watcher", {:via, Registry, {:r, :k}}, 5, true, false] do
+        assert Fake.subscribe_notices(to: bad) == {:error, {:invalid_subscriber, bad}}
       end
 
       assert Fake.subscribe_notices(to: nil) == :ok

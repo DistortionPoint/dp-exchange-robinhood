@@ -286,8 +286,8 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
       # No feed running means no observed symbols under any kind — the invariant
       # (`coverage/1`'s keys equal the union across `coverage_by_kind/1`'s values) holds
-      # here too: empty against empty.
-      assert Robinhood.coverage_by_kind() == %{top_of_book: %{}}
+      # here too: empty against empty. No feed is `%{}`, as on every other venue.
+      assert Robinhood.coverage_by_kind() == %{}
     end
 
     test "coverage accepts a pid as well as a name" do

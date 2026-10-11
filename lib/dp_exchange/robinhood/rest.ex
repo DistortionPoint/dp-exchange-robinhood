@@ -184,6 +184,18 @@ defmodule DpExchange.Robinhood.Rest do
   # Every symbol is a non-empty string, or the whole call is refused; a repeated symbol is
   # asked for once.
   defp native_symbols(symbols) when is_list(symbols) do
+    if proper_list?(symbols), do: native_symbols_checked(symbols), else: invalid_symbols(symbols)
+  end
+
+  defp native_symbols(not_a_list), do: invalid_symbols(not_a_list)
+
+  defp invalid_symbols(value), do: {:error, {:invalid_symbols, value}}
+
+  defp proper_list?([]), do: true
+  defp proper_list?([_head | tail]), do: proper_list?(tail)
+  defp proper_list?(_improper), do: false
+
+  defp native_symbols_checked(symbols) do
     symbols
     |> Enum.reduce_while({:ok, []}, fn symbol, {:ok, acc} ->
       case native_symbol(symbol) do
@@ -199,8 +211,6 @@ defmodule DpExchange.Robinhood.Rest do
         error
     end
   end
-
-  defp native_symbols(_not_a_list), do: {:error, {:invalid_field, :symbols}}
 
   defp bulk_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
   defp bulk_rows(_other), do: {:error, :unexpected_response_shape}
@@ -880,10 +890,15 @@ defmodule DpExchange.Robinhood.Rest do
     "/api/v2/crypto/trading/estimated_price/" <> query_string(query)
   end
 
-  defp native_symbol(symbol) when is_binary(symbol) and symbol != "",
-    do: {:ok, SymbolFormat.to_exchange_symbol(symbol)}
+  # A symbol that is not a string, or is blank once trimmed, is `{:invalid_symbol, value}`,
+  # decided here before anything is signed or sent (a blank one built `symbol=`).
+  defp native_symbol(symbol) when is_binary(symbol) do
+    if String.trim(symbol) == "",
+      do: {:error, {:invalid_symbol, symbol}},
+      else: {:ok, SymbolFormat.to_exchange_symbol(symbol)}
+  end
 
-  defp native_symbol(_other), do: {:error, {:invalid_field, :symbol}}
+  defp native_symbol(other), do: {:error, {:invalid_symbol, other}}
 
   defp estimate_side(side) when side in [:bid, :ask, :both], do: {:ok, Atom.to_string(side)}
   defp estimate_side(side) when side in ["bid", "ask", "both"], do: {:ok, side}

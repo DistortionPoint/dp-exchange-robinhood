@@ -21,15 +21,15 @@ defmodule DpExchange.Robinhood.Fake do
   - **Coverage is `:internal_poll`, not `:stream`** — the one place a consumer can see that
     this venue has no socket, and it shows up as *what is arriving*, never as *how*.
   - **No candles, no order book, no volume.** The venue serves none, so neither does this.
-  - **`subscribe/2` takes no `:to`.** The real venue's `c:DpExchange.Core.Venue.subscribe/2`
-    has no notion of a per-call recipient — data reaches whoever the feed was supervised
-    with, fixed at boot
-    — so this fake ignores it too and always delivers to the calling process, the same way
-    a caller of the real facade receives from whichever process it supervised the feed
-    under. `subscribe_notices/1` is the one call on this venue that legitimately takes
-    `:to` — `DpExchange.Robinhood.Feed`'s own per-call notice registry. This fake accepts
-    the call and answers `:ok` but registers nothing: it runs no feed, so it never raises a
-    notice for a registrant to receive.
+  - **`subscribe/2` honours `:to`** (default the calling process), as the real facade does:
+    the pid is registered and receives the books. A `:to` that is not a pid or a registered
+    name is `{:error, {:invalid_subscriber, to}}`, checked after the symbol list
+    (`{:error, {:invalid_symbols, value}}`), as in the real facade. `update_symbols/2`
+    honours no `:to`; it delivers a newly added symbol to whoever `subscribe/2` registered,
+    and with nobody registered delivers nothing, so `coverage/1` (only symbols a book was
+    delivered for) stays empty. `subscribe_notices/1` validates its `:to` the same way,
+    registers nothing and sends no `:link_up`: it runs no feed, so it never raises a notice
+    for a registrant to receive.
 
   ## Failure injection and anonymous mode
 
@@ -52,8 +52,8 @@ defmodule DpExchange.Robinhood.Fake do
 
   @behaviour DpExchange.Core.Venue
 
-  alias DpExchange.Core.{Capabilities, FakeInjection, Instrument, Types, Venue}
-  alias DpExchange.Robinhood.{Auth, Rest, SymbolFormat}
+  alias DpExchange.Core.{Capabilities, Config, FakeInjection, Fanout, Instrument, Types, Venue}
+  alias DpExchange.Robinhood.{Auth, Feed, Rest, SymbolFormat}
 
   # Every symbol here is presumed API-tradable. `Rest.get_symbols/2` and
   # `Rest.list_instruments/2` both read the real venue's `is_api_tradable` field
@@ -533,8 +533,11 @@ defmodule DpExchange.Robinhood.Fake do
 
   # `Rest` refuses a symbol that is not a non-empty string before signing; the canonicaliser
   # raises on one.
-  defp fake_symbol(symbol) when is_binary(symbol) and symbol != "", do: :ok
-  defp fake_symbol(_not_a_symbol), do: {:error, {:invalid_field, :symbol}}
+  defp fake_symbol(symbol) when is_binary(symbol) do
+    if String.trim(symbol) == "", do: {:error, {:invalid_symbol, symbol}}, else: :ok
+  end
+
+  defp fake_symbol(other), do: {:error, {:invalid_symbol, other}}
 
   # After credentials, as in `Rest.get_balances/2`: the lookup needs the signed
   # `get_accounts/2` reply before it can say an account is not there.
@@ -636,34 +639,31 @@ defmodule DpExchange.Robinhood.Fake do
     with_injection(fn -> {:ok, :open} end)
   end
 
+  # Per-process, like the order book above: what was asked for, what a book was delivered
+  # for, and who receives. Coverage reads only `@delivered_key`.
+  @wanted_key {__MODULE__, :wanted}
+  @delivered_key {__MODULE__, :delivered}
+  @subscribers_key {__MODULE__, :subscribers}
+
   @impl true
-  def subscribe(symbols, _opts \\ []) do
-    with {:ok, symbols} <- checked_symbols(symbols) do
-      do_subscribe(symbols)
+  def subscribe(symbols, opts \\ []) do
+    # The same checks, in the same order, as the real facade: symbols, then the subscriber.
+    with {:ok, symbols} <- Feed.canonical_symbols(symbols),
+         {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
+      do_subscribe(symbols, to)
     end
   end
 
-  defp do_subscribe(symbols) do
-    # Always the caller — never `opts[:to]`. The real `c:subscribe/2` has no notion of a
-    # per-call recipient at all: delivery goes to whichever process this venue's feed was
-    # supervised with, fixed at boot, and a `:to` passed to the real facade's `subscribe/2`
-    # is silently ignored (only `subscribe_notices/2`'s own registry reads it). A fake that
-    # honoured it here would let a consumer redirect delivery in a way the real venue
-    # cannot, which is exactly the "differently capable" defect this fake exists to avoid.
-    caller = self()
+  defp do_subscribe(symbols, to) do
+    # **`opts[:to]` is honoured, default the caller**, as the real facade does: the pid is
+    # registered as a data subscriber and receives this call's books, as would a poll
+    # cycle's. `subscribe([])` registers it and delivers nothing.
+    Process.put(@subscribers_key, MapSet.put(subscribers(), to))
 
     # A symbol the venue does not list is delivered as the refusal the real feed delivers for
     # it (`Feed`'s `on_refusal`), not skipped without a word: a consumer's refusal handling
     # was never reached by its tier-1 tests.
-    for symbol <- symbols do
-      case listed_book(symbol) do
-        {:ok, book} ->
-          send(caller, {:dp_exchange, :robinhood, book})
-
-        {:refused, reason} ->
-          send(caller, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
-      end
-    end
+    deliver(symbols)
 
     # **Added to, never replacing.** This was the identical line `update_symbols/2`
     # carries below — the two callbacks were byte-for-byte the same function — so a
@@ -678,34 +678,40 @@ defmodule DpExchange.Robinhood.Fake do
     # symbols. Neither has any purpose if `subscribe/2` already replaces — you would
     # just subscribe the new list. Two callbacks the contract distinguishes,
     # implemented as one function, is the tell.
-    Process.put(
-      __MODULE__,
-      MapSet.union(subscribed(), MapSet.new(Enum.filter(symbols, &(&1 in @symbols))))
-    )
+    Process.put(@wanted_key, MapSet.union(wanted(), MapSet.new(symbols)))
 
     :ok
   end
 
   @impl true
   def unsubscribe(symbols, _opts \\ []) do
-    with {:ok, symbols} <- checked_symbols(symbols) do
-      Process.put(__MODULE__, MapSet.difference(subscribed(), MapSet.new(symbols)))
+    with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
+      Process.put(@wanted_key, MapSet.difference(wanted(), MapSet.new(symbols)))
+      Process.put(@delivered_key, MapSet.difference(delivered(), MapSet.new(symbols)))
       :ok
     end
   end
 
+  # Honours no `:to`, as the real `update_symbols/2` does not: it changes the polled set and
+  # the books reach whoever `subscribe/2` registered. A symbol newly in the set is delivered
+  # to those subscribers (a poll cycle's worth); with none registered nothing is delivered.
   @impl true
   def update_symbols(symbols, _opts \\ []) do
-    with {:ok, symbols} <- checked_symbols(symbols) do
-      Process.put(__MODULE__, MapSet.new(Enum.filter(symbols, &(&1 in @symbols))))
+    with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
+      added = Enum.reject(symbols, &MapSet.member?(wanted(), &1))
+      Process.put(@wanted_key, MapSet.new(symbols))
+      Process.put(@delivered_key, MapSet.intersection(delivered(), MapSet.new(symbols)))
+      deliver(added)
       :ok
     end
   end
 
   # `:internal_poll`, not `:stream`. The real venue has no socket, and a fake claiming one
-  # would let a consumer build on a route that does not exist.
+  # would let a consumer build on a route that does not exist. Only symbols this fake has
+  # actually delivered a book for: `update_symbols/2` with nobody subscribed delivers
+  # nothing, and a refused symbol never delivers, so neither is covered.
   @impl true
-  def coverage(_opts \\ []), do: Map.new(subscribed(), &{&1, :internal_poll})
+  def coverage(_opts \\ []), do: Map.new(delivered(), &{&1, :internal_poll})
 
   @doc """
   `coverage/1`, split by kind. Same single-key shape as the real venue, and for the
@@ -721,7 +727,7 @@ defmodule DpExchange.Robinhood.Fake do
 
   @doc """
   Answers `:ok` for a registration of `opts[:to]` against this venue's own notices. The real
-  facade honours `:to` (unlike `subscribe/2`); this fake has no feed and raises no notices,
+  facade honours `:to`; this fake has no feed and raises no notices,
   so it accepts the call and registers nothing — see this module's moduledoc.
 
   Routed through `with_injection/2`, unlike `subscribe/2`, `unsubscribe/2` and
@@ -732,20 +738,43 @@ defmodule DpExchange.Robinhood.Fake do
   or `queue_failures/2,3` produces it, exactly as they produce any other queued outcome.
   With nothing queued, this fake has no feed of its own to be down, so it answers `:ok` --
   except for a `:to` that is neither a pid nor a registered name, which is refused as
-  `{:error, {:invalid_field, :to}}`, as the real feed refuses it.
+  `{:error, {:invalid_subscriber, to}}`, as the real feed refuses it. Registers nothing and
+  sends no `:link_up`: the real feed sends none on registration either.
   """
   @impl true
   def subscribe_notices(opts \\ []) do
     with_injection(fn ->
-      # Refuses what the real feed refuses: a `:to` that is neither a pid nor a registered
-      # name (`nil` means the caller, as there).
-      to = DpExchange.Core.Config.opt(opts, :to, self())
-
-      if is_pid(to) or is_atom(to), do: :ok, else: {:error, {:invalid_field, :to}}
+      # Refuses what the real feed refuses (`nil` means the caller, as there).
+      with {:ok, _to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())), do: :ok
     end)
   end
 
-  defp subscribed, do: Process.get(__MODULE__, MapSet.new())
+  defp wanted, do: Process.get(@wanted_key, MapSet.new())
+  defp delivered, do: Process.get(@delivered_key, MapSet.new())
+  defp subscribers, do: Process.get(@subscribers_key, MapSet.new())
+
+  # Sends each wanted symbol's book (or the venue's refusal of it) to every registered
+  # subscriber still alive, and records a symbol as delivered only when a book was actually
+  # sent to somebody. A registered name nothing holds is skipped, as `Core.Fanout` skips it.
+  defp deliver(symbols) do
+    recipients = subscribers() |> Enum.map(&Fanout.resolve/1) |> Enum.filter(&is_pid/1)
+
+    if recipients != [] do
+      for symbol <- symbols do
+        case listed_book(symbol) do
+          {:ok, book} ->
+            Enum.each(recipients, &send(&1, {:dp_exchange, :robinhood, book}))
+            Process.put(@delivered_key, MapSet.put(delivered(), symbol))
+
+          {:refused, reason} ->
+            refusal = {:dp_exchange, :robinhood, {:refused, symbol, reason}}
+            Enum.each(recipients, &send(&1, refusal))
+        end
+      end
+    end
+
+    :ok
+  end
 
   defp listed?(symbol), do: Map.has_key?(@price, SymbolFormat.to_canonical_symbol(symbol))
 
@@ -895,17 +924,7 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_roles(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
-  # Upper-cased on the way in, as the real facade does, so a lower-case subscription gets
-  # the same answer here as against the venue. Without it the fake delivered nothing for
-  # `btc-usd` while the real package delivered `BTC-USD` (checked 2026-09-28).
-  #
-  # A malformed list is refused, as the real facade refuses it (it would otherwise crash the
-  # real `Feed`); the fake used to raise on a non-list and accept a non-binary element.
-  defp checked_symbols(symbols) when is_list(symbols) do
-    if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
-      do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
-      else: {:error, {:invalid_field, :symbols}}
-  end
-
-  defp checked_symbols(_not_a_list), do: {:error, {:invalid_field, :symbols}}
+  # Symbol lists are checked and upper-cased by `Feed.canonical_symbols/1`, the same function
+  # the real facade uses, so a lower-case subscription and a malformed list get the same
+  # answer here as against the venue.
 end

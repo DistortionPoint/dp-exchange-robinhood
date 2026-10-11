@@ -181,11 +181,18 @@ defmodule DpExchange.Robinhood.Auth do
   # producing a signature the venue will reject with no explanation.
   # Not a string at all — typically `nil` from an unset env var. `Base.decode64/1` raised on
   # it, in the caller's process, where `{:error, {:invalid_private_key, _}}` was promised.
+  #
+  # `nil` (an unset env var) and a blank string are a MISSING key, exactly as an absent
+  # `:private_key` and a nil or blank `:api_key` already are: `{:missing_credentials,
+  # :robinhood}`. Only a present value of some other type is `:not_a_string`.
+  defp decode_seed(nil), do: {:error, {:missing_credentials, :robinhood}}
+
   defp decode_seed(private_key) when not is_binary(private_key),
     do: {:error, {:invalid_private_key, :not_a_string}}
 
   defp decode_seed(private_key) do
-    with :ok <- clean(private_key, :invalid_private_key) do
+    with {:ok, private_key} <- present(private_key),
+         :ok <- clean(private_key, :invalid_private_key) do
       case Base.decode64(private_key) do
         {:ok, <<seed::binary-size(32)>>} ->
           {:ok, seed}

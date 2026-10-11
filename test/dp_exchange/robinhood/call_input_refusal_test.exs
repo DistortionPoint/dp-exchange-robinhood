@@ -46,14 +46,26 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
   defp opts(extra \\ []), do: [plug: capturing(self()), retry_attempts: 0] ++ extra
 
   describe "Rest refuses unusable arguments without a request" do
-    test "a symbol that is not a non-empty string" do
-      for bad <- [nil, :btc, 5, ""] do
-        assert {:error, {:invalid_field, :symbol}} =
+    test "a symbol that is not a non-blank string is {:invalid_symbol, value}" do
+      for bad <- [nil, :btc, 5, "", "   ", "\t\n"] do
+        assert {:error, {:invalid_symbol, ^bad}} =
                  Rest.get_top_of_book(bad, @credentials, opts())
 
-        assert {:error, {:invalid_field, :symbol}} =
+        assert {:error, {:invalid_symbol, ^bad}} =
                  Rest.quantization(bad, @credentials, opts())
+
+        assert {:error, {:invalid_symbol, ^bad}} =
+                 Rest.get_estimated_price(bad, :ask, "1", @credentials, opts())
       end
+
+      assert {:error, {:invalid_symbols, :BTC}} =
+               Rest.get_top_of_book_bulk(:BTC, @credentials, opts())
+
+      assert {:error, {:invalid_symbol, " "}} =
+               Rest.get_top_of_book_bulk(["BTC-USD", " "], @credentials, opts())
+
+      assert {:error, {:invalid_symbols, [_head | :tail]}} =
+               Rest.get_top_of_book_bulk(["BTC-USD" | :tail], @credentials, opts())
 
       refute_received {:request, _path, _query}
     end
@@ -88,11 +100,13 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
     end
 
     test "the bulk read refuses a list holding a non-string symbol" do
-      for bad <- [["BTC-USD", nil], [:eth], [""], "BTC-USD"] do
-        assert {:error, {:invalid_field, key}} =
-                 Rest.get_top_of_book_bulk(bad, @credentials, opts())
-
-        assert key in [:symbol, :symbols]
+      for {bad, expected} <- [
+            {["BTC-USD", nil], {:invalid_symbol, nil}},
+            {[:eth], {:invalid_symbol, :eth}},
+            {[""], {:invalid_symbol, ""}},
+            {"BTC-USD", {:invalid_symbols, "BTC-USD"}}
+          ] do
+        assert {:error, ^expected} = Rest.get_top_of_book_bulk(bad, @credentials, opts())
       end
 
       refute_received {:request, _path, _query}
@@ -128,13 +142,16 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
   end
 
   describe "the fake refuses what Rest refuses" do
-    test "a symbol that is not a non-empty string" do
-      for bad <- [nil, :btc, 5, ""] do
-        assert {:error, {:invalid_field, :symbol}} =
+    test "a symbol that is not a non-blank string is {:invalid_symbol, value}" do
+      for bad <- [nil, :btc, 5, "", "   "] do
+        assert {:error, {:invalid_symbol, ^bad}} =
                  Fake.get_top_of_book(bad, credentials: @credentials)
 
-        assert {:error, {:invalid_field, :symbol}} =
+        assert {:error, {:invalid_symbol, ^bad}} =
                  Fake.quantization(bad, credentials: @credentials)
+
+        # Decided before credentials, as in Rest.
+        assert {:error, {:invalid_symbol, ^bad}} = Fake.get_top_of_book(bad, [])
       end
     end
 

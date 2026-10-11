@@ -31,8 +31,8 @@ end
 ## Usage
 
 ```elixir
-# In your supervision tree. Nothing starts itself. `subscriber:` is where subscribe/2's
-# deliveries go — set once here, not per subscribe/2 call.
+# In your supervision tree. Nothing starts itself. `subscriber:` is a pid that receives
+# deliveries from boot; subscribe/2 adds the caller (or `to:`) to it.
 children = [{DpExchange.Robinhood, credentials: my_credentials(), subscriber: self()}]
 
 # This venue publishes no last-trade data at all — get_price/2 is :unsupported. The book
@@ -40,6 +40,8 @@ children = [{DpExchange.Robinhood, credentials: my_credentials(), subscriber: se
 {:ok, book} = DpExchange.Robinhood.get_top_of_book("BTC-USD", credentials: my_credentials())
 
 :ok = DpExchange.Robinhood.subscribe(["BTC-USD"])
+# Or deliver to another process:
+:ok = DpExchange.Robinhood.subscribe(["ETH-USD"], to: consumer_pid)
 ```
 
 `DpExchange.Robinhood` is the **entire public API**. Everything else — transport, signing,

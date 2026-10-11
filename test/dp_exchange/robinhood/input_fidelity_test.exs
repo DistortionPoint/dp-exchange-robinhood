@@ -126,9 +126,21 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
   end
 
   describe "an unset credential is refused, never raised on" do
-    test "a nil private key is an invalid key, not a FunctionClauseError" do
+    test "a nil or blank private key is missing credentials, like an absent one" do
+      missing = {:error, {:missing_credentials, :robinhood}}
+
+      for blank <- [nil, "", "   "] do
+        creds = %{api_key: "k", private_key: blank}
+        assert Auth.headers("GET", "/p", "", creds) == missing
+        assert Auth.validate_credentials(creds) == missing
+      end
+
+      assert Auth.headers("GET", "/p", "", %{api_key: "k"}) == missing
+    end
+
+    test "a private key of some other type is still not_a_string" do
       assert {:error, {:invalid_private_key, :not_a_string}} =
-               Auth.headers("GET", "/p", "", %{api_key: "k", private_key: nil})
+               Auth.headers("GET", "/p", "", %{api_key: "k", private_key: 5})
     end
 
     test "credentials: nil wraps to an empty credential" do

@@ -80,9 +80,20 @@ data to nobody, and sends notices only to `subscribe_notices/2` registrations. I
 default to the Feed itself, which then delivered each book back to its own mailbox in a loop
 and to nobody else.
 
-`subscribe/2` has no `to:` of its own — the `subscriber:` given to the supervision tree
-above is where quotes and refusals go, for the life of the process. `subscribe_notices/1`
-is different: it registers `opts[:to]` (default: the caller) for this feed's own
+**`subscribe/2` honours `to:`** (default: the calling process). Books and refusals go to
+every pid that subscribed, and to the `subscriber:` given to the supervision tree above,
+which stays one of them. A subscribed pid is monitored and dropped when it dies; a registered
+name is kept (and skipped while nothing holds it). Delivery is bounded by `:max_queue_len`
+like every other venue's. `unsubscribe/2` removes symbols from the polled set; it does not
+remove the subscriber. `subscribe([])` registers the subscriber and polls nothing. A `to:`
+that is not a pid or a registered name (`true` and `false` are not names) answers
+`{:error, {:invalid_subscriber, to}}`.
+
+```elixir
+:ok = DpExchange.Robinhood.subscribe(["BTC-USD"], to: consumer_pid)
+```
+
+`subscribe_notices/1` registers `opts[:to]` (default: the caller) for this feed's own
 `Core.Notice.t()` traffic — currently the coverage-outage pair fired when this poll starts
 or stops delivering anything at all — and that registration is additive, not exclusive.
 A monitoring process that never wants a book can register here without displacing whoever
@@ -95,8 +106,10 @@ already gets the quotes:
 Answers `{:error, :feed_not_started}` if the feed named in `opts[:feed]` (default: the
 one this venue's own supervision tree started) is not running — the same shape
 `subscribe/2` already answers, rather than a bare `:ok` that quietly registered nothing.
-`:to` must be a pid or a registered name; anything else answers `{:error, {:invalid_field,
-:to}}` (it used to be stored and crashed the feed on its next notice). A `subscriber:` given
+`:to` must be a pid or a registered name; anything else (including `true` and `false`)
+answers `{:error, {:invalid_subscriber, to}}`, checked before the feed is looked at (it used
+to be `{:invalid_field, :to}`, and an unusable value used to be stored and crash the feed
+on its next notice). A `subscriber:` given
 at start must be a pid or a name too, or the feed does not start
 (`{:invalid_option, :subscriber}`).
 
@@ -146,8 +159,8 @@ Without credentials, every one of those calls returns
 `{:error, {:missing_credentials, :robinhood}}` before any request is built — an `:error`,
 not a `:refused`, because a missing local credential never reaches the venue and is never
 the venue's own word about anything.
-**A blank credential counts as a missing one.** An `:api_key` or `:private_key` that is `""`, or only
-whitespace, is refused locally with `{:error, {:missing_credentials, :robinhood}}` — it is
+**A blank credential counts as a missing one.** An `:api_key` or `:private_key` that is `nil`,
+`""`, or only whitespace, is refused locally with `{:error, {:missing_credentials, :robinhood}}` — it is
 never signed with. This matters because the usual way a credential goes missing is not a
 `nil`: it is a `.env` line reading `NAME=` with nothing after it, and `System.get_env/1`
 hands that back as `""`. Signing with it produced a well-formed request the venue refused
@@ -173,7 +186,8 @@ it now stands, instead of a second one.
 
 **The private key is the base64 32-byte seed Robinhood issues**, not a 64-byte secret key.
 Passing the wrong one is refused here with `{:error, {:invalid_private_key, reason}}` —
-`{:expected_32_bytes, n}`, `:not_base64` or `:not_a_string` — rather than producing a
+`{:expected_32_bytes, n}`, `:not_base64` or `:not_a_string` (a value that is neither a
+string nor `nil`; `nil` is a missing key) — rather than producing a
 signature the venue rejects with nothing to explain it. A key or private key with
 surrounding whitespace or a control character, typically a trailing newline from a `.env`
 file, is `{:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}}` (or
@@ -596,12 +610,23 @@ makes with the source and date behind it, and the method, so any of them can be 
 `{:error, :feed_not_started}` when this venue's feed is not running (`unsubscribe/2`
 answers `:ok`: there is nothing to stop). They return `{:error, :feed_timeout}` when the
 feed is too busy to answer within its call budget, and `{:error, {:feed_exited, reason}}`
-when it dies while answering. `coverage/1` answers an empty map in all three cases, `coverage_by_kind/1` answers
-`%{top_of_book: %{}}` and `wanted/1` an empty list; each means "not observed". Treat `:feed_timeout` as transient and retry.
-Treat the other two as a feed your supervision tree has to bring back.
+when it dies while answering. `coverage/1` answers an empty map in all three cases,
+`coverage_by_kind/1` answers `%{}` (as on every other venue; a running feed answers
+`%{top_of_book: coverage}`) and `wanted/1` an empty list; each means "not observed". A feed
+given as a pid on another node is treated as not running by those three reads. Treat
+`:feed_timeout` as transient and retry. Treat the other two as a feed your supervision tree
+has to bring back.
 
-**A symbol list must be a list of non-blank strings.** Anything else (a bare string, `nil`,
-an atom or a blank element) answers `{:error, {:invalid_field, :symbols}}` from
-`subscribe/2`, `unsubscribe/2` and `update_symbols/2`, and the feed is left as it was. It
-used to be passed through, where a non-list crashed the feed and lost every later
-subscription. Symbols are upper-cased on the way in.
+**A symbol list must be a proper list of non-blank strings.** Anything else (a bare string,
+`nil`, an atom, a blank or whitespace-only element) answers `{:error, {:invalid_symbols,
+value}}` from `subscribe/2`, `unsubscribe/2` and `update_symbols/2`, and the feed is left as
+it was. The arguments are checked, symbols first and then the subscriber, before the feed is
+looked at, so a bad argument answers the same whether or not a feed is running. It used to
+be `{:invalid_field, :symbols}`, and before that it was passed through, where a non-list
+crashed the feed and lost every later subscription. Symbols are upper-cased on the way in.
+
+**A single-symbol read refuses a bad symbol locally.** `get_top_of_book/2`, `quantization/2`
+and the estimate call answer `{:error, {:invalid_symbol, value}}` for a symbol that is not a
+string or is blank after trimming, before anything is signed (it used to be
+`{:invalid_field, :symbol}`). The bulk read answers `{:invalid_symbols, value}` for a
+non-list.

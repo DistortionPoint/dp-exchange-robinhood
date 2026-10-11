@@ -19,6 +19,50 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`subscribe/2` ignored `to:`.** Data reached only the `:subscriber` fixed at boot, against
+  `Core.Venue.subscribe/2`'s "events arrive as messages to the subscribing process, or to a
+  pid given in `opts`". `Feed` now keeps a set of data subscribers: `subscribe/2` registers
+  `opts[:to]` (default the caller) beside the boot `:subscriber`, which stays one of them.
+  Delivery goes through `Core.Fanout` with `:max_queue_len`; pids are monitored and pruned on
+  `:DOWN`, registered names are kept. `unsubscribe/2` still only narrows the polled set.
+  `subscribe([])` registers the subscriber and polls nothing. `Fake` does the same
+  (`subscribe/2` delivers to `to:`; a name nobody holds is skipped).
+- **`Fake.update_symbols/2` reported coverage for symbols it never pushed.** `coverage/1`
+  now lists only symbols a book was delivered for; `update_symbols/2` delivers a newly added
+  symbol to the registered subscribers, and with none registered delivers and covers nothing.
+- **`coverage/1`, `coverage_by_kind/1` and `wanted/1` raised for a feed given as a pid on
+  another node** (`Process.alive?/1`). Such a feed is now treated as not running.
+- **`coverage_by_kind/1` with no feed running answered `%{top_of_book: %{}}`**; it now
+  answers `%{}`, as every other venue does. A running feed still answers
+  `%{top_of_book: coverage}`.
+- **`private_key: nil` was `{:invalid_private_key, :not_a_string}`** while an absent key was
+  `{:missing_credentials, :robinhood}`. `nil` and a blank key are now missing, in `Auth` and
+  so in `Fake`. A non-string, non-nil key is still `:not_a_string`.
+- **An improper symbol list** (`["A" | "B"]`) raised in `Feed` and `Rest`; it is now refused
+  like any other malformed list.
+
+### Changed
+
+- **BREAKING: a bad subscriber is `{:error, {:invalid_subscriber, to}}`** (was
+  `{:invalid_field, :to}`) from `subscribe/2` and `subscribe_notices/1`, `Feed`, and `Fake`.
+  `true` and `false` are refused (they were accepted as registered names and never
+  delivered to), and so is a boot `subscriber: true | false`. It is checked before the feed
+  is looked at.
+- **BREAKING: a bad symbol list is `{:error, {:invalid_symbols, value}}`** (was
+  `{:invalid_field, :symbols}`) from `subscribe/2`, `unsubscribe/2`, `update_symbols/2`, the
+  `Feed` calls and `Rest.get_top_of_book_bulk/3`. Arguments are checked (symbols, then
+  subscriber) before `{:error, :feed_not_started}`, so bad input answers the same with or
+  without a feed. `Feed.add_symbols/2` gained an optional third argument, the subscriber.
+- **BREAKING: a bad single symbol is `{:error, {:invalid_symbol, value}}`** (was
+  `{:invalid_field, :symbol}`) from `get_top_of_book`, `quantization` and the estimate call,
+  `Rest` and `Fake`, and a symbol that is only whitespace is now refused too (it built
+  `symbol=%20%20`). `place_order`'s `{:invalid_field, :symbol}` is unchanged: that names a
+  request field.
+- Convention 12 (`Supervisor.start_link/1` and `Feed.start_link/1` wrap raw credentials) was
+  done in 0.3.81 and re-confirmed this round.
+
 ## [0.3.81] - 2026-10-11
 
 ### Fixed

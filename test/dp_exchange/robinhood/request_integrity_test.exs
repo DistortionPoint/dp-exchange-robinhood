@@ -495,8 +495,9 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     end
 
     test "a symbol that is not a string" do
-      assert {:error, {:invalid_field, :symbol}} = estimate("ask", "1", nil)
-      assert {:error, {:invalid_field, :symbol}} = estimate("ask", "1", "")
+      assert {:error, {:invalid_symbol, nil}} = estimate("ask", "1", nil)
+      assert {:error, {:invalid_symbol, ""}} = estimate("ask", "1", "")
+      assert {:error, {:invalid_symbol, "  "}} = estimate("ask", "1", "  ")
     end
 
     test "nothing was sent for any of them" do

@@ -152,10 +152,13 @@ defmodule DpExchange.Robinhood.Feed do
 
   ## A monitoring pid does not have to be the data subscriber
 
-  `start_link/1`'s `:subscriber` is the single fixed pid that receives quotes, refusals
-  and (until this section) notices — set once, at supervision-tree boot, because this
-  venue's `subscribe/2` takes no `to:` of its own; there is no per-call registry for
-  market data here, family-wide or otherwise. Notices are different on purpose:
+  `start_link/1`'s `:subscriber` is a pid that receives quotes, refusals and notices from
+  boot, and it stays one of the data subscribers. It is no longer the only one:
+  `add_symbols/3` (behind `DpExchange.Robinhood.subscribe/2`) registers `to:` (default the
+  caller) as a data subscriber too, as `Core.Venue.subscribe/2` promises ("events arrive as
+  messages to the subscribing process, or to a pid given in `opts`"). This used to ignore
+  `to:` and deliver only to the boot subscriber. Data goes out through `Core.Fanout`, so a
+  stalled consumer is bounded by `:max_queue_len` and a dead one is dropped on `:DOWN`.
   `subscribe_notices/2` — and `DpExchange.Robinhood.subscribe_notices/1` above it — adds a
   genuinely independent pid to `notice_subscribers`, so a monitoring process that never
   wants a `Core.Types.TopOfBook` can still learn this feed went dark, without displacing
@@ -286,17 +289,61 @@ defmodule DpExchange.Robinhood.Feed do
 
   @doc """
   Replaces the polled set. Symbols are upper-cased and de-duplicated here, as at boot; a
-  list that is not made of non-blank strings is refused as `{:error, {:invalid_field,
-  :symbols}}` and the set is left as it was. It used to raise inside the feed process for a
+  list that is not made of non-blank strings is refused as `{:error, {:invalid_symbols,
+  value}}` and the set is left as it was. It used to raise inside the feed process for a
   non-list, which restarted the feed from its boot-time opts.
   """
-  @spec update_symbols(GenServer.server(), [String.t()]) ::
-          :ok | {:error, {:invalid_field, :symbols}}
+  @spec update_symbols(GenServer.server(), term()) :: :ok | {:error, {:invalid_symbols, term()}}
   def update_symbols(feed, symbols),
     do: GenServer.call(feed, {:update_symbols, symbols}, @call_timeout)
 
   @doc """
-  Adds `symbols` to the polled set, inside this process.
+  The canonical spelling of a symbol list: upper-cased and de-duplicated.
+
+  `{:error, {:invalid_symbols, value}}` for anything that is not a proper list of non-blank
+  strings (whitespace-only is blank). Shared by the facade, `Fake` and this feed's own
+  calls, so all three refuse the same values.
+
+  **Symbols are upper-cased on the way in.** Canonical symbols are upper case, and `Feed`
+  drops a payload whose symbol it does not want. So a caller who subscribed `btc-usd` got
+  nothing at all, because the venue delivers `BTC-USD`. Until 2026-09-27 that same caller
+  was delivered to, because nothing compared the two. Measured 2026-09-28:
+  `update_symbols(["btc-usd"])`, then a `BTC-USD` quote, and `coverage/1` was `%{}`. Case is
+  the one difference normalised here. Anything else that is not canonical is the caller's
+  to fix.
+  """
+  @spec canonical_symbols(term()) :: {:ok, [String.t()]} | {:error, {:invalid_symbols, term()}}
+  def canonical_symbols(symbols) do
+    case boot_symbols(symbols) do
+      {:ok, _checked} = ok -> ok
+      :error -> {:error, {:invalid_symbols, symbols}}
+    end
+  end
+
+  @doc """
+  A subscriber this feed can send to: a pid, or a registered name (an atom other than
+  `nil`, `true` and `false`).
+
+  `{:error, {:invalid_subscriber, value}}` otherwise. `true` and `false` are atoms but not
+  names anyone registers, so they are refused rather than silently never delivered to.
+  """
+  @spec valid_subscriber(term()) ::
+          {:ok, pid() | atom()} | {:error, {:invalid_subscriber, term()}}
+  def valid_subscriber(pid) when is_pid(pid), do: {:ok, pid}
+
+  def valid_subscriber(name) when is_atom(name) and name not in [nil, true, false],
+    do: {:ok, name}
+
+  def valid_subscriber(other), do: {:error, {:invalid_subscriber, other}}
+
+  @doc """
+  Adds `symbols` to the polled set, inside this process, and registers `subscriber` (when
+  given) to receive this feed's market data.
+
+  `subscriber` is a pid or a registered name; the facade passes `opts[:to]`, default the
+  caller. It is added to the boot `:subscriber`, never replacing it. Registering a pid
+  monitors it, and its death removes it. A subscriber that is not a pid or a name is
+  `{:error, {:invalid_subscriber, value}}` and nothing is changed.
 
   **Not `update_symbols(coverage ++ symbols)`.** `DpExchange.Robinhood.subscribe/2` used to
   do exactly that, and `coverage/1` is what has been observed arriving, not what was asked
@@ -306,18 +353,18 @@ defmodule DpExchange.Robinhood.Feed do
   so two callers subscribing at once could each overwrite the other. Both are gone when the
   set is changed here, against `state.symbols`, in one call.
   """
-  @spec add_symbols(GenServer.server(), [String.t()]) ::
-          :ok | {:error, {:invalid_field, :symbols}}
-  def add_symbols(feed, symbols),
-    do: GenServer.call(feed, {:add_symbols, symbols}, @call_timeout)
+  @spec add_symbols(GenServer.server(), term(), term()) ::
+          :ok | {:error, {:invalid_symbols, term()} | {:invalid_subscriber, term()}}
+  def add_symbols(feed, symbols, subscriber \\ nil),
+    do: GenServer.call(feed, {:add_symbols, symbols, subscriber}, @call_timeout)
 
   @doc """
   Removes `symbols` from the polled set, inside this process. See `add_symbols/2`.
 
   Upper-cased like every other entry point, so `"btc-usd"` removes `"BTC-USD"`.
   """
-  @spec remove_symbols(GenServer.server(), [String.t()]) ::
-          :ok | {:error, {:invalid_field, :symbols}}
+  @spec remove_symbols(GenServer.server(), term()) ::
+          :ok | {:error, {:invalid_symbols, term()}}
   def remove_symbols(feed, symbols),
     do: GenServer.call(feed, {:remove_symbols, symbols}, @call_timeout)
 
@@ -333,9 +380,11 @@ defmodule DpExchange.Robinhood.Feed do
   receiving notices too, exactly as it did before this registry existed. A dead pid or an
   unregistered name is skipped at delivery time rather than raised on — see `fan_out/2`.
 
-  `:to` must be a pid or a registered name (an atom). Anything else, a string or a `{:via,
-  _, _}` tuple, is refused as `{:error, {:invalid_field, :to}}`: it used to be stored, and
-  `Core.Fanout.resolve/1` has no clause for it, so the feed crashed on its next notice.
+  `:to` must be a pid or a registered name (an atom other than `nil`, `true` and `false`).
+  Anything else, a string or a `{:via, _, _}` tuple or a boolean, is refused as `{:error,
+  {:invalid_subscriber, value}}`: it used to be stored, and `Core.Fanout.resolve/1` has no
+  clause for it, so the feed crashed on its next notice. (This was `{:invalid_field, :to}`,
+  and `true`/`false` were accepted, before the family converged on `:invalid_subscriber`.)
   """
   # `@call_timeout`, not `GenServer.call/2`'s five-second default.
   #
@@ -351,7 +400,7 @@ defmodule DpExchange.Robinhood.Feed do
   # uses to *hear that something is wrong* was the one call that could kill the host's
   # calling process for asking during exactly the conditions it exists to report.
   @spec subscribe_notices(GenServer.server(), keyword()) ::
-          :ok | {:error, {:invalid_field, :to}}
+          :ok | {:error, {:invalid_subscriber, term()}}
   def subscribe_notices(feed, opts \\ []),
     do: GenServer.call(feed, {:subscribe_notices, Config.opt(opts, :to, self())}, @call_timeout)
 
@@ -380,7 +429,7 @@ defmodule DpExchange.Robinhood.Feed do
   # A pid, a registered name, or none. Anything else has no `Core.Fanout.resolve/1` clause and
   # would crash this feed on its first delivery.
   defp subscriber?(nil), do: true
-  defp subscriber?(subscriber), do: is_pid(subscriber) or is_atom(subscriber)
+  defp subscriber?(subscriber), do: match?({:ok, _name_or_pid}, valid_subscriber(subscriber))
 
   # **Upper-cased at boot, as `DpExchange.Robinhood.subscribe/2` does at call time.** The
   # book comes back under the canonical (upper-case) symbol and `handle_info/2` drops a book
@@ -389,12 +438,17 @@ defmodule DpExchange.Robinhood.Feed do
   # normalised the later calls and not this one. A list that is not a list of non-blank
   # strings stops the feed rather than polling a symbol the venue refuses whole.
   defp boot_symbols(symbols) when is_list(symbols) do
-    if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
+    if proper_list?(symbols) and Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
       do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
       else: :error
   end
 
   defp boot_symbols(_not_a_list), do: :error
+
+  # An improper list (`[a | b]`) is a list to `is_list/1` and raises in `Enum`.
+  defp proper_list?([]), do: true
+  defp proper_list?([_head | tail]), do: proper_list?(tail)
+  defp proper_list?(_improper), do: false
 
   defp init_feed(opts, symbols) do
     # `PollingFeed.start_link/1` below runs inside this callback, which links the
@@ -416,6 +470,10 @@ defmodule DpExchange.Robinhood.Feed do
       poller_crashes: [],
       subscriber: subscriber,
       notice_subscribers: if(subscriber, do: MapSet.new([subscriber]), else: MapSet.new()),
+      # Data subscribers registered by `add_symbols/3` (the facade's `subscribe/2`), beside
+      # the boot `:subscriber`, which is not in this set. Pids are monitored (`monitors`
+      # below, shared with `notice_subscribers`) and pruned on `:DOWN`.
+      data_subscribers: MapSet.new(),
       # Monitor references for pid entries in `notice_subscribers`, so a dead one is dropped
       # rather than walked on every notice for the life of this feed — see the `:DOWN`
       # clause below and `Core.Fanout.watch/2`.
@@ -682,8 +740,14 @@ defmodule DpExchange.Robinhood.Feed do
   def handle_call({:update_symbols, symbols}, _from, state),
     do: change_symbols(state, symbols, & &1)
 
-  def handle_call({:add_symbols, symbols}, _from, state),
-    do: change_symbols(state, symbols, &Enum.uniq(state.symbols ++ &1))
+  def handle_call({:add_symbols, symbols, subscriber}, _from, state) do
+    with {:ok, checked} <- canonical_symbols(symbols),
+         {:ok, state} <- register_data_subscriber(state, subscriber) do
+      replace_symbols(state, Enum.uniq(state.symbols ++ checked))
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
 
   def handle_call({:remove_symbols, symbols}, _from, state),
     do: change_symbols(state, symbols, fn drop -> Enum.reject(state.symbols, &(&1 in drop)) end)
@@ -691,16 +755,18 @@ defmodule DpExchange.Robinhood.Feed do
   def handle_call(:wanted, _from, state), do: {:reply, state.symbols, state}
 
   def handle_call({:subscribe_notices, subscriber}, _from, state) do
-    if subscriber?(subscriber) and not is_nil(subscriber) do
-      state = %{
-        state
-        | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
-          monitors: Fanout.watch(subscriber, state.monitors)
-      }
+    case valid_subscriber(subscriber) do
+      {:ok, subscriber} ->
+        state = %{
+          state
+          | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
+            monitors: Fanout.watch(subscriber, state.monitors)
+        }
 
-      {:reply, :ok, state}
-    else
-      {:reply, {:error, {:invalid_field, :to}}, state}
+        {:reply, :ok, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
@@ -709,9 +775,26 @@ defmodule DpExchange.Robinhood.Feed do
   # The caller's list is checked and upper-cased first (`boot_symbols/1`), then `build` makes
   # the new set from it. A bad list leaves the set as it was.
   defp change_symbols(state, symbols, build) do
-    case boot_symbols(symbols) do
+    case canonical_symbols(symbols) do
       {:ok, checked} -> replace_symbols(state, build.(checked))
-      :error -> {:reply, {:error, {:invalid_field, :symbols}}, state}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # No subscriber given: nothing to register. The boot `:subscriber` already receives, and
+  # registering it again would only put the one configuration pid under a monitor.
+  defp register_data_subscriber(state, nil), do: {:ok, state}
+
+  defp register_data_subscriber(%{subscriber: subscriber} = state, subscriber), do: {:ok, state}
+
+  defp register_data_subscriber(state, subscriber) do
+    with {:ok, subscriber} <- valid_subscriber(subscriber) do
+      {:ok,
+       %{
+         state
+         | data_subscribers: MapSet.put(state.data_subscribers, subscriber),
+           monitors: Fanout.watch(subscriber, state.monitors)
+       }}
     end
   end
 
@@ -742,6 +825,8 @@ defmodule DpExchange.Robinhood.Feed do
     state = %{
       state
       | notice_subscribers: MapSet.delete(state.notice_subscribers, pid),
+        data_subscribers: MapSet.delete(state.data_subscribers, pid),
+        dropping: MapSet.delete(state.dropping, pid),
         monitors: Fanout.forget(pid, state.monitors)
     }
 
@@ -897,7 +982,7 @@ defmodule DpExchange.Robinhood.Feed do
   # dropped.
   defp deliver(state, message) do
     {_sent, dropping, transitions} =
-      Fanout.deliver(List.wrap(state.subscriber), message, state.dropping,
+      Fanout.deliver(data_recipients(state), message, state.dropping,
         max_queue_len: state.max_queue_len
       )
 
@@ -910,6 +995,14 @@ defmodule DpExchange.Robinhood.Feed do
 
     %{state | dropping: dropping}
   end
+
+  # The boot `:subscriber` (when there is one) and every registered data subscriber. A
+  # subscriber in both is sent to once.
+  defp data_recipients(%{subscriber: nil, data_subscribers: registered}),
+    do: MapSet.to_list(registered)
+
+  defp data_recipients(%{subscriber: subscriber, data_subscribers: registered}),
+    do: [subscriber | MapSet.to_list(MapSet.delete(registered, subscriber))]
 
   # The UNBOUNDED path — notices only. See `deliver/2` above for why the data stream does
   # not come through here and why notices deliberately still do.
