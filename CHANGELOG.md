@@ -19,6 +19,14 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- Docs and tests follow Core 0.3.75, whose `PollingFeed` emits `[:dp_exchange, :link, :up]`
+  on its first delivery: `usage-rules.md` states that the poll has a link (`:up` on first
+  delivery and on recovery, `:down` on entering an outage), and a feed test asserts the
+  `:up` event for `provider: :robinhood`. No behaviour of this package changed.
+- Tests: two probe waits in `forwarded_nil_test.exs` use 5_000 ms.
+
 ## [0.3.79] - 2026-10-11
 
 ### Fixed

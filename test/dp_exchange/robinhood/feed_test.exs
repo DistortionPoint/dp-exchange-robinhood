@@ -1172,6 +1172,33 @@ defmodule DpExchange.Robinhood.FeedTest do
       # The struct names its own kind — never a channel name, never a subscription intent.
       assert metadata.type == "TopOfBook"
     end
+
+    # Core 0.3.75: `PollingFeed` emits `[:dp_exchange, :link, :up]` on its FIRST delivery, not
+    # only on recovery from delivering-nothing. A feed that was healthy from boot used to show
+    # a fleet dashboard no `:up` at all.
+    test "a feed healthy from its first poll emits link :up for :robinhood" do
+      test_pid = self()
+      handler_id = "rh-link-up-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:dp_exchange, :link, :up],
+        fn event, measurements, metadata, _config ->
+          # Scoped by provider: `:telemetry` handlers are global to the VM.
+          if metadata.provider == :robinhood do
+            send(test_pid, {:telemetry_up, event, measurements, metadata})
+          end
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      start_feed([])
+
+      assert_receive {:telemetry_up, [:dp_exchange, :link, :up], %{count: 1}, metadata}, 5_000
+      assert metadata.provider == :robinhood
+    end
   end
 
   describe "subscribe_notices/2 survives a busy feed" do

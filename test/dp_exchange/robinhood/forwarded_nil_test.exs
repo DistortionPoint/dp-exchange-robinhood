@@ -35,7 +35,7 @@ defmodule DpExchange.Robinhood.ForwardedNilTest do
     probe = probe()
     Feed.subscribe_notices(probe, to: nil)
 
-    assert_receive {:probed, {:subscribe_notices, subscriber}}
+    assert_receive {:probed, {:subscribe_notices, subscriber}}, 5_000
     assert subscriber == self()
   end
 
@@ -44,7 +44,7 @@ defmodule DpExchange.Robinhood.ForwardedNilTest do
     other = spawn(fn -> Process.sleep(:infinity) end)
     Feed.subscribe_notices(probe, to: other)
 
-    assert_receive {:probed, {:subscribe_notices, ^other}}
+    assert_receive {:probed, {:subscribe_notices, ^other}}, 5_000
   end
 
   test "Supervisor.limiter_name/1 with a forwarded `limiter: nil` names this venue's limiter" do

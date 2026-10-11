@@ -519,7 +519,7 @@ before this version and saw nothing, that was not your venue being quiet:
 `:telemetry.attach/4` against a name nobody emits succeeds, so an empty panel was
 indistinguishable from no traffic. Every one of them fires now.
 
-Four things to know before you build on them:
+Five things to know before you build on them:
 
 - **Telemetry is the metrics channel; `Core.Notice` is the action channel.** Telemetry is
   aggregate and lossy by design. Alarm on notices. Graph telemetry. Alarming on a gauge
@@ -532,6 +532,10 @@ Four things to know before you build on them:
 - **`retry_after_ms` is always milliseconds**, including where the venue's own header is in
   seconds. A panel summing a mixture of the two is wrong by a factor of a thousand without
   ever looking wrong.
+- **The poll has a link too.** `[:dp_exchange, :link, :up]` (metadata `provider: :robinhood`)
+  fires on the poll's first successful delivery, and again on recovery from a
+  delivering-nothing outage; `[:dp_exchange, :link, :down]` fires on entering one. A feed
+  that is healthy from boot therefore shows an `:up`, not silence.
 - **`:bytes` may be absent from `[:dp_exchange, :link, :event]`**, and absent is not zero. A
   polling route has no frame, so there is no byte count that means what a socket's does.
   Treat a missing `:bytes` as "this route cannot measure that", not as no data.
