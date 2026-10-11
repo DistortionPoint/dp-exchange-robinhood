@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.80] - 2026-10-11
+
 ### Changed
 
 - Docs and tests follow Core 0.3.75, whose `PollingFeed` emits `[:dp_exchange, :link, :up]`
