@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.78] - 2026-10-11
+
 ### Fixed
 
 - **A `:bisect_budget_ms` that was not a positive integer broke every cycle.** A string, a
