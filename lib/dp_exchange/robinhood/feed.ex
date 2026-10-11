@@ -27,7 +27,10 @@ defmodule DpExchange.Robinhood.Feed do
   This runs `Core.PollingFeed` in its bulk `:fetch_all` mode: every tick sends ONE signed
   request carrying every symbol in scope, via `Rest.get_top_of_book_bulk/3`, rather than one
   signed request per symbol. At the ~86-pair catalogue this package inherited, that is the
-  difference between roughly 86 requests a cycle and 1.
+  difference between roughly 86 requests a cycle and 1. A universe larger than
+  `Rest.max_bulk_symbols/0` (100, our own conservative cap; the vendor states none) is sent
+  as several requests of at most that many, so the signed URL stays bounded at 1,000+
+  symbols; results are merged as one request's would be.
 
   **Correction, 2026-09-06:** an earlier version of this note said the venue "publishes no
   bulk-stats endpoint" and left it there. That is not quite what the vendor's own OpenAPI
@@ -242,6 +245,10 @@ defmodule DpExchange.Robinhood.Feed do
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    # Wrapped (idempotently) so a raw `:credentials` map never sits in a start argument a
+    # crash report could print, whichever way the feed was started.
+    opts = Credentials.wrap_opt(opts)
+
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
@@ -590,7 +597,23 @@ defmodule DpExchange.Robinhood.Feed do
   # no further request is sent.
   defp resolve([], _ctx, _capped?), do: []
 
+  # More symbols than `Rest.max_bulk_symbols/0` go out as several requests of at most that
+  # many, so the signed URL stays bounded at any universe size. Only the cycle's first
+  # request may run uncapped. A rejected key (401/403) ends the cycle's requests, as it does
+  # a bisection: every chunk would be refused alike. Halves made by bisection are already
+  # within one chunk, so a refusal is still located inside its own chunk.
   defp resolve(symbols, ctx, capped?) do
+    symbols
+    |> Enum.chunk_every(Rest.max_bulk_symbols())
+    |> Enum.with_index()
+    |> Enum.reduce_while([], fn {chunk, index}, acc ->
+      outcomes = resolve_chunk(chunk, ctx, capped? or index > 0)
+      acc = acc ++ outcomes
+      if auth_failure?(outcomes), do: {:halt, acc}, else: {:cont, acc}
+    end)
+  end
+
+  defp resolve_chunk(symbols, ctx, capped?) do
     remaining = ctx.deadline - System.monotonic_time(:millisecond)
 
     if capped? and remaining <= 0 do

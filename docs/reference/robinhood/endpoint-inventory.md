@@ -74,6 +74,9 @@ symbol=ETH-USD` — one signed request answering for every symbol named. `Feed` 
 way (`Rest.get_top_of_book_bulk/3`); see `docs/design/ideas/bulk-best-bid-ask-fetch.md`
 and `Feed`'s moduledoc. The vendor publishes no maximum number of symbols per request;
 none has been measured, and at this venue's ~86 pairs the query string is about 1.5 KB.
+This package caps a request at 100 symbols (`Rest.max_bulk_symbols/0`, about 2 KB of signed
+URL) as its own conservative choice, not the venue's; `Feed` sends a larger set as several
+requests.
 
 ## Streaming: checked against the vendor, not inherited
 

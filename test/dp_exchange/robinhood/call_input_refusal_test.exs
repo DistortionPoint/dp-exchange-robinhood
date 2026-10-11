@@ -98,6 +98,22 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
       refute_received {:request, _path, _query}
     end
 
+    test "the bulk read refuses more symbols than one bounded request carries" do
+      cap = Rest.max_bulk_symbols()
+      over = for n <- 1..(cap + 1), do: "S#{n}-USD"
+
+      assert {:error, {:too_many_symbols, ^cap}} =
+               Rest.get_top_of_book_bulk(over, @credentials, opts())
+
+      refute_received {:request, _path, _query}
+
+      # Exactly the cap is sent, and a repeated symbol counts once.
+      within = Enum.take(over, cap) ++ ["S1-USD"]
+      assert {:ok, []} = Rest.get_top_of_book_bulk(within, @credentials, opts())
+
+      assert_receive {:request, _path, _query}, 5_000
+    end
+
     test "the bulk read asks for a repeated symbol once" do
       assert {:ok, []} =
                Rest.get_top_of_book_bulk(

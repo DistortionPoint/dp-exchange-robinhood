@@ -101,5 +101,37 @@ defmodule DpExchange.Robinhood.CredentialsTest do
       refute log =~ @private_key
       assert log =~ "DpExchange.Robinhood.Credentials<...>"
     end
+
+    test "a feed or supervisor started directly with a raw map keeps no raw secret in state" do
+      raw = %{api_key: @api_key, private_key: @private_key}
+      suffix = System.unique_integer([:positive])
+
+      {:ok, sup} =
+        DpExchange.Robinhood.Supervisor.start_link(
+          name: :"rh_sup_#{suffix}",
+          feed: :"rh_feed_#{suffix}",
+          limiter: :"rh_lim_#{suffix}",
+          credentials: raw,
+          symbols: [],
+          start_delay_ms: 60_000,
+          interval_ms: 60_000
+        )
+
+      on_exit(fn ->
+        try do
+          Supervisor.stop(sup)
+        catch
+          :exit, _reason -> :ok
+        end
+      end)
+
+      supervisor_state = inspect(:sys.get_state(sup), limit: :infinity)
+      feed_state = inspect(:sys.get_state(:"rh_feed_#{suffix}"), limit: :infinity)
+
+      for state <- [supervisor_state, feed_state] do
+        refute state =~ @api_key
+        refute state =~ @private_key
+      end
+    end
   end
 end

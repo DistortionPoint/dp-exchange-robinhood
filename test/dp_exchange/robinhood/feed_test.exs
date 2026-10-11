@@ -2,7 +2,7 @@ defmodule DpExchange.Robinhood.FeedTest do
   use ExUnit.Case, async: true
 
   alias DpExchange.Core.{DefaultRateLimiter, Notice}
-  alias DpExchange.Robinhood.Feed
+  alias DpExchange.Robinhood.{Feed, Rest}
 
   @moduletag :capture_log
 
@@ -626,6 +626,58 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # 1 whole batch + 2 per level for 4 levels = at most 9, against 16 per symbol.
       assert length(drain_requests()) <= 9
+    end
+
+    test "a universe past the cap goes out as several bounded requests and all of it arrives" do
+      test_pid = self()
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+
+      plug = fn conn ->
+        asked = query_symbols(conn.query_string)
+        send(test_pid, {:request, asked})
+        rows = Enum.map(asked, &%{"symbol" => &1, "bid" => "1", "ask" => "2"})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{"results" => rows}))
+      end
+
+      start_feed(symbols: symbols, interval_ms: 60_000, retry_attempts: 0, plug: plug)
+
+      arrived =
+        for _n <- 1..250 do
+          assert_receive {:dp_exchange, :robinhood,
+                          %DpExchange.Core.Types.TopOfBook{symbol: symbol}},
+                         5_000
+
+          symbol
+        end
+
+      assert Enum.sort(arrived) == Enum.sort(symbols)
+
+      requests = drain_requests()
+      assert length(requests) == 3
+      assert Enum.all?(requests, &(length(&1) <= Rest.max_bulk_symbols()))
+      assert requests |> List.flatten() |> Enum.sort() == Enum.sort(symbols)
+    end
+
+    test "a 401 on the first chunk ends the cycle: later chunks are not sent" do
+      test_pid = self()
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(401, Jason.encode!(%{"detail" => "Not authenticated"}))
+      end
+
+      start_feed(symbols: symbols, interval_ms: 60_000, retry_attempts: 0, plug: plug)
+
+      assert_receive {:request, first}, 5_000
+      assert length(first) == Rest.max_bulk_symbols()
+      refute_receive {:request, _next_chunk}, 300
     end
 
     test "a 401 is not split: one request a cycle, and no symbol is blamed" do

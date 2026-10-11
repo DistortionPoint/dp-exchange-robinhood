@@ -62,7 +62,9 @@ Do not build a poll of your own on top of this. The package already polls, paced
 this venue's budget, and a second loop doubles the request count for no extra data.
 
 **Cadence and cost.** One cycle every 30 seconds (`interval_ms:`, default `30_000`), and each
-cycle is ONE signed request carrying every wanted symbol. If the venue refuses the whole
+cycle is ONE signed request carrying every wanted symbol (at most 100 per request, this
+package's own conservative cap since the vendor states none: a larger set is sent as several
+requests and merged). If the venue refuses the whole
 request (400 or 404), the batch is split in half and asked again, down to single symbols, for
 at most `bisect_budget_ms:` (default `20_000`; a positive integer or the feed does not start,
 `{:invalid_option, :bisect_budget_ms}`). A symbol the venue refused alone is delivered to

@@ -17,7 +17,7 @@ defmodule DpExchange.Robinhood.Supervisor do
   use Supervisor
 
   alias DpExchange.Core.{Config, DefaultRateLimiter}
-  alias DpExchange.Robinhood.Feed
+  alias DpExchange.Robinhood.{Credentials, Feed}
 
   @doc """
   Starts this venue's tree: its rate limiter, then its feed (`one_for_one`, so a crashed feed
@@ -27,6 +27,11 @@ defmodule DpExchange.Robinhood.Supervisor do
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
+    # An OTP supervisor keeps its init argument in its own state, which a crash report of
+    # the supervisor prints. `child_spec/1` wraps `:credentials` already; wrapping again here
+    # (idempotent) covers a consumer who calls `start_link/1` directly with a raw map.
+    opts = Credentials.wrap_opt(opts)
+
     Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 

@@ -137,6 +137,9 @@ defmodule DpExchange.Robinhood.Rest do
   principle on the single-symbol path, and DpCryptoManagement issue #25 for what mistaking
   the two costs).
 
+  More than `max_bulk_symbols/0` distinct symbols is refused as
+  `{:error, {:too_many_symbols, cap}}` before anything is signed; `Feed` chunks to the cap.
+
   An empty `symbols` list returns `{:ok, []}` without a network call: the venue's own
   document does not say what a `best_bid_ask` request carrying no `symbol` parameter at all
   does, and there is nothing to ask for.
@@ -146,7 +149,8 @@ defmodule DpExchange.Robinhood.Rest do
   def get_top_of_book_bulk([], _credentials, _opts), do: {:ok, []}
 
   def get_top_of_book_bulk(symbols, credentials, opts) do
-    with {:ok, natives} <- native_symbols(symbols) do
+    with {:ok, natives} <- native_symbols(symbols),
+         :ok <- within_bulk_cap(natives) do
       path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string(natives)
 
       with {:ok, body} <- get(path, credentials, opts),
@@ -155,6 +159,27 @@ defmodule DpExchange.Robinhood.Rest do
       end
     end
   end
+
+  # The vendor states no maximum number of `symbol` parameters (nothing measured), and the
+  # whole query string is part of the SIGNED path, so an unbounded list is an unbounded URL
+  # (about 20 bytes a symbol: 1,000 symbols is a 20 KB request line, which proxies and CDNs
+  # commonly refuse with a 414/431 that would then be bisected as if a symbol were at fault).
+  # This is OUR conservative cap, not the venue's: about 2 KB of query at the longest pairs.
+  # `Feed` chunks to it; a direct caller over it is refused rather than sent.
+  @max_bulk_symbols 100
+
+  @doc """
+  The most symbols one `get_top_of_book_bulk/3` request carries: 100.
+
+  A conservative cap of this package's own choosing. The vendor publishes no maximum and
+  none has been measured; the cap keeps the signed URL near 2 KB. `Feed` splits a larger
+  universe into requests of at most this many symbols.
+  """
+  @spec max_bulk_symbols() :: pos_integer()
+  def max_bulk_symbols, do: @max_bulk_symbols
+
+  defp within_bulk_cap(natives) when length(natives) <= @max_bulk_symbols, do: :ok
+  defp within_bulk_cap(_natives), do: {:error, {:too_many_symbols, @max_bulk_symbols}}
 
   # Every symbol is a non-empty string, or the whole call is refused; a repeated symbol is
   # asked for once.

@@ -19,6 +19,24 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A large symbol universe went out as one unbounded signed URL.** `best_bid_ask` takes a
+  repeated `symbol` parameter and the whole query string is part of the signed path; with
+  1,000 symbols that is a request line of about 20 KB, which a proxy or CDN may refuse (414,
+  431, 400) and which bisection would then blame on a symbol. The vendor states no maximum
+  and none has been measured, so the cap is this package's own, conservative one:
+  `Rest.max_bulk_symbols/0` = 100 (about 2 KB). `Feed` splits a larger set into requests of
+  at most that many and merges the books exactly as one request would have; a refused chunk
+  is bisected within itself as before, only the first request of a cycle runs on the caller's
+  own timeout, and a 401/403 ends the cycle's requests. `Rest.get_top_of_book_bulk/3` called
+  directly with more than the cap refuses `{:error, {:too_many_symbols, 100}}` rather than
+  sending it. At the ~86-pair catalogue the behaviour is unchanged (one request).
+- **A raw `:credentials` map could reach a supervisor's or feed's start argument.**
+  `Supervisor.start_link/1` and `Feed.start_link/1` now wrap it (idempotently) as
+  `child_spec/1` already did, so a consumer calling `start_link/1` directly no longer leaves
+  the secrets in an OTP supervisor's state, which its crash report prints.
+
 ## [0.3.80] - 2026-10-11
 
 ### Changed
