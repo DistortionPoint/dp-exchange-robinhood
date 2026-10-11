@@ -784,8 +784,9 @@ defmodule DpExchange.Robinhood do
 
   defp feed(opts), do: Config.opt(opts, :feed, DpExchange.Robinhood.Supervisor.feed_name(opts))
 
-  defp alive?(name) when is_atom(name), do: is_pid(GenServer.whereis(name))
   defp alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+  # A registered name, `{:global, _}` or `{:via, _, _}`: anything `GenServer.whereis/1` reads.
+  defp alive?(server), do: is_pid(GenServer.whereis(server))
 
   # **A streaming call answers; it does not exit in the caller's process.** Every
   # streaming callback's spec is a value (`:ok | {:error, term()}`, or a map). A bare

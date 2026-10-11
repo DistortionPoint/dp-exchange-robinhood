@@ -37,6 +37,21 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     def record(_provider, _weight, _opts), do: :ok
   end
 
+  describe "get_symbols ordering and non-atom feed names" do
+    test "the fake lists symbols sorted, as Rest.get_symbols/2 does" do
+      assert {:ok, symbols} = Fake.get_symbols(credentials: @credentials)
+      assert symbols == Enum.sort(symbols)
+    end
+
+    test "a {:global, _} feed name that is not running answers empty instead of raising" do
+      feed = {:global, {:robinhood_absent_feed, make_ref()}}
+
+      assert Robinhood.coverage(feed: feed) == %{}
+      assert Robinhood.wanted(feed: feed) == []
+      assert Robinhood.coverage_by_kind(feed: feed) == %{top_of_book: %{}}
+    end
+  end
+
   describe "credentials: the fake applies Auth's rules, not a shape check" do
     test "a blank api key is refused as missing, like the real signer" do
       bad = %{@credentials | api_key: "  "}

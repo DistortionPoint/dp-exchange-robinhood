@@ -19,6 +19,15 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Fake.get_symbols/1` listed symbols unsorted.** `Rest.get_symbols/2` returns them sorted;
+  the fake answered `BTC-USD, ETH-USD, DOGE-USD`, so a consumer's test could pass against the
+  fake on an order the real package never gives. It is sorted now.
+- **The facade's `coverage/1`, `coverage_by_kind/1` and `wanted/1` raised
+  `FunctionClauseError` for a `{:global, _}` or `{:via, _, _}` `:feed` name.** They answer
+  the empty value when such a feed is not running, as they do for an atom name.
+
 ## [0.3.78] - 2026-10-11
 
 ### Fixed

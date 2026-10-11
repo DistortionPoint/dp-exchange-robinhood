@@ -160,7 +160,8 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_symbols(opts \\ []) do
     with_injection(fn ->
-      with :ok <- authenticated(opts), do: {:ok, @symbols}
+      # Sorted, as `Rest.get_symbols/2` sorts what it collects.
+      with :ok <- authenticated(opts), do: {:ok, Enum.sort(@symbols)}
     end)
   end
 
