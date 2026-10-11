@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.75] - 2026-10-11
+
 ### Fixed
 
 - **Calls with unusable arguments raised in the caller's process or went out with an empty
