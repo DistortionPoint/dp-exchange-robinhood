@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.70] - 2026-10-11
+
 ### Fixed
 
 - `Fake.get_balances/2` refuses an account it does not hold with
