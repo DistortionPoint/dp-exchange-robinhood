@@ -972,8 +972,35 @@ defmodule DpExchange.Robinhood.Rest do
   # Elixir's own format, which the venue does not document: refused instead.
   defp iso8601_param(nil), do: {:ok, nil}
   defp iso8601_param(%DateTime{} = value), do: {:ok, DateTime.to_iso8601(value)}
-  defp iso8601_param(value) when is_binary(value), do: {:ok, value}
+  # A string must parse as an ISO 8601 date-time with an offset (`DateTime.from_iso8601/1`);
+  # it is then sent exactly as given. Text that does not parse is the caller's mistake and is
+  # refused rather than sent for the venue to 400.
+  defp iso8601_param(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, _datetime, _offset} -> {:ok, value}
+      {:error, _reason} -> :error
+    end
+  end
+
   defp iso8601_param(_other), do: :error
+
+  @doc """
+  The instant a date filter value (`%DateTime{}` or ISO 8601 string) stands for, `nil` for
+  `nil`, `:error` when it is neither. Exposed so `DpExchange.Robinhood.Fake` compares
+  against exactly what `get_orders/2` would send.
+  """
+  @spec filter_instant(term()) :: {:ok, DateTime.t() | nil} | :error
+  def filter_instant(nil), do: {:ok, nil}
+  def filter_instant(%DateTime{} = value), do: {:ok, value}
+
+  def filter_instant(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      {:error, _reason} -> :error
+    end
+  end
+
+  def filter_instant(_other), do: :error
 
   # The `side`, `type` and `state` filters are enums in the committed spec
   # (docs/reference/robinhood/openapi, `GET /api/v2/crypto/trading/orders/`): side `buy`,

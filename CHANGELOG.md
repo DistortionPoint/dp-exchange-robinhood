@@ -19,6 +19,50 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A limiter wait inside bisection could carry a cycle past its deadline.** Every request
+  after the cycle's first is now sent with Core's `:timeout` capped to the budget left
+  (`Core.HttpClient` bounds the limiter wait by it), so a wait that would pass the deadline
+  fails at once as a rate-limit timeout, the cycle ends with the findings so far and is
+  retried next tick, and once the budget is spent no further request is sent
+  (`:bisect_budget_exhausted`). The budget is the new `:bisect_budget_ms` option (default
+  20_000).
+- **`get_orders/2` sent a date string that is not ISO 8601.** `"yesterday"` went to the venue
+  to be 400ed; it is now `{:error, {:invalid_field, key}}` before signing.
+  `Rest.filter_instant/1` is public for the Fake.
+- **`Fake.get_orders/2` ignored the date filters and `:cursor`.** It applies the four date
+  filters (on `created_at`, and on `updated_at`, which a cancel now moves; bounds inclusive,
+  unmeasured), refuses a `:cursor` with `{:error, {:invalid_field, :cursor}}` since it issues
+  none, and `:limit` changes nothing because it holds a single page.
+
+- **`Feed`'s own calls could crash the feed.** `Feed.update_symbols/2`, `add_symbols/2` and
+  `remove_symbols/2` took whatever they were given: a non-list raised inside the feed
+  process, which restarted from its boot-time opts and lost every later subscription. The
+  facade checked, but `Feed` is public. They now check and upper-case like the facade and
+  boot do, answering `{:error, {:invalid_field, :symbols}}` and leaving the set as it was
+  (`remove_symbols(feed, ["btc-usd"])` now removes `"BTC-USD"`).
+- **`subscribe_notices/2` stored a `:to` that is neither a pid nor a registered name.**
+  `Core.Fanout.resolve/1` has no clause for it, so the feed crashed on its next notice. Now
+  `{:error, {:invalid_field, :to}}`. A `subscriber:` of that kind stops the feed at start
+  (`{:invalid_option, :subscriber}`) for the same reason.
+- **The poller outlived a feed stopped with `:normal`.** The link carries only an abnormal
+  exit, so `GenServer.stop(feed)` left the poll running against the venue for a feed nobody
+  could reach. `Feed.terminate/2` now shuts the poller down.
+- **`DpExchange.Robinhood.Fake` differed from the venue in three places.** `get_orders/2`
+  ignored the `:type` filter and did not match `state: :canceled`; `subscribe/2` dropped a
+  symbol the venue does not list without a word, where the real feed delivers
+  `{:refused, symbol, {:venue_error, 400, "Invalid symbol: ..."}}`. It does that now.
+  (It still does not apply the four date filters, `:limit` or `:cursor`; stated in
+  `usage-rules.md`.)
+- Docs: `usage-rules.md` and the facade moduledoc said a call "keeps nothing" of the
+  credentials, which the supervised poll does not do; the `get_orders/2` filter refusals are
+  documented; the README pin is `~> 0.3.75`.
+
+### Changed
+
+- Test waits on spawned processes and timers use a 5_000 ms margin throughout.
+
 ## [0.3.75] - 2026-10-11
 
 ### Fixed

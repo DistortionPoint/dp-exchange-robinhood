@@ -298,6 +298,7 @@ defmodule DpExchange.Robinhood.Fake do
   # The request has already passed `Rest.validate_order_request/1`, so every amount parses.
   defp fake_order(request) do
     type = fake_order_type(Map.get(request, :order_type))
+    now = DateTime.utc_now()
 
     %Types.Order{
       id: next_order_id(),
@@ -314,7 +315,8 @@ defmodule DpExchange.Robinhood.Fake do
       status: :open,
       fee: nil,
       fee_currency: nil,
-      created_at: DateTime.utc_now(),
+      created_at: now,
+      updated_at: now,
       provider: :robinhood
     }
   end
@@ -392,7 +394,7 @@ defmodule DpExchange.Robinhood.Fake do
       with :ok <- fake_order_id(id),
            :ok <- authenticated_credentials(credentials),
            {:ok, order} <- find_order(id) do
-        {:ok, remember_order(%{order | status: :cancelled})}
+        {:ok, remember_order(%{order | status: :cancelled, updated_at: DateTime.utc_now()})}
       end
     end)
   end
@@ -413,6 +415,7 @@ defmodule DpExchange.Robinhood.Fake do
     with_injection(fn ->
       with {:ok, _account} <- fake_account(opts),
            :ok <- Rest.validate_order_filters(opts),
+           :ok <- fake_cursor(Keyword.get(opts, :cursor)),
            :ok <- authenticated_credentials(credentials) do
         placed = @orders_key |> Process.get(%{}) |> Map.values() |> Enum.sort_by(& &1.id)
         {:ok, Enum.filter(placed, &order_matches?(&1, opts))}
@@ -424,17 +427,51 @@ defmodule DpExchange.Robinhood.Fake do
   # what this process placed, so a caller asking for cancelled ETH-USD orders is not handed
   # an open BTC-USD one.
   defp order_matches?(order, opts) do
-    wanted?(Keyword.get(opts, :symbol), order.symbol, &SymbolFormat.to_canonical_symbol/1) and
+    in_window?(order.created_at, opts, :created_at_start, :created_at_end) and
+      in_window?(order.updated_at, opts, :updated_at_start, :updated_at_end) and
+      wanted?(Keyword.get(opts, :symbol), order.symbol, &SymbolFormat.to_canonical_symbol/1) and
       wanted?(Keyword.get(opts, :side), to_string(order.side), &to_string/1) and
+      wanted?(Keyword.get(opts, :type), to_string(order.order_type), &type_name/1) and
       wanted?(Keyword.get(opts, :state), to_string(order.status), &state_name/1)
   end
+
+  # `Rest`'s `:type` filter takes the contract's `:stop` or the venue's `stop_loss`, and an
+  # order's `order_type` is the contract's. The fake ignored `:type` altogether, so a caller
+  # asking for limit orders was handed every order placed.
+  defp type_name(type) when type in [:stop, :stop_loss, "stop", "stop_loss"], do: "stop"
+  defp type_name(type), do: to_string(type)
+
+  # The date filters, on what this process recorded (`created_at`, and `updated_at` which a
+  # cancel moves). Both bounds inclusive: the vendor's document does not say, so this is
+  # unmeasured and a test should not rest on the boundary instant. `Rest.validate_order_
+  # filters/1` has already refused anything that is not a `%DateTime{}` or an ISO 8601 string.
+  defp in_window?(at, opts, start_key, end_key) do
+    after_start?(at, Keyword.get(opts, start_key)) and before_end?(at, Keyword.get(opts, end_key))
+  end
+
+  defp after_start?(at, bound), do: bound_ok?(bound, &(DateTime.compare(at, &1) != :lt))
+  defp before_end?(at, bound), do: bound_ok?(bound, &(DateTime.compare(at, &1) != :gt))
+
+  defp bound_ok?(bound, check) do
+    case Rest.filter_instant(bound) do
+      {:ok, nil} -> true
+      {:ok, instant} -> check.(instant)
+    end
+  end
+
+  # The fake holds one page and issues no cursor, so any cursor is one it never gave out.
+  # Refused rather than ignored: ignoring it would answer page one for a caller asking for
+  # page two. `:limit` needs nothing here -- the venue's endpoint has no `limit` parameter,
+  # it only stops `Rest` walking `next`, and this fake has no `next` to walk.
+  defp fake_cursor(nil), do: :ok
+  defp fake_cursor(_cursor), do: {:error, {:invalid_field, :cursor}}
 
   defp wanted?(nil, _actual, _normalise), do: true
   defp wanted?(wanted, actual, normalise), do: normalise.(wanted) == actual
 
   # The venue's spelling of a state, as `Rest.order_state_param/1` sends it, back to the
   # contract's status name.
-  defp state_name(state) when state in ["canceled", :cancelled], do: "cancelled"
+  defp state_name(state) when state in ["canceled", :canceled, :cancelled], do: "cancelled"
   defp state_name(state) when state in ["failed", :rejected], do: "rejected"
   defp state_name(state), do: to_string(state)
 
@@ -583,10 +620,16 @@ defmodule DpExchange.Robinhood.Fake do
     # cannot, which is exactly the "differently capable" defect this fake exists to avoid.
     caller = self()
 
-    for symbol <- symbols, symbol in @symbols do
+    # A symbol the venue does not list is delivered as the refusal the real feed delivers for
+    # it (`Feed`'s `on_refusal`), not skipped without a word: a consumer's refusal handling
+    # was never reached by its tier-1 tests.
+    for symbol <- symbols do
       case listed_book(symbol) do
-        {:ok, book} -> send(caller, {:dp_exchange, :robinhood, book})
-        _refused -> :ok
+        {:ok, book} ->
+          send(caller, {:dp_exchange, :robinhood, book})
+
+        {:refused, reason} ->
+          send(caller, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
       end
     end
 

@@ -98,6 +98,8 @@ defmodule DpExchange.Robinhood.Feed do
     symbols. One bad symbol among 300 is found in about 17 requests, not 300. A cycle
     stops splitting at `@bisect_budget_ms` (20s), well inside the fetch timeout. What it
     has not resolved by then is silence, retried next cycle, never reported as refused.
+    Each request after the first is sent with `:timeout` capped to the budget left, which
+    also bounds a limiter wait, so no single request overruns the deadline.
   - **A symbol the venue refused is remembered** (`state.refused`) until it delivers again
     or leaves scope. The next cycle's bulk request leaves it out, so the others are back to
     ONE request without waiting for a consumer to drop it. The remembered symbols are
@@ -264,8 +266,14 @@ defmodule DpExchange.Robinhood.Feed do
   @spec coverage_by_kind(GenServer.server()) :: %{top_of_book: %{String.t() => :internal_poll}}
   def coverage_by_kind(feed), do: %{top_of_book: coverage(feed)}
 
-  @doc "Replaces the polled set."
-  @spec update_symbols(GenServer.server(), [String.t()]) :: :ok
+  @doc """
+  Replaces the polled set. Symbols are upper-cased and de-duplicated here, as at boot; a
+  list that is not made of non-blank strings is refused as `{:error, {:invalid_field,
+  :symbols}}` and the set is left as it was. It used to raise inside the feed process for a
+  non-list, which restarted the feed from its boot-time opts.
+  """
+  @spec update_symbols(GenServer.server(), [String.t()]) ::
+          :ok | {:error, {:invalid_field, :symbols}}
   def update_symbols(feed, symbols),
     do: GenServer.call(feed, {:update_symbols, symbols}, @call_timeout)
 
@@ -280,12 +288,18 @@ defmodule DpExchange.Robinhood.Feed do
   so two callers subscribing at once could each overwrite the other. Both are gone when the
   set is changed here, against `state.symbols`, in one call.
   """
-  @spec add_symbols(GenServer.server(), [String.t()]) :: :ok
+  @spec add_symbols(GenServer.server(), [String.t()]) ::
+          :ok | {:error, {:invalid_field, :symbols}}
   def add_symbols(feed, symbols),
     do: GenServer.call(feed, {:add_symbols, symbols}, @call_timeout)
 
-  @doc "Removes `symbols` from the polled set, inside this process. See `add_symbols/2`."
-  @spec remove_symbols(GenServer.server(), [String.t()]) :: :ok
+  @doc """
+  Removes `symbols` from the polled set, inside this process. See `add_symbols/2`.
+
+  Upper-cased like every other entry point, so `"btc-usd"` removes `"BTC-USD"`.
+  """
+  @spec remove_symbols(GenServer.server(), [String.t()]) ::
+          :ok | {:error, {:invalid_field, :symbols}}
   def remove_symbols(feed, symbols),
     do: GenServer.call(feed, {:remove_symbols, symbols}, @call_timeout)
 
@@ -300,6 +314,10 @@ defmodule DpExchange.Robinhood.Feed do
   Additive, never a replacement: the fixed `:subscriber` given to `start_link/1` keeps
   receiving notices too, exactly as it did before this registry existed. A dead pid or an
   unregistered name is skipped at delivery time rather than raised on — see `fan_out/2`.
+
+  `:to` must be a pid or a registered name (an atom). Anything else, a string or a `{:via,
+  _, _}` tuple, is refused as `{:error, {:invalid_field, :to}}`: it used to be stored, and
+  `Core.Fanout.resolve/1` has no clause for it, so the feed crashed on its next notice.
   """
   # `@call_timeout`, not `GenServer.call/2`'s five-second default.
   #
@@ -314,7 +332,8 @@ defmodule DpExchange.Robinhood.Feed do
   # A `GenServer.call/3` timeout exits in the CALLER, not in the feed. So the channel a host
   # uses to *hear that something is wrong* was the one call that could kill the host's
   # calling process for asking during exactly the conditions it exists to report.
-  @spec subscribe_notices(GenServer.server(), keyword()) :: :ok
+  @spec subscribe_notices(GenServer.server(), keyword()) ::
+          :ok | {:error, {:invalid_field, :to}}
   def subscribe_notices(feed, opts \\ []),
     do: GenServer.call(feed, {:subscribe_notices, Config.opt(opts, :to, self())}, @call_timeout)
 
@@ -322,11 +341,20 @@ defmodule DpExchange.Robinhood.Feed do
 
   @impl true
   def init(opts) do
-    case boot_symbols(Config.opt(opts, :symbols, [])) do
-      {:ok, symbols} -> init_feed(opts, symbols)
-      :error -> {:stop, {:invalid_option, :symbols}}
+    symbols = boot_symbols(Config.opt(opts, :symbols, []))
+    subscriber? = subscriber?(Config.opt(opts, :subscriber, nil))
+
+    case {symbols, subscriber?} do
+      {{:ok, symbols}, true} -> init_feed(opts, symbols)
+      {:error, _subscriber?} -> {:stop, {:invalid_option, :symbols}}
+      {{:ok, _symbols}, false} -> {:stop, {:invalid_option, :subscriber}}
     end
   end
+
+  # A pid, a registered name, or none. Anything else has no `Core.Fanout.resolve/1` clause and
+  # would crash this feed on its first delivery.
+  defp subscriber?(nil), do: true
+  defp subscriber?(subscriber), do: is_pid(subscriber) or is_atom(subscriber)
 
   # **Upper-cased at boot, as `DpExchange.Robinhood.subscribe/2` does at call time.** The
   # book comes back under the canonical (upper-case) symbol and `handle_info/2` drops a book
@@ -393,6 +421,8 @@ defmodule DpExchange.Robinhood.Feed do
       # keep working unchanged: a struct is a map.
       credentials: opts |> Keyword.get(:credentials, %{}) |> Credentials.wrap(),
       interval_ms: Config.opt(opts, :interval_ms, @interval_ms),
+      # How long one cycle may spend bisecting; see `@bisect_budget_ms`.
+      bisect_budget_ms: Config.opt(opts, :bisect_budget_ms, @bisect_budget_ms),
       start_delay_ms: Keyword.get(opts, :start_delay_ms),
       request_opts:
         opts
@@ -443,6 +473,7 @@ defmodule DpExchange.Robinhood.Feed do
     parent = self()
     credentials = state.credentials
     request_opts = state.request_opts
+    budget_ms = state.bisect_budget_ms
 
     # Named so it can be handed to `PollingFeed` for its own per-symbol refusal channel
     # AND reused inside `fetch_all/5`'s bisection below — one function, one
@@ -467,7 +498,7 @@ defmodule DpExchange.Robinhood.Feed do
       on_refusal: on_refusal,
       on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
       fetch_all: fn symbols ->
-        fetch_all(symbols, credentials, request_opts, on_refusal, parent)
+        fetch_all(symbols, credentials, request_opts, on_refusal, parent, budget_ms)
       end
     )
   end
@@ -478,7 +509,7 @@ defmodule DpExchange.Robinhood.Feed do
   # one request. A refusal is reported by CALLING `on_refusal`, not through the return
   # value: `PollingFeed`'s `fetch_all` contract carries one outcome per call, and a cycle
   # that found a bad symbol also has every other symbol's events to publish.
-  defp fetch_all(symbols, credentials, request_opts, on_refusal, parent) do
+  defp fetch_all(symbols, credentials, request_opts, on_refusal, parent, budget_ms) do
     refused = known_refused(parent)
     {suspect, active} = Enum.split_with(symbols, &MapSet.member?(refused, &1))
 
@@ -486,10 +517,11 @@ defmodule DpExchange.Robinhood.Feed do
       credentials: credentials,
       request_opts: request_opts,
       on_refusal: on_refusal,
-      deadline: System.monotonic_time(:millisecond) + @bisect_budget_ms
+      deadline: System.monotonic_time(:millisecond) + budget_ms
     }
 
-    outcomes = resolve(active, ctx) ++ resolve(suspect, ctx)
+    # Only the cycle's first request runs on the caller's own timeout.
+    outcomes = resolve(active, ctx, false) ++ resolve(suspect, ctx, true)
 
     case for({:events, events} <- outcomes, do: events) |> List.flatten() do
       [] -> no_events(outcomes)
@@ -515,19 +547,37 @@ defmodule DpExchange.Robinhood.Feed do
   # One bulk request for `symbols`; on a refusal, split in half and ask again, down to
   # single symbols — see the moduledoc's "A refused batch is bisected, and a refused symbol
   # is remembered". Returns a list of `{:events, _}`, `{:error, _}` and `{:refused, _}`.
-  defp resolve([], _ctx), do: []
+  #
+  # **Every request after the cycle's first is capped to the budget that is left.** Core's
+  # `:timeout` bounds the limiter wait as well as the HTTP request, so a limiter wait inside
+  # a bisection can no longer carry the cycle past its deadline into `PollingFeed`'s fetch
+  # kill, which would lose the findings so far. A request that cannot start inside the
+  # budget ends as `{:error, _}` (silence, retried next cycle), and once the budget is spent
+  # no further request is sent.
+  defp resolve([], _ctx, _capped?), do: []
 
-  defp resolve(symbols, ctx) do
-    case Rest.get_top_of_book_bulk(symbols, ctx.credentials, ctx.request_opts) do
-      {:ok, events} ->
-        [{:events, events}]
+  defp resolve(symbols, ctx, capped?) do
+    remaining = ctx.deadline - System.monotonic_time(:millisecond)
 
-      {:error, reason} ->
-        [{:error, reason}]
+    if capped? and remaining <= 0 do
+      [{:error, :bisect_budget_exhausted}]
+    else
+      request_opts =
+        if capped?, do: cap_timeout(ctx.request_opts, remaining), else: ctx.request_opts
 
-      {:refused, reason} ->
-        refused(symbols, reason, ctx)
+      case Rest.get_top_of_book_bulk(symbols, ctx.credentials, request_opts) do
+        {:ok, events} -> [{:events, events}]
+        {:error, reason} -> [{:error, reason}]
+        {:refused, reason} -> refused(symbols, reason, ctx)
+      end
     end
+  end
+
+  defp cap_timeout(request_opts, remaining) do
+    Keyword.update(request_opts, :timeout, remaining, fn
+      current when is_integer(current) and current > 0 -> min(current, remaining)
+      _unset -> remaining
+    end)
   end
 
   # 401 is the request being unauthenticated and 403 the key lacking permission. Every
@@ -552,7 +602,7 @@ defmodule DpExchange.Robinhood.Feed do
       [{:error, reason}]
     else
       {left, right} = Enum.split(symbols, div(length(symbols), 2))
-      resolve(left, ctx) ++ resolve(right, ctx)
+      resolve(left, ctx, true) ++ resolve(right, ctx, true)
     end
   end
 
@@ -572,27 +622,41 @@ defmodule DpExchange.Robinhood.Feed do
     {:reply, poller_coverage(state), state}
   end
 
-  def handle_call({:update_symbols, symbols}, _from, state), do: replace_symbols(state, symbols)
+  def handle_call({:update_symbols, symbols}, _from, state),
+    do: change_symbols(state, symbols, & &1)
 
   def handle_call({:add_symbols, symbols}, _from, state),
-    do: replace_symbols(state, Enum.uniq(state.symbols ++ symbols))
+    do: change_symbols(state, symbols, &Enum.uniq(state.symbols ++ &1))
 
   def handle_call({:remove_symbols, symbols}, _from, state),
-    do: replace_symbols(state, Enum.reject(state.symbols, &(&1 in symbols)))
+    do: change_symbols(state, symbols, fn drop -> Enum.reject(state.symbols, &(&1 in drop)) end)
 
   def handle_call(:wanted, _from, state), do: {:reply, state.symbols, state}
 
   def handle_call({:subscribe_notices, subscriber}, _from, state) do
-    state = %{
-      state
-      | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
-        monitors: Fanout.watch(subscriber, state.monitors)
-    }
+    if subscriber?(subscriber) and not is_nil(subscriber) do
+      state = %{
+        state
+        | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
+          monitors: Fanout.watch(subscriber, state.monitors)
+      }
 
-    {:reply, :ok, state}
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, {:invalid_field, :to}}, state}
+    end
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, :unknown_call}, state}
+
+  # The caller's list is checked and upper-cased first (`boot_symbols/1`), then `build` makes
+  # the new set from it. A bad list leaves the set as it was.
+  defp change_symbols(state, symbols, build) do
+    case boot_symbols(symbols) do
+      {:ok, checked} -> replace_symbols(state, build.(checked))
+      :error -> {:reply, {:error, {:invalid_field, :symbols}}, state}
+    end
+  end
 
   defp replace_symbols(state, symbols) do
     state = %{
@@ -674,6 +738,19 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  # **The poller does not outlive this feed.** It is linked, and a link carries only an
+  # abnormal exit: stopped with `:normal` (`GenServer.stop/1`, a supervisor's `:normal`
+  # restart request in a test) this feed left its poller running, polling the venue on a
+  # timer for a feed nobody could reach. `Process.exit/2` with `:shutdown` ends it whatever
+  # the reason this feed stopped for; a dead pid makes it a no-op.
+  @impl true
+  def terminate(_reason, %{poller: poller}) when is_pid(poller) do
+    Process.exit(poller, :shutdown)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   defp restart_poller(state, crashes) do
     case start_poller(state) do

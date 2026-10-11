@@ -35,7 +35,9 @@ defmodule DpExchange.Robinhood do
         api_key: "…", private_key: "…"
       })
 
-  You hold the credentials; this package signs one request with them and keeps nothing.
+  You hold the credentials. A direct call signs one request with them and keeps nothing; the
+  supervised poll is the exception, because it signs every cycle: it keeps the credentials
+  you started it with, wrapped so a crash report does not print them.
 
   ## `get_price/2` is `:unsupported` — this venue has no last-trade data at all
 
@@ -691,6 +693,7 @@ defmodule DpExchange.Robinhood do
 
   `{:error, :feed_not_started}` when this venue's feed is not running, matching
   `subscribe/2` and `update_symbols/2` rather than silently discarding the registration.
+  A `:to` that is neither a pid nor a registered name is `{:error, {:invalid_field, :to}}`.
   """
   @impl true
   @spec subscribe_notices(keyword()) :: :ok | {:error, term()}

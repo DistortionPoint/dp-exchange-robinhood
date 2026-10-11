@@ -48,3 +48,6 @@ Thumbs.db
 # Claude Code local state — agents ARE shared and committed; these are not
 .claude/settings.local.json
 .claude/projects/
+
+# Local gate logs
+*.full

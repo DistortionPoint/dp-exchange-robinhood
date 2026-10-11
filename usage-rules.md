@@ -83,6 +83,10 @@ already gets the quotes:
 Answers `{:error, :feed_not_started}` if the feed named in `opts[:feed]` (default: the
 one this venue's own supervision tree started) is not running — the same shape
 `subscribe/2` already answers, rather than a bare `:ok` that quietly registered nothing.
+`:to` must be a pid or a registered name; anything else answers `{:error, {:invalid_field,
+:to}}` (it used to be stored and crashed the feed on its next notice). A `subscriber:` given
+at start must be a pid or a name too, or the feed does not start
+(`{:invalid_option, :subscriber}`).
 
 ## A crashed poller costs one restart, never your whole symbol set
 
@@ -146,7 +150,7 @@ being *differently* capable than this venue rather than *less* capable than it, 
 test was passing against behaviour this venue cannot produce.
 
 **The fake remembers the orders it placed, per process.** `place_order/3` issues a UUID,
-a new one per order; `get_order/3` and `get_orders/2` (narrowed by `:symbol`, `:side` and
+a new one per order; `get_order/3` and `get_orders/2` (narrowed by `:symbol`, `:side`, `:type` and
 `:state`) return those orders with their own symbol, side, size and price, and
 `cancel_order/3` returns the order cancelled and later reads say `:cancelled`. An id the
 fake never issued is the venue's 404, `{:refused, {:venue_error, 404}}`, on a read and on a
@@ -157,7 +161,9 @@ Passing the wrong one is refused here with `{:error, {:invalid_private_key, reas
 `{:expected_32_bytes, n}`, `:not_base64` or `:not_a_string` — rather than producing a
 signature the venue rejects with nothing to explain it.
 
-You hold the credentials. This package signs one request with them and keeps nothing.
+You hold the credentials. A direct call signs one request with them and keeps nothing. The
+supervised poll is the exception: it signs every cycle, so it keeps the credentials you
+started it with (wrapped, as described above).
 
 ## `get_price/2` is `:unsupported` — this venue has no last-trade data at all
 
@@ -268,7 +274,15 @@ with `opts[:cursor]` to choose which page.
 The filters it sends are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
 `:updated_at_end`, `:symbol`, `:side`, `:type` and `:state`. `:state` takes the venue's own
 word or a `Core` status atom: `:cancelled` is sent as `"canceled"` and `:rejected` as
-`"failed"`.
+`"failed"`. A filter outside the venue's enums (`side` `buy`/`sell`; `type` `market`,
+`limit`, `stop_loss`, `stop_limit`; `state` `open`, `canceled`, `filled`, `failed`,
+`pending`), a `symbol` that is not a non-empty string, or a date that is neither a
+`%DateTime{}` nor a string that parses as an ISO 8601 date-time with an offset is refused as
+`{:error, {:invalid_field, key}}` before anything is signed. `DpExchange.Robinhood.Fake`
+narrows by `:symbol`, `:side`, `:type`, `:state` and the four date filters (bounds
+inclusive; the vendor does not say, so that is unmeasured). It holds one page of the orders
+this process placed, so `:limit` changes nothing there, and a `:cursor` is refused as
+`{:error, {:invalid_field, :cursor}}` because the Fake never issued one.
 
 `get_order/3` calls `GET /api/v2/crypto/trading/orders/{id}/`, a path the vendor's OpenAPI
 `paths` does not list. It appears only in the spec's sample client, and it has not been

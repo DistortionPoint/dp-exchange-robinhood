@@ -160,7 +160,7 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
       assert_receive {:request, _path, query}, 5_000
       assert URI.decode_query(query)["created_at_start"] == "2026-10-01T00:00:00Z"
 
-      for bad <- [~N[2026-10-01 00:00:00], ~D[2026-10-01], 5] do
+      for bad <- [~N[2026-10-01 00:00:00], ~D[2026-10-01], 5, "yesterday", "2026-10-01", ""] do
         assert {:error, {:invalid_field, :updated_at_end}} =
                  Rest.get_orders(@credentials, opts(@base ++ [updated_at_end: bad]))
       end

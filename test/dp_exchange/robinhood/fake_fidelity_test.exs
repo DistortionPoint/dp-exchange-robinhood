@@ -182,6 +182,102 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     end
   end
 
+  describe "get_orders/2: the :type and :state filters narrow as the venue's do" do
+    test ":type narrows, taking the contract's :stop or the venue's stop_loss" do
+      limit = Map.merge(@order, %{order_type: :limit, price: "1", time_in_force: :gtc})
+      stop = Map.merge(@order, %{order_type: :stop, stop_price: "1", time_in_force: :gtc})
+
+      assert {:ok, market} = Fake.place_order(@credentials, @order, @account)
+      assert {:ok, limit} = Fake.place_order(@credentials, limit, @account)
+      assert {:ok, stop} = Fake.place_order(@credentials, stop, @account)
+
+      ids = fn filter ->
+        {:ok, orders} = Fake.get_orders(@credentials, @account ++ filter)
+        orders |> Enum.map(& &1.id) |> Enum.sort()
+      end
+
+      assert ids.(type: :market) == [market.id]
+      assert ids.(type: "limit") == [limit.id]
+      assert ids.(type: :stop) == [stop.id]
+      assert ids.(type: "stop_loss") == [stop.id]
+      assert ids.(type: :stop_limit) == []
+      assert ids.([]) == Enum.sort([market.id, limit.id, stop.id])
+    end
+
+    test "a cancelled order is found under :cancelled and under :canceled" do
+      assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
+      assert {:ok, _cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
+
+      for state <- [:cancelled, :canceled, "canceled"] do
+        assert {:ok, [found]} = Fake.get_orders(@credentials, @account ++ [state: state])
+        assert found.id == placed.id
+      end
+
+      assert {:ok, []} = Fake.get_orders(@credentials, @account ++ [state: :open])
+    end
+  end
+
+  describe "get_orders/2: date filters, :cursor and :limit" do
+    test "created_at and updated_at windows narrow, for DateTimes and ISO 8601 strings" do
+      assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
+
+      past = DateTime.add(DateTime.utc_now(), -3_600, :second)
+      future = DateTime.add(DateTime.utc_now(), 3_600, :second)
+
+      ids = fn filter ->
+        {:ok, orders} = Fake.get_orders(@credentials, @account ++ filter)
+        Enum.map(orders, & &1.id)
+      end
+
+      assert ids.(created_at_start: past, created_at_end: future) == [placed.id]
+      assert ids.(created_at_start: DateTime.to_iso8601(past)) == [placed.id]
+      assert ids.(created_at_start: future) == []
+      assert ids.(created_at_end: DateTime.to_iso8601(past)) == []
+      assert ids.(updated_at_start: past, updated_at_end: future) == [placed.id]
+      assert ids.(updated_at_start: DateTime.to_iso8601(future)) == []
+    end
+
+    test "a cancel moves updated_at but not created_at" do
+      assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
+      assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
+
+      assert cancelled.created_at == placed.created_at
+      assert DateTime.compare(cancelled.updated_at, placed.updated_at) != :lt
+    end
+
+    test "an unparseable date string is refused exactly as Rest refuses it" do
+      for key <- [:created_at_start, :created_at_end, :updated_at_start, :updated_at_end] do
+        opts = @account ++ [{key, "yesterday"}]
+
+        assert Fake.get_orders(@credentials, opts) == {:error, {:invalid_field, key}}
+        assert Rest.validate_order_filters(opts) == {:error, {:invalid_field, key}}
+      end
+    end
+
+    test "a cursor is refused, the fake having issued none; :limit changes nothing" do
+      assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
+
+      assert Fake.get_orders(@credentials, @account ++ [cursor: "page-2"]) ==
+               {:error, {:invalid_field, :cursor}}
+
+      assert {:ok, [only]} = Fake.get_orders(@credentials, @account ++ [limit: 1])
+      assert only.id == placed.id
+    end
+  end
+
+  describe "subscribe/2: a symbol the venue does not list is refused, as the feed refuses it" do
+    test "the refusal is delivered and the symbol is not covered" do
+      :ok = Fake.subscribe(["nope-usd", "BTC-USD"])
+
+      assert_receive {:dp_exchange, :robinhood,
+                      {:refused, "NOPE-USD", {:venue_error, 400, "Invalid symbol: NOPE-USD"}}},
+                     5_000
+
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+      assert Fake.coverage() == %{"BTC-USD" => :internal_poll}
+    end
+  end
+
   describe "get_balances/2: :asset_codes narrows the holdings, not only the cash" do
     test "asking for an asset the fake does not hold returns no holding" do
       opts = @account ++ [asset_codes: ["ETH"]]

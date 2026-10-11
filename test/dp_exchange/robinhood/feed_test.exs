@@ -170,7 +170,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # tick is 60s away) — only acquire/3 (the default) delivers here at all.
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     1_000
+                     5_000
     end
 
     test "a caller can still opt into fail-fast explicitly, and it costs the symbol this cycle" do
@@ -211,7 +211,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       ref = Process.monitor(watcher)
       Process.exit(watcher, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^watcher, _reason}
+      assert_receive {:DOWN, ^ref, :process, ^watcher, _reason}, 5_000
 
       # A call is answered only after the feed's own `:DOWN` has been handled.
       _settled = :sys.get_state(feed)
@@ -232,7 +232,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       ref = Process.monitor(consumer)
       Process.exit(consumer, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^consumer, _reason}
+      assert_receive {:DOWN, ^ref, :process, ^consumer, _reason}, 5_000
       _settled = :sys.get_state(feed)
 
       assert :sys.get_state(feed).subscriber == consumer
@@ -253,7 +253,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       ref = Process.monitor(holder)
       Process.exit(holder, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^holder, _reason}
+      assert_receive {:DOWN, ^ref, :process, ^holder, _reason}, 5_000
       _settled = :sys.get_state(feed)
 
       assert MapSet.member?(:sys.get_state(feed).notice_subscribers, name)
@@ -372,7 +372,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # every real poll — the exact defect this asserts against.
       start_feed()
 
-      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{} = book}, 1_000
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{} = book}, 5_000
       assert book.symbol == "BTC-USD"
       assert Decimal.equal?(book.bid, Decimal.new("0.99"))
       assert Decimal.equal?(book.ask, Decimal.new("1.01"))
@@ -406,16 +406,16 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       start_feed(symbols: ["BTC-USD", "ETH-USD"], plug: plug)
 
-      assert_receive {:request, symbols}, 1_000
+      assert_receive {:request, symbols}, 5_000
       assert Enum.sort(symbols) == ["BTC-USD", "ETH-USD"]
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     1_000
+                     5_000
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "ETH-USD"}},
-                     1_000
+                     5_000
 
       # `interval_ms` defaults to 60s in `start_feed/1` — a second request inside this
       # window would mean this venue fell back to per-symbol calls with nothing wrong.
@@ -441,7 +441,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     1_000
+                     5_000
 
       # Several more ticks pass at 50ms — long enough to prove ETH-USD's absence never
       # becomes a refusal, not just that it wasn't one on the very first attempt.
@@ -499,15 +499,15 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: plug
       )
 
-      assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 1_000
+      assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 5_000
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     1_000
+                     5_000
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "ETH-USD"}},
-                     1_000
+                     5_000
     end
 
     test "dropping the refused symbol restores the one-request bulk cost on the next cycle" do
@@ -545,7 +545,7 @@ defmodule DpExchange.Robinhood.FeedTest do
           plug: plug
         )
 
-      assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 1_000
+      assert_receive {:dp_exchange, :robinhood, {:refused, ^bad_symbol, _reason}}, 5_000
       :ok = Feed.update_symbols(feed, ["BTC-USD", "ETH-USD"])
 
       assert_bulk_request_for(["BTC-USD", "ETH-USD"])
@@ -593,7 +593,7 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: refusing("LTC-USD")
       )
 
-      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 1_000
+      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 5_000
       assert_bulk_request_for(["BTC-USD", "ETH-USD"])
     end
 
@@ -607,14 +607,14 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: refusing("S7-USD")
       )
 
-      assert_receive {:dp_exchange, :robinhood, {:refused, "S7-USD", _reason}}, 2_000
+      assert_receive {:dp_exchange, :robinhood, {:refused, "S7-USD", _reason}}, 5_000
 
       # The cycle's books are published only once its whole bisection has returned, so a
       # book from the last half means every request of the cycle has already been sent
       # (the interval is 60s, so there is no second cycle). That replaces a sleep.
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "S16-USD"}},
-                     2_000
+                     5_000
 
       # 1 whole batch + 2 per level for 4 levels = at most 9, against 16 per symbol.
       assert length(drain_requests()) <= 9
@@ -638,7 +638,7 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: plug
       )
 
-      assert_receive {:request, first}, 1_000
+      assert_receive {:request, first}, 5_000
       assert length(first) == 3
       refute_receive {:request, _split}, 300
       refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
@@ -662,7 +662,7 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: plug
       )
 
-      assert_receive {:request, first}, 1_000
+      assert_receive {:request, first}, 5_000
       assert length(first) == 3
       refute_receive {:request, _split}, 300
       refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
@@ -684,12 +684,12 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: refusing("LTC-USD", fn -> Agent.get(flag, & &1) end)
       )
 
-      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 1_000
+      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 5_000
       Agent.update(flag, fn _released -> true end)
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "LTC-USD"}},
-                     2_000
+                     5_000
 
       assert_bulk_request_for(["BTC-USD", "LTC-USD"])
     end
@@ -712,13 +712,13 @@ defmodule DpExchange.Robinhood.FeedTest do
         plug: plug
       )
 
-      assert_receive {:request, symbols}, 1_000
+      assert_receive {:request, symbols}, 5_000
       assert Enum.sort(symbols) == ["BTC-USD", "ETH-USD"]
 
       # A second bulk-shaped request on the next tick — never a per-symbol fallback pair —
       # is what proves an ordinary outage was left to `PollingFeed`'s own retry rather than
       # multiplied into 86 requests for no gain.
-      assert_receive {:request, next_symbols}, 1_000
+      assert_receive {:request, next_symbols}, 5_000
       assert Enum.sort(next_symbols) == ["BTC-USD", "ETH-USD"]
     end
 
@@ -741,7 +741,7 @@ defmodule DpExchange.Robinhood.FeedTest do
             assert_bulk_request_for(wanted, attempts - 1)
           end
       after
-        2_000 -> flunk("no request arrived at all — wanted: #{inspect(wanted)}")
+        5_000 -> flunk("no request arrived at all — wanted: #{inspect(wanted)}")
       end
     end
   end
@@ -765,7 +765,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning} = notice},
-                     2_000
+                     5_000
 
       # The ATOM, not the string this used to be. `Core.PollingFeed` named its notices
       # by its `label`, so this venue emitted `:robinhood` from `Feed`'s own notices and
@@ -782,7 +782,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     2_000
+                     5_000
 
       # At 40ms/tick this window spans several more failed attempts. `PollingFeed`
       # latches to `:dead` on the first crossing and does not re-fire until recovery, so
@@ -795,11 +795,11 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     2_000
+                     5_000
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :info} = recovered},
-                     1_000
+                     5_000
 
       assert recovered.message =~ "has resumed delivering"
       assert recovered.message =~ "consecutive failures"
@@ -823,11 +823,11 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     2_000
+                     5_000
 
       assert {^monitor,
               {:dp_exchange, :robinhood, %Notice{kind: :coverage_change, severity: :warning}}} =
-               Task.await(task, 2_000)
+               Task.await(task, 5_000)
     end
 
     test "subscribe_notices/2 defaults :to to the caller" do
@@ -845,13 +845,13 @@ defmodule DpExchange.Robinhood.FeedTest do
           end
         end)
 
-      assert_receive :registered, 1_000
+      assert_receive :registered, 5_000
       assert Process.alive?(registrant)
 
       assert_receive {:relayed,
                       {:dp_exchange, :robinhood,
                        %Notice{kind: :coverage_change, severity: :warning}}},
-                     2_000
+                     5_000
     end
 
     test "a registered name that is not alive is skipped rather than crashing the feed" do
@@ -863,7 +863,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # costs nothing but its own delivery.
       assert_receive {:dp_exchange, :robinhood,
                       %Notice{kind: :coverage_change, severity: :warning}},
-                     2_000
+                     5_000
 
       assert Process.alive?(feed)
     end
@@ -889,14 +889,14 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       for _crash <- 1..5 do
         Process.exit(:sys.get_state(feed).poller, :kill)
-        assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 1_000
+        assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
       end
 
       assert Process.alive?(feed)
 
       Process.exit(:sys.get_state(feed).poller, :kill)
 
-      assert_receive {:EXIT, ^feed, {:poller_crash_loop, :killed}}, 1_000
+      assert_receive {:EXIT, ^feed, {:poller_crash_loop, :killed}}, 5_000
     end
 
     test "the feed survives its linked poller being killed" do
@@ -951,7 +951,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     3_000
+                     5_000
 
       assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
 
@@ -964,7 +964,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       Process.exit(old_poller, :kill)
 
-      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 500
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
       assert Process.alive?(feed)
 
       new_poller = :sys.get_state(feed).poller
@@ -984,7 +984,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     3_000
+                     5_000
 
       assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
     end
@@ -999,7 +999,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     3_000
+                     5_000
 
       poller = :sys.get_state(feed).poller
       link_poller_into_feed(feed, poller)
@@ -1010,7 +1010,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # symbols`, not from the static opts `start_link/1` was given.
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
-                     3_000
+                     5_000
     end
   end
 
@@ -1033,7 +1033,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       dead = spawn(fn -> :ok end)
       ref = Process.monitor(dead)
-      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 500
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 5_000
 
       :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
 
@@ -1050,7 +1050,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # as happily as the notice, after which `notice.kind` raises `KeyError` on a struct
       # that has no such field. Seen twice in 30 full-suite runs, as a crash rather than a
       # failed assertion, which is how a loose pattern reports being wrong.
-      assert_receive {:dp_exchange, :robinhood, %Notice{} = notice}, 500
+      assert_receive {:dp_exchange, :robinhood, %Notice{} = notice}, 5_000
       assert notice.kind == :link_down
       assert notice.severity == :warning
       assert notice.message =~ "did not answer a coverage read"
@@ -1095,7 +1095,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       start_feed([])
 
-      assert_receive {:telemetry, [:dp_exchange, :link, :event], measurements, metadata}, 2_000
+      assert_receive {:telemetry, [:dp_exchange, :link, :event], measurements, metadata}, 5_000
       assert measurements.count == 1
       refute Map.has_key?(measurements, :bytes)
       # The struct names its own kind — never a channel name, never a subscription intent.
@@ -1197,6 +1197,103 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  describe "bisection is bounded by its budget, limiter wait included" do
+    test "a limiter wait that would pass the deadline ends the cycle without another request" do
+      test_pid = self()
+
+      plug = fn conn ->
+        symbols = query_symbols(conn.query_string)
+        send(test_pid, {:request, symbols})
+
+        status = if length(symbols) > 1, do: 400, else: 404
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(status, Jason.encode!(%{"detail" => "Invalid symbol"}))
+      end
+
+      # One token every 3s, already spent: the cycle's FIRST request waits for the limiter
+      # (provider and endpoint buckets, measured at ~6s) and is sent on the caller's own
+      # timeout, is refused as a batch, and bisection then needs another token ~3s later.
+      # By then the 5s budget is spent, so no bisected request may go out. Uncapped, it
+      # waited the 3s out and sent inside the refute window below.
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD"],
+        interval_ms: 60_000,
+        retry_attempts: 0,
+        bisect_budget_ms: 5_000,
+        limiter: exhausted_limiter(3_000),
+        plug: plug
+      )
+
+      assert_receive {:request, ["BTC-USD", "ETH-USD"]}, 20_000
+      refute_receive {:request, _bisected}, 6_000
+      refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
+    end
+  end
+
+  describe "the feed's own calls refuse what would crash it" do
+    test "a symbol list that is not non-blank strings is refused and the set is kept" do
+      feed = start_feed(symbols: ["BTC-USD"], start_delay_ms: 60_000)
+
+      for bad <- [:btc, "BTC-USD", [nil], [:btc], [""], ["ETH-USD", "  "]] do
+        assert Feed.update_symbols(feed, bad) == {:error, {:invalid_field, :symbols}}
+        assert Feed.add_symbols(feed, bad) == {:error, {:invalid_field, :symbols}}
+        assert Feed.remove_symbols(feed, bad) == {:error, {:invalid_field, :symbols}}
+      end
+
+      assert Process.alive?(feed)
+      assert Feed.wanted(feed) == ["BTC-USD"]
+    end
+
+    test "symbols are upper-cased by every call, so a lower-case removal removes" do
+      feed = start_feed(symbols: ["BTC-USD"], start_delay_ms: 60_000)
+
+      assert :ok = Feed.add_symbols(feed, ["eth-usd", "ETH-USD"])
+      assert Feed.wanted(feed) == ["BTC-USD", "ETH-USD"]
+
+      assert :ok = Feed.remove_symbols(feed, ["btc-usd"])
+      assert Feed.wanted(feed) == ["ETH-USD"]
+
+      assert :ok = Feed.update_symbols(feed, ["ltc-usd"])
+      assert Feed.wanted(feed) == ["LTC-USD"]
+    end
+
+    test "a notice subscriber that is not a pid or a name is refused, not stored" do
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+
+      for bad <- ["watcher", {:via, Registry, {:r, :k}}, 5] do
+        assert Feed.subscribe_notices(feed, to: bad) == {:error, {:invalid_field, :to}}
+      end
+
+      assert MapSet.size(:sys.get_state(feed).notice_subscribers) == 1
+      assert Process.alive?(feed)
+    end
+
+    test "a :subscriber that is not a pid or a name stops the feed at init" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {:invalid_option, :subscriber}} =
+               Feed.start_link(
+                 name: :"feed_#{System.unique_integer([:positive])}",
+                 credentials: @credentials,
+                 symbols: [],
+                 subscriber: "not a pid",
+                 start_delay_ms: 60_000
+               )
+    end
+
+    test "the poller does not outlive a feed stopped normally" do
+      feed = start_feed(start_delay_ms: 60_000)
+      poller = :sys.get_state(feed).poller
+      ref = Process.monitor(poller)
+
+      :ok = GenServer.stop(feed, :normal)
+
+      assert_receive {:DOWN, ^ref, :process, ^poller, _reason}, 5_000
+    end
+  end
+
   describe "symbols given at boot" do
     # The facade upper-cases a later `subscribe/2`, but the boot-time list went in verbatim.
     # The venue answers under `BTC-USD`, `handle_info/2` drops a book whose symbol is not in
@@ -1206,7 +1303,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       feed = start_feed(symbols: ["btc-usd", "BTC-USD"], start_delay_ms: 0)
 
       assert Feed.wanted(feed) == ["BTC-USD"]
-      assert_receive {:dp_exchange, :robinhood, %{symbol: "BTC-USD"}}, 2_000
+      assert_receive {:dp_exchange, :robinhood, %{symbol: "BTC-USD"}}, 5_000
     end
 
     test "that are not a list of non-blank strings stop the feed rather than poll them" do

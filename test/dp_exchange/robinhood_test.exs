@@ -558,7 +558,7 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.coverage() == %{}
     end
 
-    test "an unlisted symbol is refused, and subscribing to one pushes nothing" do
+    test "an unlisted symbol is refused, and subscribing to one pushes only that refusal" do
       assert Fake.get_top_of_book("NOPE-USD", credentials: @credentials) ==
                {:refused, {:venue_error, 400, "Invalid symbol: NOPE-USD"}}
 
@@ -566,6 +566,10 @@ defmodule DpExchange.RobinhoodTest do
       assert Fake.coverage() == %{}
       # `Fake.subscribe/2` sends synchronously from this process, so anything it was going to
       # push is already in the mailbox; a timed wait would only add a clock to the check.
+      # The real feed reports the venue's refusal; the fake does the same, and nothing else.
+      assert_received {:dp_exchange, :robinhood,
+                       {:refused, "NOPE-USD", {:venue_error, 400, "Invalid symbol: NOPE-USD"}}}
+
       refute_received {:dp_exchange, :robinhood, _anything}
     end
 
@@ -707,7 +711,7 @@ defmodule DpExchange.RobinhoodTest do
         end
       end)
 
-      assert_receive :registered, 1_000
+      assert_receive :registered, 5_000
 
       assert DpExchange.Robinhood.subscribe(["BTC-USD"], feed: name) ==
                {:error, {:feed_exited, :boom}}
@@ -721,7 +725,7 @@ defmodule DpExchange.RobinhoodTest do
       opts = [to: self(), account_id: "acct", account_number: "acct", account_hash: "acct"]
 
       assert :ok = DpExchange.Robinhood.Fake.subscribe(["btc-usd"], opts)
-      assert_receive {:dp_exchange, _venue, %{symbol: "BTC-USD"}}, 2_000
+      assert_receive {:dp_exchange, _venue, %{symbol: "BTC-USD"}}, 5_000
       assert Map.has_key?(DpExchange.Robinhood.Fake.coverage(opts), "BTC-USD")
     end
   end

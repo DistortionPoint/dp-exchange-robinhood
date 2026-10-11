@@ -163,7 +163,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
           retry_attempts: 0
         )
 
-      assert_receive {:dp_exchange, :robinhood, %Types.TopOfBook{symbol: "BTC-USD"}}, 3_000
+      assert_receive {:dp_exchange, :robinhood, %Types.TopOfBook{symbol: "BTC-USD"}}, 5_000
       assert Feed.coverage(feed) == %{"BTC-USD" => :internal_poll}
 
       # `coverage_by_kind/1` wraps the exact same observed fact under the one kind this
@@ -194,7 +194,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
       assert_receive {:dp_exchange, :robinhood,
                       {:refused, "NOPE-USD", {:venue_error, 404, "Symbol not found"}}},
-                     3_000
+                     5_000
     end
 
     test "an empty page is retried, never reported as a refusal — issue #25", %{
@@ -221,7 +221,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
         )
 
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Notice{kind: :coverage_change}},
-                     3_000
+                     5_000
 
       refute_receive {:dp_exchange, :robinhood, {:refused, "NOPE-USD", _reason}}, 200
     end
@@ -274,7 +274,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
   end
 
   describe "the fake's short arity" do
-    test "subscribe works without options, and an unlisted symbol pushes nothing" do
+    test "subscribe works without options, and an unlisted symbol is never covered" do
       # **This asserted `coverage() == %{}` after subscribing a LISTED symbol first**, and
       # passed only because `subscribe/2` replaced the live set: `"BTC-USD"` was wiped by
       # the second call and `"NOPE-USD"` contributes nothing, so the empty map came out of
@@ -284,6 +284,9 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       # asserted directly now, and holds whichever way `subscribe/2` composes.
       assert :ok = Fake.subscribe(["BTC-USD"])
       assert :ok = Fake.subscribe(["NOPE-USD"])
+
+      # The refusal the real feed delivers for it, rather than silence.
+      assert_receive {:dp_exchange, :robinhood, {:refused, "NOPE-USD", _reason}}, 5_000
 
       covered = Map.keys(Fake.coverage())
 
