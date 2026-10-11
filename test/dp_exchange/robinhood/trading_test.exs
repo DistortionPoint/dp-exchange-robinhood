@@ -1048,18 +1048,41 @@ defmodule DpExchange.Robinhood.TradingTest do
       end
     end
 
-    test "a state this package does not know is nil, never the nearest" do
+    test "a state this package does not know is refused, never the nearest or nil" do
       # A caller branching on :filled must not be handed it for a word that looked close.
       body = %{"id" => "o-1", "state" => "pending_settlement"}
 
-      assert {:ok, order} =
-               Rest.get_order(@credentials, "o-1",
+      assert Rest.get_order(@credentials, "o-1",
+               account_number: "RH-1",
+               plug: responding(body),
+               retry_attempts: 0
+             ) == {:error, {:unknown_enum, :state, "pending_settlement"}}
+    end
+
+    for {field, value} <- [{"side", "short"}, {"type", "iceberg"}] do
+      test "an unknown order #{field} #{value} is refused" do
+        body = %{"id" => "o-1", unquote(field) => unquote(value)}
+
+        assert Rest.get_order(@credentials, "o-1",
                  account_number: "RH-1",
                  plug: responding(body),
                  retry_attempts: 0
-               )
+               ) == {:error, {:unknown_enum, String.to_atom(unquote(field)), unquote(value)}}
+      end
+    end
 
-      assert order.status == nil
+    test "an unknown time_in_force inside an order config is refused" do
+      body = %{
+        "id" => "o-1",
+        "type" => "limit",
+        "limit_order_config" => %{"asset_quantity" => "1", "time_in_force" => "ioc"}
+      }
+
+      assert Rest.get_order(@credentials, "o-1",
+               account_number: "RH-1",
+               plug: responding(body),
+               retry_attempts: 0
+             ) == {:error, {:unknown_enum, :time_in_force, "ioc"}}
     end
 
     test "an unfilled order's quantity comes from its own config" do

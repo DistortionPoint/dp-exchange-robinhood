@@ -19,6 +19,31 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An order carrying a value outside the vendor's enums was decoded with `nil` in that
+  field.** `OrderResponse.side` (`buy`, `sell`), `type` (`market`, `limit`, `stop_loss`,
+  `stop_limit`), `state` (`open`, `partially_filled`, `filled`, `canceled`, `failed`, plus
+  the filter word `pending`) and the config's `time_in_force` (`gtc`, `gfd`, `gfw`, `gfm`)
+  are now checked in `Rest.get_order/3`, `place_order/3`, `cancel_order/3` and
+  `get_orders/2`; a present, unknown value refuses with
+  `{:error, {:unknown_enum, field, value}}` (a whole `get_orders/2` page refuses on one such
+  row). An absent field is still `nil`.
+
+- **An order or estimate amount with a huge exponent was expanded to full
+  notation, building a string of that many digits in the caller's process.** (Decimal 3.2's
+  parser already refuses a string exponent past 6144; this guards the 41..6144 range and
+  `%Decimal{}` values passed in directly.) Amounts whose
+  exponent exceeds 40 places either way are now refused locally as
+  `{:error, {:invalid_field, key}}`, before anything is signed.
+
+### Added
+
+- Tests that the fake's order ids round-trip through its own `get_order/3` and
+  `cancel_order/3`, and that `place_orders/3`, `replace_order/4` and `close_position/3`
+  (declared `:unsupported`) answer `{:error, :not_supported}` in the fake, so core's
+  conformance assertion 31 has nothing to mint.
+
 ## [0.3.73] - 2026-10-11
 
 ### Fixed

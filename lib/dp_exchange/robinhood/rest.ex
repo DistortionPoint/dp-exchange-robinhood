@@ -856,7 +856,9 @@ defmodule DpExchange.Robinhood.Rest do
   defp positive_string(value) do
     case input_decimal(value) do
       %Decimal{} = amount ->
-        if Decimal.positive?(amount),
+        # `|exp| > 40` would expand to a string of that many zeros ("1e999999999" is a
+        # gigabyte); no crypto quantity or price needs more than 40 decimal places.
+        if Decimal.positive?(amount) and abs(amount.exp) <= 40,
           do: {:ok, Decimal.to_string(amount, :normal)},
           else: :error
 
@@ -1312,11 +1314,38 @@ defmodule DpExchange.Robinhood.Rest do
   # `to_orders/1` refuses the whole batch on one unreadable row, because a list with an order
   # silently missing reads as complete. `Core.Types.Order` admits `id: nil` for
   # acknowledgements that carry little else; this venue's V2 order object always carries one.
-  defp to_order(%{"id" => id} = row) when is_binary(id) and id != "",
-    do: {:ok, order_struct(row)}
+  defp to_order(%{"id" => id} = row) when is_binary(id) and id != "" do
+    with :ok <- known_enums(row), do: {:ok, order_struct(row)}
+  end
 
   defp to_order(row) when is_map(row), do: {:error, {:missing_required_field, :id}}
   defp to_order(_row), do: {:error, :unexpected_response_shape}
+
+  # A PRESENT value outside `OrderResponse`'s enums (`side`, `type`, `state`, and
+  # `time_in_force` in the type-named config; `pending` is added to `state` as the venue's
+  # own filter word) is refused rather than decoded as `nil`: an order whose state or side is
+  # unreadable is not a weaker answer, it is one a caller may act on wrongly. An ABSENT
+  # field stays `nil` -- nothing was said, and nothing is invented.
+  @order_enums [
+    side: ~w(buy sell),
+    type: ~w(market limit stop_loss stop_limit),
+    state: ~w(open partially_filled filled canceled failed pending)
+  ]
+  @tif_wire_names ~w(gtc gfd gfw gfm)
+
+  defp known_enums(row) do
+    checks =
+      Enum.map(@order_enums, fn {field, allowed} ->
+        {field, row[Atom.to_string(field)], allowed}
+      end) ++ [{:time_in_force, configured_time_in_force(row), @tif_wire_names}]
+
+    Enum.find_value(checks, :ok, fn
+      {_field, nil, _allowed} -> nil
+      {field, value, allowed} -> if value in allowed, do: nil, else: unknown_enum(field, value)
+    end)
+  end
+
+  defp unknown_enum(field, value), do: {:error, {:unknown_enum, field, value}}
 
   # The orders endpoint answers with a page, `{"next": …, "results": [...]}`, and never with a
   # bare order — so, unlike `account_rows/1`, there is no bare-object clause to fall into.
