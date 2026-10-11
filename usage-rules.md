@@ -507,6 +507,11 @@ claim.** It distinguishes a figure measured live against the venue's API from on
 documentation page and never probed — and this package's own declarations contain both
 kinds, stated per claim rather than as one blanket sentence.
 
+This venue's rate ceilings (`public_ceiling` and `authenticated_ceiling`, both 100 requests a
+minute with bursts of 300, counted per account) are of the second kind: the figures in the
+vendor's own OpenAPI document, which says they fluctuate and differ per endpoint. They have
+never been probed against the live venue.
+
 A claim read from documentation is not worse, it is *different*: it is what the vendor says
 it will do, which is the right basis for a ceiling you must not exceed and a weaker basis for
 behaviour you are about to depend on. If your decision turns on the difference, read the
@@ -540,3 +545,9 @@ feed is too busy to answer within its call budget, and `{:error, {:feed_exited, 
 when it dies while answering. `coverage/1` answers an empty map in all three cases, `coverage_by_kind/1` answers
 `%{top_of_book: %{}}` and `wanted/1` an empty list; each means "not observed". Treat `:feed_timeout` as transient and retry.
 Treat the other two as a feed your supervision tree has to bring back.
+
+**A symbol list must be a list of non-blank strings.** Anything else (a bare string, `nil`,
+an atom or a blank element) answers `{:error, {:invalid_field, :symbols}}` from
+`subscribe/2`, `unsubscribe/2` and `update_symbols/2`, and the feed is left as it was. It
+used to be passed through, where a non-list crashed the feed and lost every later
+subscription. Symbols are upper-cased on the way in.

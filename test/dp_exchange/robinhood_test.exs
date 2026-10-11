@@ -93,6 +93,33 @@ defmodule DpExchange.RobinhoodTest do
       assert caps.measured_against =~ "NOT probed"
     end
 
+    test "the rate ceilings are the figures the vendor's own document states" do
+      # The ceiling was `10` a second (600 a minute) under a note that the vendor publishes no
+      # figures. Its OpenAPI document does: 100 a minute per account, bursts of 300. Read from
+      # that document here, so the declaration cannot drift from it again unnoticed.
+      description =
+        "docs/reference/robinhood/openapi/crypto-trading.openapi.json"
+        |> File.read!()
+        |> Jason.decode!()
+        |> get_in(["info", "description"])
+
+      [_all, sustained] = Regex.run(~r/Requests per minute per user account: (\d+)/, description)
+
+      [_all, burst] =
+        Regex.run(~r/Requests per minute per user account in bursts: (\d+)/, description)
+
+      caps = Robinhood.capabilities()
+
+      for ceiling <- [caps.public_ceiling, caps.authenticated_ceiling] do
+        assert ceiling.limit == String.to_integer(sustained)
+        assert ceiling.per_ms == 60_000
+        assert ceiling.burst == String.to_integer(burst)
+        assert ceiling.scope == :account
+      end
+
+      assert caps.measured_against =~ "100 requests a minute"
+    end
+
     test "the declaration survives Capabilities' own validation" do
       assert %Capabilities{} = Robinhood.capabilities()
     end
@@ -207,6 +234,31 @@ defmodule DpExchange.RobinhoodTest do
 
     test "subscribe_notices registers against a running feed", %{name: name} do
       assert Robinhood.subscribe_notices(feed: name) == :ok
+    end
+
+    test "a malformed symbol list is refused and does not crash the feed", %{
+      name: name,
+      feed: feed
+    } do
+      # A non-list used to raise inside `Feed` (`state.symbols ++ 5`), killing it: it came
+      # back from the supervisor's boot-time opts with every later subscription lost.
+      :ok = Robinhood.subscribe(["BTC-USD"], feed: name)
+
+      for bad <- [:BTC, "BTC-USD", nil, [nil], [:btc], [""], ["  "], ["BTC-USD", 5]] do
+        assert Robinhood.subscribe(bad, feed: name) == {:error, {:invalid_field, :symbols}}
+        assert Robinhood.unsubscribe(bad, feed: name) == {:error, {:invalid_field, :symbols}}
+        assert Robinhood.update_symbols(bad, feed: name) == {:error, {:invalid_field, :symbols}}
+      end
+
+      assert Process.alive?(feed)
+      assert Robinhood.wanted(feed: name) == ["BTC-USD"]
+    end
+
+    test "the fake refuses a malformed symbol list the same way" do
+      assert Fake.subscribe(:BTC, []) == {:error, {:invalid_field, :symbols}}
+      assert Fake.subscribe([nil], []) == {:error, {:invalid_field, :symbols}}
+      assert Fake.unsubscribe("BTC-USD", []) == {:error, {:invalid_field, :symbols}}
+      assert Fake.update_symbols([5], []) == {:error, {:invalid_field, :symbols}}
     end
   end
 

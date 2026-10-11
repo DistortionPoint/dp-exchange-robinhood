@@ -324,22 +324,31 @@ defmodule DpExchange.Robinhood do
 
       # Every call is signed, including the quotes.
       credential_benefit: :required,
-      public_ceiling: %{limit: 10, per_ms: 1_000},
-      authenticated_ceiling: %{limit: 10, per_ms: 1_000},
+      # **Read from the vendor's OpenAPI document, "Rate Limiting" section** (committed at
+      # `docs/reference/robinhood/openapi`, fetched 2026-09-29): "Requests per minute per
+      # user account: 100" and "in bursts: 300", as a token bucket. This said `limit: 10,
+      # per_ms: 1_000` (600 a minute, six times the documented sustained rate) under a note
+      # that the vendor publishes no figures; it does, and the limiter built from this
+      # ceiling let a burst of traffic through that the venue would have answered with 429.
+      # The vendor adds that the values "fluctuate" and are applied "per endpoint", so these
+      # are the stated figures and not a measurement. Scope is the account, not the key.
+      public_ceiling: %{limit: 100, per_ms: 60_000, burst: 300, scope: :account},
+      authenticated_ceiling: %{limit: 100, per_ms: 60_000, burst: 300, scope: :account},
       measured_at: ~D[2026-09-29],
       measured_against:
         "endpoint set, Ed25519 signing scheme and the absence of candle, order-book and " <>
           "volume endpoints read from the venue's Crypto Trading API documentation; order " <>
-          "types, time-in-force values and the v2 response shapes read from the vendor's " <>
+          "types, time-in-force values, the v2 response shapes and the rate-limit figures " <>
+          "(100 requests a minute per account, bursts of 300; the vendor says they " <>
+          "fluctuate and differ per endpoint) read from the vendor's " <>
           "OpenAPI document committed at docs/reference/robinhood/openapi (fetched " <>
           "2026-09-29) and never exercised against the live venue; the " <>
           "86-symbol USD-only catalogue is INHERITED from the prior adapter's 2026-08-05 " <>
           "walk and NOT re-measured here, since every endpoint requires credentials this " <>
-          "repo does not hold; ceilings NOT probed — Robinhood's own documentation " <>
-          "publishes no rate-limit numbers (see docs/reference/robinhood/endpoint-" <>
-          "inventory.md), and every endpoint is signed, so nothing here can be ramped " <>
-          "anonymously; settling this needs a credentialed consumer deliberately ramping " <>
-          "request rate against one read endpoint and recording the first 429, by hand"
+          "repo does not hold; ceilings are the DOCUMENTED figures and NOT probed — " <>
+          "settling whether the live venue enforces them needs a credentialed consumer " <>
+          "deliberately ramping request rate against one read endpoint and recording the " <>
+          "first 429, by hand"
     )
   end
 
@@ -581,24 +590,37 @@ defmodule DpExchange.Robinhood do
   # Added and removed against what was asked for, inside `Feed`. This used to rebuild the
   # set from `coverage/1`, which is only what has been observed arriving, so a second
   # subscribe dropped every symbol that had not delivered yet. See `Feed.add_symbols/2`.
-  def subscribe(symbols, opts \\ []),
-    do:
+  #
+  # **A malformed symbol list is refused here, before it reaches `Feed`.** A non-list made
+  # `state.symbols ++ symbols` raise inside the feed process, which crashed it: the feed
+  # restarted from its boot-time opts, so every later subscription and every notice
+  # registration was lost to one bad argument. A non-binary or blank element would have been
+  # polled as a symbol, and a bulk request carrying it is refused whole.
+  def subscribe(symbols, opts \\ []) do
+    with {:ok, symbols} <- checked_symbols(symbols) do
       feed_call(
-        fn -> Feed.add_symbols(feed(opts), canonical_case(symbols)) end,
+        fn -> Feed.add_symbols(feed(opts), symbols) end,
         {:error, :feed_not_started}
       )
+    end
+  end
 
   @impl true
-  def unsubscribe(symbols, opts \\ []),
-    do: feed_call(fn -> Feed.remove_symbols(feed(opts), canonical_case(symbols)) end, :ok)
+  def unsubscribe(symbols, opts \\ []) do
+    with {:ok, symbols} <- checked_symbols(symbols) do
+      feed_call(fn -> Feed.remove_symbols(feed(opts), symbols) end, :ok)
+    end
+  end
 
   @impl true
-  def update_symbols(symbols, opts \\ []),
-    do:
+  def update_symbols(symbols, opts \\ []) do
+    with {:ok, symbols} <- checked_symbols(symbols) do
       feed_call(
-        fn -> Feed.update_symbols(feed(opts), canonical_case(symbols)) end,
+        fn -> Feed.update_symbols(feed(opts), symbols) end,
         {:error, :feed_not_started}
       )
+    end
+  end
 
   @impl true
   def coverage(opts \\ []) do
@@ -793,10 +815,13 @@ defmodule DpExchange.Robinhood do
   # `update_symbols(["btc-usd"])`, then a `BTC-USD` quote, and `coverage/1` was `%{}`.
   # Case is the one difference normalised here. Anything else that is not canonical is the
   # caller's to fix.
-  defp canonical_case(symbols) when is_list(symbols),
-    do: Enum.map(symbols, fn s -> if is_binary(s), do: String.upcase(s), else: s end)
+  defp checked_symbols(symbols) when is_list(symbols) do
+    if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
+      do: {:ok, Enum.map(symbols, &String.upcase/1)},
+      else: {:error, {:invalid_field, :symbols}}
+  end
 
-  defp canonical_case(other), do: other
+  defp checked_symbols(_not_a_list), do: {:error, {:invalid_field, :symbols}}
 
   # An absent map reaches `Auth` and is refused there rather than producing an unsigned
   # request — this venue has no anonymous endpoint to fall back to.

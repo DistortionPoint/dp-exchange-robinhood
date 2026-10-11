@@ -19,6 +19,30 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The declared rate ceilings were six times the vendor's, under a note saying the vendor
+  publishes none.** `capabilities/0` carried `limit: 10, per_ms: 1_000` (600 a minute) and
+  `measured_against` said the documentation "publishes no rate-limit numbers". The vendor's
+  OpenAPI document does, in its "Rate Limiting" section: 100 requests a minute per user
+  account, 300 in bursts, as a token bucket. The limiter `Supervisor` builds from that
+  ceiling therefore let through traffic the venue answers with 429. Both ceilings are now
+  `limit: 100, per_ms: 60_000, burst: 300, scope: :account`, labelled as documented and not
+  probed (the vendor says the values fluctuate and differ per endpoint). A test reads the
+  figures out of the committed document so the declaration cannot drift from it unnoticed.
+- **A malformed symbol list crashed the feed.** `subscribe/2`, `unsubscribe/2` and
+  `update_symbols/2` passed a non-list through to `Feed`, where `state.symbols ++ symbols`
+  raised and killed it; it came back from the supervisor's boot-time opts with every later
+  subscription and notice registration lost. A non-binary or blank element was polled as a
+  symbol, and a bulk request carrying one is refused whole. All three now answer
+  `{:error, {:invalid_field, :symbols}}` and leave the feed untouched, and `Fake` answers the
+  same.
+- **A feed started with lower-case `symbols:` polled forever and delivered nothing.** The
+  facade upper-cased later calls but the boot list went in verbatim, the venue answers under
+  `BTC-USD`, and `Feed` drops a book whose symbol it does not want. The boot list is
+  upper-cased and de-duplicated, and a list that is not non-blank strings stops the feed with
+  `{:invalid_option, :symbols}`.
+
 ## [0.3.71] - 2026-10-11
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

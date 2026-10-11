@@ -84,9 +84,9 @@ defmodule DpExchange.Robinhood.Feed do
 
   The fallback above used to be one request per symbol, sequentially, inside `PollingFeed`'s
   fetch. That fetch is killed at `:fetch_timeout_ms`, which is 30s at this feed's 30s
-  interval. This venue's limiter allows 10 requests a second, so 300 symbols could not
-  finish in time on the limiter alone, and fewer could not either once ordinary latency and
-  retries were added. A killed fetch publishes nothing. The next cycle sent the same bulk
+  interval. This venue's documented limit is 100 requests a minute per account (bursts of
+  300), so 300 symbols could not finish in time on the limiter alone, and fewer could not
+  either once ordinary latency and retries were added. A killed fetch publishes nothing. The next cycle sent the same bulk
   request, was refused again, and fell back again, so one bad symbol past that size meant
   every symbol delivered nothing, every cycle: the failure the fallback existed to prevent.
   It also ran on a 401, where every per-symbol request is refused alike, spending one
@@ -197,15 +197,12 @@ defmodule DpExchange.Robinhood.Feed do
   # derived from any Robinhood-published rate limit. Faster buys nothing on a venue whose
   # quotes are REST snapshots, and every symbol here costs one signed request.
   #
-  # NOT chosen against `Capabilities.public_ceiling`/`authenticated_ceiling` (currently
-  # 10 req/s, and itself honestly unmeasured — see `robinhood.ex`'s own
-  # `measured_against`; Robinhood's docs publish no rate-limit numbers, and every
-  # endpoint is signed so nothing here can be ramped anonymously to find one). Noted for
-  # a reader doing the arithmetic: `PollingFeed` spreads each tick's fetches evenly
-  # across `interval_ms` (see its own moduledoc), so at the ~86-symbol catalogue this
-  # package inherited (`robinhood.ex`'s `measured_against`) this cadence produces roughly
-  # 2.9 req/s — comfortably under the declared ceiling, but that is a coincidence of the
-  # two numbers, not a derivation of one from the other.
+  # NOT chosen against `Capabilities.public_ceiling`/`authenticated_ceiling` (the
+  # vendor's documented 100 requests a minute per account, bursts of 300 — documented, not
+  # probed; see `robinhood.ex`'s own `measured_against`). Noted for a reader doing the
+  # arithmetic: the poll is ONE bulk request per tick (see the moduledoc), so this cadence
+  # costs 2 requests a minute against that ceiling when nothing is refused. That headroom
+  # is a coincidence of the two numbers, not a derivation of one from the other.
   @interval_ms 30_000
 
   # How long one cycle may spend bisecting a refused batch. Well inside `PollingFeed`'s
@@ -325,6 +322,27 @@ defmodule DpExchange.Robinhood.Feed do
 
   @impl true
   def init(opts) do
+    case boot_symbols(Config.opt(opts, :symbols, [])) do
+      {:ok, symbols} -> init_feed(opts, symbols)
+      :error -> {:stop, {:invalid_option, :symbols}}
+    end
+  end
+
+  # **Upper-cased at boot, as `DpExchange.Robinhood.subscribe/2` does at call time.** The
+  # book comes back under the canonical (upper-case) symbol and `handle_info/2` drops a book
+  # whose symbol is not in `state.symbols`, so a feed started with `symbols: ["btc-usd"]`
+  # polled the venue every cycle and delivered nothing, with no notice: the facade
+  # normalised the later calls and not this one. A list that is not a list of non-blank
+  # strings stops the feed rather than polling a symbol the venue refuses whole.
+  defp boot_symbols(symbols) when is_list(symbols) do
+    if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
+      do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
+      else: :error
+  end
+
+  defp boot_symbols(_not_a_list), do: :error
+
+  defp init_feed(opts, symbols) do
     # `PollingFeed.start_link/1` below runs inside this callback, which links the
     # poller to `Feed` — see the moduledoc's "A crashed poller used to be Feed's crash
     # too" section. Without this flag an abnormal poller exit is an untrappable EXIT
@@ -365,7 +383,7 @@ defmodule DpExchange.Robinhood.Feed do
       # Tracked here, not only inside `PollingFeed`'s own state, so a crash-restart has
       # something to rebuild the poller FROM: the opts this process started with are
       # static and never carry an `update_symbols/2` call made after boot.
-      symbols: Config.opt(opts, :symbols, []),
+      symbols: symbols,
       # Symbols the venue has refused and that have not delivered since. Added on a
       # `{:refused, symbol, _}`, removed when that symbol's book arrives or it leaves scope.
       # The fetch reads it so the bulk request leaves them out.

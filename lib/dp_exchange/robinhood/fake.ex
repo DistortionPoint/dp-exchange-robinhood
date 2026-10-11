@@ -515,7 +515,12 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def subscribe(symbols, _opts \\ []) do
-    symbols = canonical_case(symbols)
+    with {:ok, symbols} <- checked_symbols(symbols) do
+      do_subscribe(symbols)
+    end
+  end
+
+  defp do_subscribe(symbols) do
     # Always the caller — never `opts[:to]`. The real `c:subscribe/2` has no notion of a
     # per-call recipient at all: delivery goes to whichever process this venue's feed was
     # supervised with, fixed at boot, and a `:to` passed to the real facade's `subscribe/2`
@@ -554,16 +559,18 @@ defmodule DpExchange.Robinhood.Fake do
 
   @impl true
   def unsubscribe(symbols, _opts \\ []) do
-    symbols = canonical_case(symbols)
-    Process.put(__MODULE__, MapSet.difference(subscribed(), MapSet.new(symbols)))
-    :ok
+    with {:ok, symbols} <- checked_symbols(symbols) do
+      Process.put(__MODULE__, MapSet.difference(subscribed(), MapSet.new(symbols)))
+      :ok
+    end
   end
 
   @impl true
   def update_symbols(symbols, _opts \\ []) do
-    symbols = canonical_case(symbols)
-    Process.put(__MODULE__, MapSet.new(Enum.filter(symbols, &(&1 in @symbols))))
-    :ok
+    with {:ok, symbols} <- checked_symbols(symbols) do
+      Process.put(__MODULE__, MapSet.new(Enum.filter(symbols, &(&1 in @symbols))))
+      :ok
+    end
   end
 
   # `:internal_poll`, not `:stream`. The real venue has no socket, and a fake claiming one
@@ -754,8 +761,14 @@ defmodule DpExchange.Robinhood.Fake do
   # Upper-cased on the way in, as the real facade does, so a lower-case subscription gets
   # the same answer here as against the venue. Without it the fake delivered nothing for
   # `btc-usd` while the real package delivered `BTC-USD` (checked 2026-09-28).
-  defp canonical_case(symbols) when is_list(symbols),
-    do: Enum.map(symbols, fn s -> if is_binary(s), do: String.upcase(s), else: s end)
+  #
+  # A malformed list is refused, as the real facade refuses it (it would otherwise crash the
+  # real `Feed`); the fake used to raise on a non-list and accept a non-binary element.
+  defp checked_symbols(symbols) when is_list(symbols) do
+    if Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
+      do: {:ok, Enum.map(symbols, &String.upcase/1)},
+      else: {:error, {:invalid_field, :symbols}}
+  end
 
-  defp canonical_case(other), do: other
+  defp checked_symbols(_not_a_list), do: {:error, {:invalid_field, :symbols}}
 end

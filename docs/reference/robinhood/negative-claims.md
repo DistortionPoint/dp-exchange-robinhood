@@ -36,6 +36,7 @@ what makes the negatives here stronger than they would be for a venue with a hun
 | No auction imbalance, no volume profile | a continuously-traded crypto book has no auction to have an imbalance in | 2026-09-01 | ✅ |
 | No `hold` figure on a balance | holdings publish total and available; the difference is not itself published | 2026-09-01 | ✅ |
 | ~~`get_fees`, `get_transfers`, `get_trade_history`, `get_rate_limit_status` are "not ported"~~ | **wrong label.** None of the nine operations is any of these — they are the venue's absence, not this package's backlog | 2026-09-01 | ❌ **corrected** |
+| ~~The vendor publishes no rate-limit figures~~ | **wrong.** The OpenAPI document's "Rate Limiting" section states 100 requests a minute per user account, 300 in bursts, as a token bucket applied per endpoint whose values "fluctuate". `capabilities/0` now declares them (documented, not probed) | 2026-10-11 | ❌ **corrected** |
 
 ## A checked absence that is NOT `:unsupported` — `market_status/1`
 

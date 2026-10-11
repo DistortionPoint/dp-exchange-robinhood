@@ -1196,4 +1196,31 @@ defmodule DpExchange.Robinhood.FeedTest do
       GenServer.stop(feed)
     end
   end
+
+  describe "symbols given at boot" do
+    # The facade upper-cases a later `subscribe/2`, but the boot-time list went in verbatim.
+    # The venue answers under `BTC-USD`, `handle_info/2` drops a book whose symbol is not in
+    # `state.symbols`, and so a feed started with `["btc-usd"]` polled every cycle and
+    # delivered nothing, with no notice.
+    test "are upper-cased, so a lower-case boot list still delivers" do
+      feed = start_feed(symbols: ["btc-usd", "BTC-USD"], start_delay_ms: 0)
+
+      assert Feed.wanted(feed) == ["BTC-USD"]
+      assert_receive {:dp_exchange, :robinhood, %{symbol: "BTC-USD"}}, 2_000
+    end
+
+    test "that are not a list of non-blank strings stop the feed rather than poll them" do
+      Process.flag(:trap_exit, true)
+
+      for bad <- [:btc, "BTC-USD", [nil], [:btc], [""], ["BTC-USD", "  "]] do
+        assert {:error, {:invalid_option, :symbols}} =
+                 Feed.start_link(
+                   name: :"feed_#{System.unique_integer([:positive])}",
+                   credentials: @credentials,
+                   symbols: bad,
+                   start_delay_ms: 60_000
+                 )
+      end
+    end
+  end
 end
