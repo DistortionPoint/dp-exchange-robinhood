@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.79] - 2026-10-11
+
 ### Fixed
 
 - **`Fake.get_symbols/1` listed symbols unsorted.** `Rest.get_symbols/2` returns them sorted;
