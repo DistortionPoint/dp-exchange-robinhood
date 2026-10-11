@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.76] - 2026-10-11
+
 ### Fixed
 
 - **A limiter wait inside bisection could carry a cycle past its deadline.** Every request
