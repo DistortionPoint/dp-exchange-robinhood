@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.73] - 2026-10-11
+
 ### Fixed
 
 - **The fake read back and cancelled a canned order, not the one that was placed.**
