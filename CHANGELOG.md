@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.72] - 2026-10-11
+
 ### Fixed
 
 - **The declared rate ceilings were six times the vendor's, under a note saying the vendor
