@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.83] - 2026-10-11
+
 ### Fixed
 
 - **A universe too slow for the poll budget starved its tail chunks every cycle, silently.**
