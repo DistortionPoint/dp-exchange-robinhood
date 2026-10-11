@@ -439,9 +439,9 @@ defmodule DpExchange.RobinhoodTest do
                {:error, {:account_not_found, "RH-2"}}
 
       assert {:ok, _accounts} = Fake.get_accounts(@credentials, [])
-      assert {:ok, _order} = Fake.place_order(@credentials, @order, account)
-      assert {:ok, _order} = Fake.cancel_order(@credentials, "id", [])
-      assert {:ok, _order} = Fake.get_order(@credentials, "id", account)
+      assert {:ok, placed} = Fake.place_order(@credentials, @order, account)
+      assert {:ok, _order} = Fake.get_order(@credentials, placed.id, account)
+      assert {:ok, _order} = Fake.cancel_order(@credentials, placed.id, [])
       assert {:ok, _orders} = Fake.get_orders(@credentials, account)
     end
 
@@ -586,7 +586,8 @@ defmodule DpExchange.RobinhoodTest do
 
       # `:cancelled`: the v2 cancel endpoint returns a full order reflecting the venue's
       # real state, and the fake's ordinary case matches that — see `Fake.cancel_order/3`.
-      assert {:ok, %{status: :cancelled}} = Fake.cancel_order(@credentials, "id", [])
+      assert {:ok, placed} = Fake.place_order(@credentials, @order, account_number: "RH-1")
+      assert {:ok, %{status: :cancelled}} = Fake.cancel_order(@credentials, placed.id, [])
 
       assert Fake.get_order(@credentials, "id", []) ==
                {:error, {:account_number_required, :robinhood}}

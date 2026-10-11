@@ -109,9 +109,9 @@ defmodule DpExchange.Robinhood.FakeInjectionTest do
 
       assert {:ok, _balances} = Fake.get_balances(%{}, account_number: "RH-1")
       assert {:ok, _accounts} = Fake.get_accounts(%{}, [])
-      assert {:ok, _order} = Fake.place_order(%{}, @order, account_number: "1")
-      assert {:ok, _order} = Fake.cancel_order(%{}, "id", [])
-      assert {:ok, _order} = Fake.get_order(%{}, "id", account_number: "1")
+      assert {:ok, placed} = Fake.place_order(%{}, @order, account_number: "1")
+      assert {:ok, _order} = Fake.get_order(%{}, placed.id, account_number: "1")
+      assert {:ok, _order} = Fake.cancel_order(%{}, placed.id, [])
       assert {:ok, _orders} = Fake.get_orders(%{}, account_number: "1")
     end
   end

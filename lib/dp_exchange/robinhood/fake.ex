@@ -281,7 +281,7 @@ defmodule DpExchange.Robinhood.Fake do
            :ok <- authenticated_credentials(credentials) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
-        {:ok, fake_order(request)}
+        {:ok, remember_order(fake_order(request))}
       end
     end)
   end
@@ -297,7 +297,7 @@ defmodule DpExchange.Robinhood.Fake do
     type = fake_order_type(Map.get(request, :order_type))
 
     %Types.Order{
-      id: "rh-order-1",
+      id: next_order_id(),
       symbol: SymbolFormat.to_canonical_symbol(Map.get(request, :symbol)),
       side: fake_side(Map.get(request, :side)),
       order_type: type,
@@ -314,6 +314,26 @@ defmodule DpExchange.Robinhood.Fake do
       created_at: DateTime.utc_now(),
       provider: :robinhood
     }
+  end
+
+  # A UUID, per order: `OrderResponse.id` is `format: uuid` ("Unique per order",
+  # `docs/reference/robinhood/openapi/crypto-trading.openapi.json`). The fake issued the one
+  # literal `rh-order-1` for every placement, which is not a UUID and collided across two
+  # orders in the same test. Counted per process, so it is deterministic and two async tests
+  # never see each other's sequence; `get_order/3` and `cancel_order/3` accept any non-blank
+  # id, as `Rest` does, so what was issued here is what they take back.
+  @order_id_prefix "7b3c1f0e-5a2d-4c8e-9f41-"
+  @order_counter_key {__MODULE__, :order_counter}
+  # Orders this process placed, by id: what `get_order/3`, `get_orders/2` and `cancel_order/3`
+  # answer from.
+  @orders_key {__MODULE__, :orders}
+
+  defp next_order_id do
+    count = Process.get(@order_counter_key, 0) + 1
+    Process.put(@order_counter_key, count)
+
+    suffix = count |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(12, "0")
+    @order_id_prefix <> suffix
   end
 
   defp fake_side(side) when side in [:buy, "buy"], do: :buy
@@ -362,18 +382,14 @@ defmodule DpExchange.Robinhood.Fake do
       # No account check, matching `Rest.cancel_order/3`: this is the one order call that
       # takes no `account_number` — but it is still signed, so credentials are still
       # required.
+      #
+      # The order this process placed, now cancelled, in full: the symbol, side and size the
+      # caller placed, not a bare `nil`-filled acknowledgement. An id this fake never issued
+      # is the venue's 404, as `Rest` delivers it.
       with :ok <- fake_order_id(id),
-           :ok <- authenticated_credentials(credentials) do
-        {:ok,
-         %Types.Order{
-           id: id,
-           symbol: nil,
-           side: nil,
-           order_type: nil,
-           quantity: nil,
-           status: :cancelled,
-           provider: :robinhood
-         }}
+           :ok <- authenticated_credentials(credentials),
+           {:ok, order} <- find_order(id) do
+        {:ok, remember_order(%{order | status: :cancelled})}
       end
     end)
   end
@@ -384,22 +400,7 @@ defmodule DpExchange.Robinhood.Fake do
       with {:ok, _account} <- fake_account(opts),
            :ok <- fake_order_id(id),
            :ok <- authenticated_credentials(credentials) do
-        {:ok,
-         %Types.Order{
-           id: id,
-           symbol: "BTC-USD",
-           side: :buy,
-           order_type: :limit,
-           time_in_force: nil,
-           quantity: Decimal.new("0.5"),
-           filled_quantity: Decimal.new("0.25"),
-           average_price: Decimal.new("60000"),
-           status: :partially_filled,
-           fee: nil,
-           fee_currency: nil,
-           created_at: nil,
-           provider: :robinhood
-         }}
+        find_order(id)
       end
     end)
   end
@@ -408,9 +409,45 @@ defmodule DpExchange.Robinhood.Fake do
   def get_orders(credentials, opts) do
     with_injection(fn ->
       with {:ok, _account} <- fake_account(opts),
-           :ok <- authenticated_credentials(credentials),
-           do: {:ok, []}
+           :ok <- authenticated_credentials(credentials) do
+        placed = @orders_key |> Process.get(%{}) |> Map.values() |> Enum.sort_by(& &1.id)
+        {:ok, Enum.filter(placed, &order_matches?(&1, opts))}
+      end
     end)
+  end
+
+  # The venue-side filters `Rest.get_orders/2` sends (`symbol`, `side`, `state`), applied to
+  # what this process placed, so a caller asking for cancelled ETH-USD orders is not handed
+  # an open BTC-USD one.
+  defp order_matches?(order, opts) do
+    wanted?(Keyword.get(opts, :symbol), order.symbol, &SymbolFormat.to_canonical_symbol/1) and
+      wanted?(Keyword.get(opts, :side), to_string(order.side), &to_string/1) and
+      wanted?(Keyword.get(opts, :state), to_string(order.status), &state_name/1)
+  end
+
+  defp wanted?(nil, _actual, _normalise), do: true
+  defp wanted?(wanted, actual, normalise), do: normalise.(wanted) == actual
+
+  # The venue's spelling of a state, as `Rest.order_state_param/1` sends it, back to the
+  # contract's status name.
+  defp state_name(state) when state in ["canceled", :cancelled], do: "cancelled"
+  defp state_name(state) when state in ["failed", :rejected], do: "rejected"
+  defp state_name(state), do: to_string(state)
+
+  # An order this process placed. Anything else is an id the fake never issued, which the
+  # venue answers with a 404: `{:refused, {:venue_error, 404}}`, the shape `Rest`'s
+  # `refusal/2` gives a status with no readable detail. This answered a canned BTC-USD
+  # partially-filled order for ANY id.
+  defp find_order(id) do
+    case Map.fetch(Process.get(@orders_key, %{}), id) do
+      {:ok, _order} = found -> found
+      :error -> {:refused, {:venue_error, 404}}
+    end
+  end
+
+  defp remember_order(%Types.Order{id: id} = order) do
+    Process.put(@orders_key, Map.put(Process.get(@orders_key, %{}), id, order))
+    order
   end
 
   # `Rest.get_order/3` and `Rest.cancel_order/3` refuse a blank id before signing anything

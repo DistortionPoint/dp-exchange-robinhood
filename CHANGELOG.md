@@ -19,6 +19,26 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The fake read back and cancelled a canned order, not the one that was placed.**
+  `get_order/3` answered a BTC-USD partially-filled buy for ANY id, `get_orders/2` always
+  answered `[]`, and `cancel_order/3` answered a `nil`-filled order. The fake now remembers
+  what `place_order/3` placed (per process): `get_order/3` and `get_orders/2` (narrowed by
+  `:symbol`, `:side`, `:state`) return those orders with their own symbol, side, size and
+  price, and `cancel_order/3` returns the full order as cancelled, so later reads say so. An
+  id the fake never issued is the venue's 404 (`{:refused, {:venue_error, 404}}`) on a read
+  and on a cancel, as `Rest` delivers it; tests that read or cancelled the invented id `id`
+  now place first.
+
+- **The fake issued the literal order id `rh-order-1` for every placement.** The venue's
+  `OrderResponse.id` is `format: uuid` and unique per order
+  (`docs/reference/robinhood/openapi/crypto-trading.openapi.json`), so a consumer validating
+  the id failed against the fake, and two orders placed in one test shared an id, so a
+  place, place, cancel-the-first test could not tell them apart. `place_order/3` now issues a
+  UUID, a new one per order in the calling process; `get_order/3` and `cancel_order/3` take
+  any non-blank id, as `Rest` does, so the issued id round-trips.
+
 ## [0.3.72] - 2026-10-11
 
 ### Fixed

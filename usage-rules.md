@@ -145,6 +145,13 @@ account/order call that quietly succeeded with no credentials at all), that was 
 being *differently* capable than this venue rather than *less* capable than it, and your
 test was passing against behaviour this venue cannot produce.
 
+**The fake remembers the orders it placed, per process.** `place_order/3` issues a UUID,
+a new one per order; `get_order/3` and `get_orders/2` (narrowed by `:symbol`, `:side` and
+`:state`) return those orders with their own symbol, side, size and price, and
+`cancel_order/3` returns the order cancelled and later reads say `:cancelled`. An id the
+fake never issued is the venue's 404, `{:refused, {:venue_error, 404}}`, on a read and on a
+cancel. A test that reads an order it never placed gets that refusal, not a canned order.
+
 **The private key is the base64 32-byte seed Robinhood issues**, not a 64-byte secret key.
 Passing the wrong one is refused here with `{:error, {:invalid_private_key, reason}}` —
 `{:expected_32_bytes, n}`, `:not_base64` or `:not_a_string` — rather than producing a

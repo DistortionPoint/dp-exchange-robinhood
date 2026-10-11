@@ -98,6 +98,68 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
                {:error, {:missing_credentials, :robinhood}}
     end
 
+    test "place -> get -> cancel round-trips on a UUID id, a new one per order" do
+      uuid = ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+
+      assert {:ok, first} = Fake.place_order(@credentials, @order, @account)
+      assert {:ok, second} = Fake.place_order(@credentials, @order, @account)
+
+      # `OrderResponse.id` is `format: uuid`, and unique per order.
+      assert first.id =~ uuid
+      assert second.id =~ uuid
+      refute first.id == second.id
+
+      assert {:ok, read} = Fake.get_order(@credentials, first.id, @account)
+      assert read.id == first.id
+
+      assert {:ok, cancelled} = Fake.cancel_order(@credentials, first.id, @account)
+      assert cancelled.id == first.id
+      assert cancelled.status == :cancelled
+    end
+
+    test "get_order, get_orders and cancel_order describe the order that was placed" do
+      eth = %{
+        symbol: "ETH-USD",
+        side: :sell,
+        order_type: :limit,
+        quantity: "2",
+        price: "3000",
+        time_in_force: :gtc
+      }
+
+      assert {:ok, placed} = Fake.place_order(@credentials, eth, @account)
+      assert {:ok, _other} = Fake.place_order(@credentials, @order, @account)
+
+      assert {:ok, read} = Fake.get_order(@credentials, placed.id, @account)
+      assert read.symbol == "ETH-USD"
+      assert read.side == :sell
+      assert Decimal.equal?(read.quantity, Decimal.new("2"))
+      assert Decimal.equal?(read.price, Decimal.new("3000"))
+      assert read.status == :open
+
+      assert {:ok, [_eth, _btc]} = Fake.get_orders(@credentials, @account)
+      assert {:ok, [listed]} = Fake.get_orders(@credentials, @account ++ [symbol: "eth-usd"])
+      assert listed.id == placed.id
+
+      assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
+      assert cancelled.status == :cancelled
+      assert cancelled.symbol == "ETH-USD"
+
+      assert {:ok, %{status: :cancelled, symbol: "ETH-USD"}} =
+               Fake.get_order(@credentials, placed.id, @account)
+
+      assert {:ok, [still_open]} = Fake.get_orders(@credentials, @account ++ [state: "open"])
+      refute still_open.id == placed.id
+    end
+
+    test "an id the fake never issued is the venue's 404, on a read and on a cancel" do
+      assert Fake.get_order(@credentials, "never-issued", @account) ==
+               {:refused, {:venue_error, 404}}
+
+      assert Fake.cancel_order(@credentials, "never-issued", @account) ==
+               {:refused, {:venue_error, 404}}
+    end
+
     test "a valid order is still accepted as open" do
       assert Rest.validate_order_request(@order) == :ok
       assert {:ok, %{status: :open}} = Fake.place_order(@credentials, @order, @account)
