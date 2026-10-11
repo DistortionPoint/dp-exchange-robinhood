@@ -206,6 +206,7 @@ defmodule DpExchange.Robinhood.Fake do
   def get_balances(credentials, opts) do
     with_injection(fn ->
       with {:ok, account} <- fake_account(opts),
+           {:ok, asset_codes} <- Rest.asset_codes(opts),
            :ok <- authenticated_credentials(credentials),
            :ok <- held_account(account) do
         # Total above available: the difference is a balance sitting in an open order, which
@@ -224,8 +225,6 @@ defmodule DpExchange.Robinhood.Fake do
         # dp-exchange-core issue #35 — from this fake's own `get_accounts/2` account row,
         # so the two stay consistent with each other. `balance` is `nil` for the same
         # reason: the venue states no total cash figure, only what is available.
-        asset_codes = List.wrap(Keyword.get(opts, :asset_codes, []))
-
         # `:asset_codes` narrows the holdings too — the real path sends them as `asset_code`
         # query parameters and the venue returns only those assets. Answering BTC to a caller
         # who asked for ETH was a holding the real venue would not have sent.
@@ -281,10 +280,11 @@ defmodule DpExchange.Robinhood.Fake do
       # fields, a success the real package can never give.
       with {:ok, _account} <- fake_account(opts),
            :ok <- Rest.validate_order_request(request),
+           {:ok, key} <- Rest.supplied_client_order_id(request, opts),
            :ok <- authenticated_credentials(credentials) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
-        {:ok, remember_order(fake_order(request))}
+        {:ok, place_once(request, key)}
       end
     end)
   end
@@ -332,6 +332,8 @@ defmodule DpExchange.Robinhood.Fake do
   # Orders this process placed, by id: what `get_order/3`, `get_orders/2` and `cancel_order/3`
   # answer from.
   @orders_key {__MODULE__, :orders}
+  # `client_order_id` -> order id, for the idempotency the venue gives that key.
+  @keys_key {__MODULE__, :client_order_ids}
 
   defp next_order_id do
     count = Process.get(@order_counter_key, 0) + 1
@@ -489,6 +491,35 @@ defmodule DpExchange.Robinhood.Fake do
   defp remember_order(%Types.Order{id: id} = order) do
     Process.put(@orders_key, Map.put(Process.get(@orders_key, %{}), id, order))
     order
+  end
+
+  # `client_order_id` is the venue's idempotency key (`Rest.place_order/3`'s doc): sending
+  # the same one again returns the original order instead of placing a second. A fake that
+  # placed a second let a consumer's retry-after-timeout test pass against behaviour the
+  # venue does not have. The key is read where `Rest` reads it (the request first, then
+  # `opts`), a blank or non-string one is no key, and the original is returned as it now
+  # stands (a cancel since is visible), not as first placed.
+  #
+  # `key` is `Rest.supplied_client_order_id/2`'s answer, already checked to be a UUID (or
+  # absent). UUIDs are hex, so case is not part of the identity: kept lower-cased.
+  defp place_once(request, key) do
+    with key when is_binary(key) <- key && String.downcase(key),
+         {:ok, id} <- Map.fetch(Process.get(@keys_key, %{}), key),
+         {:ok, original} <- Map.fetch(Process.get(@orders_key, %{}), id) do
+      original
+    else
+      _no_original ->
+        order = remember_order(fake_order(request))
+        remember_key(key && String.downcase(key), order)
+        order
+    end
+  end
+
+  defp remember_key(nil, _order), do: :ok
+
+  defp remember_key(key, %Types.Order{id: id}) do
+    Process.put(@keys_key, Map.put(Process.get(@keys_key, %{}), key, id))
+    :ok
   end
 
   # `Rest.get_order/3` and `Rest.cancel_order/3` refuse a blank id before signing anything

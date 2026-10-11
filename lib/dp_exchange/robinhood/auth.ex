@@ -51,7 +51,10 @@ defmodule DpExchange.Robinhood.Auth do
   Returns `{:error, {:missing_credentials, :robinhood}}` rather than signing with a partial
   credential, and `{:error, {:invalid_private_key, reason}}` when the key is not the
   base64 32-byte seed the venue issues — both of which are clearer than the 401 they would
-  otherwise become.
+  otherwise become. A key with surrounding whitespace or a control character (typically a
+  trailing newline from a `.env` file) is `{:error, {:invalid_api_key, reason}}` or
+  `{:error, {:invalid_private_key, reason}}` with `reason` being
+  `:surrounding_whitespace_or_control_characters`. The error names the field, never the value.
 
   Builds the signed string through `payload/5` rather than concatenating a second time
   here — see that function's moduledoc for why a second, hand-kept copy of the same
@@ -67,8 +70,13 @@ defmodule DpExchange.Robinhood.Auth do
 
     with {:ok, seed} <- credential_seed(api_key, private_key) do
       signed_payload = payload(api_key, timestamp, path, method, body)
-      {_public, secret} = :crypto.generate_key(:eddsa, :ed25519, seed)
-      signature = :crypto.sign(:eddsa, :none, signed_payload, [secret, :ed25519])
+      # OTP's Ed25519 private key IS the 32-byte seed (`generate_key/3` hands the same
+      # bytes back beside the public key), so the seed signs directly. Deriving the key pair
+      # first cost a curve scalar multiplication on every request, and on every retry
+      # attempt, for a public key nothing used. Ed25519 is deterministic, so the signature
+      # is byte-for-byte the one the derivation produced (pinned by the published-vector
+      # test).
+      signature = :crypto.sign(:eddsa, :none, signed_payload, [seed, :ed25519])
 
       {:ok,
        [
@@ -113,7 +121,23 @@ defmodule DpExchange.Robinhood.Auth do
   def validate_credentials(_credentials), do: {:error, {:missing_credentials, :robinhood}}
 
   defp credential_seed(api_key, private_key) do
-    with {:ok, _present} <- present(api_key), do: decode_seed(private_key)
+    with {:ok, _present} <- present(api_key),
+         :ok <- clean(api_key, :invalid_api_key) do
+      decode_seed(private_key)
+    end
+  end
+
+  # A credential read from a `.env` file or a secrets store routinely arrives with a trailing
+  # newline (or a stray space or tab). `x-api-key` carries the api key verbatim and the
+  # signed payload starts with it, so a trailing `\n` is a header value that Req/Mint refuse
+  # or a payload the venue does not recompute; the private key would fail as `:not_base64`
+  # with a reason that points at the encoding, not at the whitespace. Refused up front, by
+  # field name. The error carries the field and the reason only, never the value: it is
+  # logged, stored and printed, and this is the secret.
+  defp clean(value, tag) do
+    if String.trim(value) != value or String.match?(value, ~r/[\x00-\x1f\x7f]/),
+      do: {:error, {tag, :surrounding_whitespace_or_control_characters}},
+      else: :ok
   end
 
   # The `@doc` above promises `{:missing_credentials, :robinhood}` "rather than signing with
@@ -161,15 +185,17 @@ defmodule DpExchange.Robinhood.Auth do
     do: {:error, {:invalid_private_key, :not_a_string}}
 
   defp decode_seed(private_key) do
-    case Base.decode64(private_key) do
-      {:ok, <<seed::binary-size(32)>>} ->
-        {:ok, seed}
+    with :ok <- clean(private_key, :invalid_private_key) do
+      case Base.decode64(private_key) do
+        {:ok, <<seed::binary-size(32)>>} ->
+          {:ok, seed}
 
-      {:ok, other} ->
-        {:error, {:invalid_private_key, {:expected_32_bytes, byte_size(other)}}}
+        {:ok, other} ->
+          {:error, {:invalid_private_key, {:expected_32_bytes, byte_size(other)}}}
 
-      :error ->
-        {:error, {:invalid_private_key, :not_base64}}
+        :error ->
+          {:error, {:invalid_private_key, :not_base64}}
+      end
     end
   end
 end

@@ -278,7 +278,7 @@ defmodule DpExchange.Robinhood.RestTest do
             Req.Test.json(conn, %{
               "results" => [%{"symbol" => "BTC-USD"}],
               "next" =>
-                "https://trading.robinhood.com/api/v1/crypto/trading/trading_pairs/?cursor=2"
+                "https://trading.robinhood.com/api/v2/crypto/trading/trading_pairs/?cursor=2"
             })
 
           _second_page ->
@@ -297,12 +297,33 @@ defmodule DpExchange.Robinhood.RestTest do
       plug = fn conn ->
         Req.Test.json(conn, %{
           "results" => [%{"symbol" => "BTC-USD"}],
-          "next" => "https://trading.robinhood.com/api/v1/crypto/trading/trading_pairs/"
+          "next" => "https://trading.robinhood.com/api/v2/crypto/trading/trading_pairs/"
         })
       end
 
       assert {:error, {:pagination_loop, _path}} =
                Rest.get_symbols(@credentials, plug: plug, retry_attempts: 0)
+    end
+
+    test "a next naming a different endpoint is refused, not followed" do
+      # A holdings cursor handed back from a trading-pairs walk would be decoded as
+      # trading pairs; the vendor describes `next` as the same request with the next cursor.
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:hit, conn.request_path})
+
+        Req.Test.json(conn, %{
+          "results" => [%{"symbol" => "BTC-USD"}],
+          "next" => "https://trading.robinhood.com/api/v2/crypto/trading/holdings/?cursor=2"
+        })
+      end
+
+      assert {:error, {:unexpected_next_path, "/api/v2/crypto/trading/holdings/"}} =
+               Rest.get_symbols(@credentials, plug: plug, retry_attempts: 0)
+
+      assert_received {:hit, "/api/v2/crypto/trading/trading_pairs/"}
+      refute_received {:hit, "/api/v2/crypto/trading/holdings/"}
     end
 
     test "a cursor that never repeats a page is bounded, not walked forever" do
@@ -322,7 +343,7 @@ defmodule DpExchange.Robinhood.RestTest do
         Req.Test.json(conn, %{
           "results" => [%{"symbol" => "BTC-USD"}],
           "next" =>
-            "https://trading.robinhood.com/api/v1/crypto/trading/trading_pairs/?cursor=#{n}"
+            "https://trading.robinhood.com/api/v2/crypto/trading/trading_pairs/?cursor=#{n}"
         })
       end
 
@@ -508,7 +529,7 @@ defmodule DpExchange.Robinhood.RestTest do
             Req.Test.json(conn, %{
               "results" => [@row],
               "next" =>
-                "https://trading.robinhood.com/api/v1/crypto/trading/trading_pairs/?cursor=2"
+                "https://trading.robinhood.com/api/v2/crypto/trading/trading_pairs/?cursor=2"
             })
 
           _second_page ->
@@ -833,6 +854,29 @@ defmodule DpExchange.Robinhood.RestTest do
                )
 
       assert Process.get(:rate_limiter_call) == :acquire_without_waiting
+    end
+  end
+
+  describe "get_balances/2 asset_codes" do
+    test "an entry that is not a non-blank string is refused before anything is signed" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:hit, conn.request_path})
+        Req.Test.json(conn, %{"results" => []})
+      end
+
+      for bad <- [[nil], [""], ["BTC", 5], [%{}]] do
+        assert {:error, {:invalid_field, :asset_codes}} =
+                 Rest.get_balances(@credentials,
+                   account_number: "RH-1",
+                   asset_codes: bad,
+                   plug: plug,
+                   retry_attempts: 0
+                 )
+      end
+
+      refute_received {:hit, _path}
     end
   end
 end

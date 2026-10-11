@@ -19,6 +19,42 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A non-UUID `client_order_id` was sent.** The spec types it `format: uuid` and the venue
+  answers "Must be a valid UUID." It is now refused before signing as `{:error,
+  {:invalid_field, :client_order_id}}` (canonical 8-4-4-4-12 hex, either case; `nil` and `""`
+  still mean none supplied, any other non-string is refused). One function,
+  `Rest.supplied_client_order_id/2`, serves `Rest` and the Fake; the Fake also treats UUIDs
+  differing only in case as one key. A test that used `"mine-123"` now uses a UUID.
+- **Credentials with surrounding whitespace or control characters were signed with.** A
+  trailing newline from a `.env` file went into `x-api-key` and the signed payload, or made
+  the private key fail as `:not_base64`. `Auth.headers/5` and `validate_credentials/1` now
+  answer `{:error, {:invalid_api_key | :invalid_private_key,
+  :surrounding_whitespace_or_control_characters}}`, naming the field and never the value.
+- **A `next` cursor on another endpoint was followed.** The cursor walk (trading pairs,
+  holdings, orders, accounts) checked host and an `/api/` prefix only, so a `next` naming a
+  different endpoint was requested and its rows decoded as the wrong kind. It is now
+  `{:error, {:unexpected_next_path, path}}`; only the query (the cursor) may differ.
+  Tests that used v1 trading-pairs cursors against the v2 walk now use v2 ones.
+- **`get_balances/2` sent a blank or non-string `:asset_codes` entry.** A `nil` became
+  `asset_code=` on a signed request and a map raised in the query encoder. Now
+  `{:error, {:invalid_field, :asset_codes}}` before signing (`Rest.asset_codes/1`, shared
+  with the Fake).
+- **`HTTP <status>` error messages carried the whole response body.** A CDN error page
+  went uncapped into the `{:exchange_error, ...}` tuple (Core capped its own long ago). The
+  excerpt is limited to Core's 2_048 bytes, and a refusal `detail` to 1_024 bytes; shorter
+  text is unchanged.
+- **`Fake.place_order/3` ignored `client_order_id`.** The key is the venue's idempotency
+  key, but the Fake placed a second order for a repeated one. It now returns the original,
+  as it stands.
+
+### Changed
+
+- **Signing no longer derives the public key.** `Auth.headers/5` signs with the seed
+  directly instead of calling `:crypto.generate_key/3` first (a curve multiplication per
+  request and per retry attempt). Ed25519 is deterministic: signatures are byte-identical.
+
 ## [0.3.76] - 2026-10-11
 
 ### Fixed

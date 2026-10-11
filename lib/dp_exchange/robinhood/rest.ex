@@ -463,7 +463,7 @@ defmodule DpExchange.Robinhood.Rest do
     else
       with {:ok, body} <- get(path, credentials, opts),
            {:ok, results} <- page_results(body),
-           {:ok, next} <- next_path(body, opts) do
+           {:ok, next} <- next_page(body, path, opts) do
         # Pages are accumulated as a list OF PAGES and concatenated once at the end.
         # This was `acc ++ results`, which copies the whole accumulator on every page —
         # quadratic in the number of rows, for a walk whose entire job is to grow a list.
@@ -517,6 +517,26 @@ defmodule DpExchange.Robinhood.Rest do
   defp next_path(%{"next" => _unreadable}, _opts), do: {:error, :unexpected_response_shape}
   defp next_path(_no_next_key, _opts), do: {:ok, nil}
 
+  # **A cursor continues THE SAME endpoint.** A `next` naming `/api/` somewhere else (holdings
+  # from an orders walk, say) used to be followed, and its rows were decoded as the wrong
+  # kind: balances out of order rows, or worse rows that happen to decode. Nothing in the
+  # vendor's pagination description allows it ("the API request endpoint that includes the
+  # next cursor"), so a different path is refused rather than followed. Only the path is
+  # compared; the query is the cursor.
+  defp next_page(body, current, opts) do
+    with {:ok, next} <- next_path(body, opts), do: same_endpoint(next, current)
+  end
+
+  defp same_endpoint(nil, _current), do: {:ok, nil}
+
+  defp same_endpoint(next, current) do
+    if path_only(next) == path_only(current),
+      do: {:ok, next},
+      else: {:error, {:unexpected_next_path, path_only(next)}}
+  end
+
+  defp path_only(path_and_query), do: path_and_query |> String.split("?", parts: 2) |> hd()
+
   defp cursor_uri(%URI{host: nil} = uri, _opts), do: {:ok, uri}
 
   defp cursor_uri(%URI{host: host} = uri, opts) do
@@ -560,7 +580,7 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   defp remaining_account_rows(body, credentials, opts) do
-    case next_path(body, opts) do
+    case next_page(body, @accounts_path, opts) do
       {:ok, nil} ->
         {:ok, []}
 
@@ -641,9 +661,8 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_balances(map(), keyword()) ::
           {:ok, [Balance.t()]} | {:error, term()} | {:refused, term()}
   def get_balances(credentials, opts) do
-    with {:ok, account} <- required_account(opts) do
-      asset_codes = List.wrap(Config.opt(opts, :asset_codes, []))
-
+    with {:ok, account} <- required_account(opts),
+         {:ok, asset_codes} <- asset_codes(opts) do
       query =
         [{"account_number", account}] ++ Enum.map(asset_codes, &{"asset_code", &1})
 
@@ -656,6 +675,22 @@ defmodule DpExchange.Robinhood.Rest do
         {:ok, holdings ++ cash}
       end
     end
+  end
+
+  @doc """
+  The `opts[:asset_codes]` narrowing as a list, or `{:error, {:invalid_field, :asset_codes}}`
+  when any entry is not a non-blank string. `get_balances/2` sends each as an `asset_code`
+  query parameter; a `nil` or a map in the list used to become `asset_code=` (or raise
+  inside the query encoder) on a signed request. A single string is a one-entry list and
+  absence is `[]`. Exposed so `DpExchange.Robinhood.Fake` refuses the same.
+  """
+  @spec asset_codes(keyword()) :: {:ok, [String.t()]} | {:error, {:invalid_field, :asset_codes}}
+  def asset_codes(opts) do
+    codes = List.wrap(Config.opt(opts, :asset_codes, []))
+
+    if Enum.all?(codes, &(is_binary(&1) and String.trim(&1) != "")),
+      do: {:ok, codes},
+      else: {:error, {:invalid_field, :asset_codes}}
   end
 
   # **The account's cash is a balance too.** Holdings are crypto assets only, so a funded
@@ -1261,12 +1296,13 @@ defmodule DpExchange.Robinhood.Rest do
   end
 
   defp order_body(request, opts) do
-    with {:ok, {symbol, side, type, config}} <- order_parts(request) do
+    with {:ok, {symbol, side, type, config}} <- order_parts(request),
+         {:ok, supplied} <- supplied_client_order_id(request, opts) do
       wire_type = wire_order_type(type)
 
       {:ok,
        %{
-         "client_order_id" => client_order_id(request, opts),
+         "client_order_id" => supplied || generate_client_order_id(),
          "side" => to_string(side),
          "type" => wire_type,
          "symbol" => SymbolFormat.to_exchange_symbol(symbol),
@@ -1396,12 +1432,33 @@ defmodule DpExchange.Robinhood.Rest do
   # it. Only `opts[:client_order_id]` was read, so a caller who put the key on the request
   # (where the other venues take it) got a fresh one on every call, and a caller-level retry
   # after a timeout placed a second order: the protection the key exists for, gone.
-  defp client_order_id(request, opts) do
+  #
+  # **A supplied key must be a UUID.** The vendor's `AddOrderV2.client_order_id` is `format:
+  # uuid` and its error example is "Must be a valid UUID." A key of any other shape reaches
+  # the venue as a 400 on the call that moves funds, and a caller retrying with it retries a
+  # request that can never succeed. Refused before signing instead. Canonical 8-4-4-4-12 hex,
+  # either case; `nil` and `""` are still "none supplied", anything else that is not a string
+  # is refused like a malformed one.
+  @doc """
+  The `client_order_id` the caller supplied for `request` (the request's own key first, then
+  `opts[:client_order_id]`): `{:ok, nil}` when none was (`nil` or `""`), `{:ok, id}` for a
+  canonical UUID, `{:error, {:invalid_field, :client_order_id}}` for anything else. Exposed
+  so `DpExchange.Robinhood.Fake` refuses exactly what `place_order/3` refuses.
+  """
+  @spec supplied_client_order_id(map(), keyword()) ::
+          {:ok, String.t() | nil} | {:error, {:invalid_field, :client_order_id}}
+  def supplied_client_order_id(request, opts) do
     case Map.get(request, :client_order_id) || Config.opt(opts, :client_order_id, nil) do
-      id when is_binary(id) and id != "" -> id
-      _absent -> generate_client_order_id()
+      nil -> {:ok, nil}
+      "" -> {:ok, nil}
+      id -> if uuid?(id), do: {:ok, id}, else: {:error, {:invalid_field, :client_order_id}}
     end
   end
+
+  defp uuid?(id) when is_binary(id),
+    do: Regex.match?(~r/\A[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}\z/, id)
+
+  defp uuid?(_not_a_string), do: false
 
   defp generate_client_order_id do
     <<a::32, b::16, _version::4, c::12, _variant::2, d::62>> = :crypto.strong_rand_bytes(16)
@@ -1699,11 +1756,20 @@ defmodule DpExchange.Robinhood.Rest do
         {:refused, refusal(status, response)}
 
       {:ok, %{status: status, body: response}} ->
-        {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(response)}"}}
+        status_error(status, response)
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # An error message built from a response body is capped, as Core caps its own
+  # (`HttpClient`'s 2_048-byte excerpt). A 502/503 from a CDN is a whole HTML page, and this
+  # put every byte of it into the error tuple a feed then logs and a consumer stores. Within
+  # the limits the text is byte-identical to a plain `inspect/1`.
+  defp status_error(status, body) do
+    excerpt = inspect(body, limit: 50, printable_limit: 2_048)
+    {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{excerpt}"}}
   end
 
   # **A retry is signed again, not replayed.** The signature carries `x-timestamp`, and the
@@ -1755,7 +1821,7 @@ defmodule DpExchange.Robinhood.Rest do
         {:refused, refusal(status, body)}
 
       {:ok, %{status: status, body: body}} ->
-        {:error, {:exchange_error, :robinhood, "HTTP #{status}: #{inspect(body)}"}}
+        status_error(status, body)
 
       {:error, reason} ->
         {:error, reason}
@@ -1861,11 +1927,18 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp refusal(status, body) do
     case refusal_body(body) do
-      %{"detail" => detail} when is_binary(detail) -> {:venue_error, status, detail}
-      %{"errors" => [%{"detail" => detail} | _rest]} -> {:venue_error, status, detail}
+      %{"detail" => detail} when is_binary(detail) -> {:venue_error, status, cap(detail)}
+      %{"errors" => [%{"detail" => detail} | _rest]} -> {:venue_error, status, cap(detail)}
       _other -> {:venue_error, status}
     end
   end
+
+  # A refusal's detail is the venue's text and is kept whole up to a kilobyte; past that it
+  # is a page, not a reason. Non-strings pass through as before.
+  defp cap(detail) when is_binary(detail) and byte_size(detail) > 1_024,
+    do: String.slice(detail, 0, 1_024)
+
+  defp cap(detail), do: detail
 
   # A 2xx body this package cannot decode is NOT an empty object.
   #

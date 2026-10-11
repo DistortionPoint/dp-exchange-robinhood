@@ -155,11 +155,18 @@ a new one per order; `get_order/3` and `get_orders/2` (narrowed by `:symbol`, `:
 `cancel_order/3` returns the order cancelled and later reads say `:cancelled`. An id the
 fake never issued is the venue's 404, `{:refused, {:venue_error, 404}}`, on a read and on a
 cancel. A test that reads an order it never placed gets that refusal, not a canned order.
+**`client_order_id` is an idempotency key in the fake too:** placing again with a key it has
+already seen (on the request, or `opts[:client_order_id]`) returns the original order, as
+it now stands, instead of a second one.
 
 **The private key is the base64 32-byte seed Robinhood issues**, not a 64-byte secret key.
 Passing the wrong one is refused here with `{:error, {:invalid_private_key, reason}}` —
 `{:expected_32_bytes, n}`, `:not_base64` or `:not_a_string` — rather than producing a
-signature the venue rejects with nothing to explain it.
+signature the venue rejects with nothing to explain it. A key or private key with
+surrounding whitespace or a control character, typically a trailing newline from a `.env`
+file, is `{:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}}` (or
+`{:invalid_private_key, ...}` with the same reason). The error names the field, never the
+value.
 
 You hold the credentials. A direct call signs one request with them and keeps nothing. The
 supervised poll is the exception: it signs every cycle, so it keeps the credentials you
@@ -231,6 +238,10 @@ by account tier, so treat the count as a property of your key rather than of the
 
 The walk stops if the venue ever points at a page it already served
 (`{:error, {:pagination_loop, path}}`), rather than looping forever against a live API.
+A `next` is followed only if it continues the same endpoint on this venue's host: a `next`
+naming another endpoint path is `{:error, {:unexpected_next_path, path}}`, as is one
+outside `/api/`, and another host is `{:error, {:foreign_next_url, host}}`. The same walk
+(bounded at 50 pages) serves accounts, holdings and orders.
 
 **A pair the venue marks `is_api_tradable: false` is excluded from `get_symbols/1`
 entirely** — `V2TradingPair`'s own field for whether this package's other v2 endpoints
@@ -334,6 +345,11 @@ has no `time_in_force` property at all, unlike the request-side config that plac
 own asymmetry, not a gap here. If you need to know what you set, that is the value you
 passed to `place_order/3`, not something you can re-derive from reading the order.
 
+**A `client_order_id` you supply must be a UUID** (canonical 8-4-4-4-12 hex, either case;
+the vendor's `format: uuid`). Anything else, including a non-string, is
+`{:error, {:invalid_field, :client_order_id}}` before anything is signed; `nil` and `""`
+still mean "none supplied". The Fake refuses the same.
+
 **`client_order_id` is an idempotency key.** It is generated when you do not supply one, and
 re-sending the same one returns the original order instead of placing a second. If a request's
 response never reached you, retry with the *same* id — the request map's `:client_order_id`
@@ -385,7 +401,8 @@ from `GET /api/v2/crypto/trading/accounts/`: `buying_power` as `available_balanc
 `buying_power_currency` as `currency`. **`balance` is `nil` on this row** — the venue states
 no total cash figure, only what is available, so `balance` is never a copy of
 `available_balance` dressed up as a total. When `opts[:asset_codes]` is given, the cash row
-appears only if that list names the account's currency.
+appears only if that list names the account's currency. Each entry must be a non-blank
+string, otherwise `{:error, {:invalid_field, :asset_codes}}` before anything is signed.
 
 This second read can refuse on its own: `{:error, {:account_not_found, account}}` when no
 row from the accounts call matches `opts[:account_number]`, `{:error,

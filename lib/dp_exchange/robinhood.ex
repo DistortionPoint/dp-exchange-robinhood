@@ -449,7 +449,9 @@ defmodule DpExchange.Robinhood do
 
   See `DpExchange.Robinhood.Rest.place_order/3`. `opts[:account_number]` is required;
   `client_order_id` is generated when the caller does not supply one **and is an idempotency
-  key**, so a retry of a request whose response was never seen should pass the same one.
+  key**, so a retry of a request whose response was never seen should pass the same one. A
+  key you supply must be a canonical UUID (the vendor's `format: uuid`), otherwise
+  `{:error, {:invalid_field, :client_order_id}}` before anything is signed.
   """
   @impl true
   def place_order(credentials, request, opts),

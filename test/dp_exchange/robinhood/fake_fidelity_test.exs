@@ -300,6 +300,80 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     test "no narrowing returns both" do
       assert {:ok, [_holding, _cash]} = Fake.get_balances(@credentials, @account)
     end
+
+    test "an entry that is not a non-blank string is refused, as Rest refuses it" do
+      for bad <- [[nil], [""], ["BTC", 5], [%{}], "  "] do
+        opts = @account ++ [asset_codes: bad]
+
+        assert {:error, {:invalid_field, :asset_codes}} = Fake.get_balances(@credentials, opts)
+        assert {:error, {:invalid_field, :asset_codes}} = Rest.asset_codes(opts)
+      end
+    end
+  end
+
+  describe "place_order/3: client_order_id is an idempotency key, as on the venue" do
+    test "re-sending the same key returns the original order, not a second one" do
+      key = "11111111-2222-4333-a444-555555555555"
+      request = Map.put(@order, :client_order_id, key)
+
+      assert {:ok, first} = Fake.place_order(@credentials, request, @account)
+      assert {:ok, second} = Fake.place_order(@credentials, request, @account)
+
+      assert second.id == first.id
+      assert {:ok, [_only_one]} = Fake.get_orders(@credentials, @account)
+    end
+
+    test "the key may travel in opts, and the original shows a cancel made since" do
+      opts = @account ++ [client_order_id: "11111111-2222-4333-a444-555555555556"]
+
+      assert {:ok, first} = Fake.place_order(@credentials, @order, opts)
+      assert {:ok, _cancelled} = Fake.cancel_order(@credentials, first.id, @account)
+      assert {:ok, again} = Fake.place_order(@credentials, @order, opts)
+
+      assert again.id == first.id
+      assert again.status == :cancelled
+    end
+
+    test "no key, or a different key, places a new order each time" do
+      assert {:ok, one} = Fake.place_order(@credentials, @order, @account)
+      assert {:ok, two} = Fake.place_order(@credentials, @order, @account)
+      assert one.id != two.id
+
+      keyed = Map.put(@order, :client_order_id, "11111111-2222-4333-a444-555555555557")
+      other = Map.put(@order, :client_order_id, "11111111-2222-4333-a444-555555555558")
+      assert {:ok, three} = Fake.place_order(@credentials, keyed, @account)
+      assert {:ok, four} = Fake.place_order(@credentials, other, @account)
+      assert three.id != four.id
+    end
+
+    test "a UUID differing only in case is the same key" do
+      lower = Map.put(@order, :client_order_id, "abcdefab-2222-4333-a444-555555555559")
+      upper = Map.put(@order, :client_order_id, "ABCDEFAB-2222-4333-A444-555555555559")
+
+      assert {:ok, first} = Fake.place_order(@credentials, lower, @account)
+      assert {:ok, again} = Fake.place_order(@credentials, upper, @account)
+      assert again.id == first.id
+    end
+
+    test "a key that is not a UUID is refused, as Rest refuses it" do
+      request = Map.put(@order, :client_order_id, "not-a-uuid")
+
+      assert {:error, {:invalid_field, :client_order_id}} =
+               Fake.place_order(@credentials, request, @account)
+
+      assert {:error, {:invalid_field, :client_order_id}} =
+               Rest.supplied_client_order_id(request, @account)
+
+      assert {:ok, nil} = Rest.supplied_client_order_id(@order, @account)
+      assert {:ok, nil} = Rest.supplied_client_order_id(@order, client_order_id: "")
+    end
+
+    test "credentials with a trailing newline are refused by field name" do
+      bad = %{@credentials | api_key: "k\n"}
+
+      assert {:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}} =
+               Fake.place_order(bad, @order, @account)
+    end
   end
 
   describe "the facade names this venue's limiter even for a forwarded `limiter: nil`" do

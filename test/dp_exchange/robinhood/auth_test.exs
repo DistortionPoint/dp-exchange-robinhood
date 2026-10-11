@@ -199,4 +199,59 @@ defmodule DpExchange.Robinhood.AuthTest do
       assert List.keyfind(headers, "x-signature", 0) != nil
     end
   end
+
+  describe "surrounding whitespace and control characters are refused by field name" do
+    @good_seed Base.encode64(:binary.copy(<<5>>, 32))
+    @secret_key "SECRET-API-KEY-CANARY"
+
+    test "an api_key with a trailing newline, tab, space or control character" do
+      keys =
+        for pad <- ["\n", "\r\n", "\t", " "],
+            key <- [@secret_key <> pad, pad <> @secret_key],
+            do: key
+
+      for key <- keys do
+        credentials = %{api_key: key, private_key: @good_seed}
+        expected = {:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}}
+
+        assert Auth.headers("GET", "/p", "", credentials) == expected
+        assert Auth.validate_credentials(credentials) == expected
+      end
+
+      embedded = %{api_key: "ab\ncd", private_key: @good_seed}
+      assert {:error, {:invalid_api_key, _reason}} = Auth.headers("GET", "/p", "", embedded)
+    end
+
+    test "a private_key with a trailing newline or surrounding whitespace" do
+      seeds = [@good_seed <> "\n", " " <> @good_seed, @good_seed <> "\t", "\n" <> @good_seed]
+
+      for seed <- seeds do
+        credentials = %{api_key: "k", private_key: seed}
+        expected = {:error, {:invalid_private_key, :surrounding_whitespace_or_control_characters}}
+
+        assert Auth.headers("GET", "/p", "", credentials) == expected
+        assert Auth.validate_credentials(credentials) == expected
+      end
+    end
+
+    test "no credential value appears in the error or its inspected form" do
+      cases = [
+        %{api_key: @secret_key <> "\n", private_key: @good_seed},
+        %{api_key: "k", private_key: @good_seed <> "\n"}
+      ]
+
+      for credentials <- cases do
+        assert {:error, _reason} = error = Auth.headers("GET", "/p", "", credentials)
+        printed = inspect(error, limit: :infinity, printable_limit: :infinity)
+
+        refute printed =~ @secret_key
+        refute printed =~ @good_seed
+      end
+    end
+
+    test "interior spaces are not 'surrounding', and keep their earlier answer" do
+      assert {:error, {:invalid_private_key, :not_base64}} =
+               Auth.headers("GET", "/p", "", %{api_key: "k", private_key: "not base64!!"})
+    end
+  end
 end

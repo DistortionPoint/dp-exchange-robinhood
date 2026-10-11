@@ -110,6 +110,35 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       assert message =~ "502"
     end
 
+    test "an error page is capped in the message, not carried whole" do
+      page = "<html>" <> String.duplicate("x", 200_000) <> "</html>"
+      plug = fn conn -> Plug.Conn.resp(conn, 502, page) end
+
+      assert {:error, {:exchange_error, :robinhood, message}} =
+               Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
+
+      assert message =~ "502"
+      assert byte_size(message) < 4_096
+    end
+
+    test "a refusal's detail is capped, and a short one is untouched" do
+      long = String.duplicate("d", 50_000)
+
+      assert {:refused, {:venue_error, 400, detail}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(%{"detail" => long}, 400),
+                 retry_attempts: 0
+               )
+
+      assert byte_size(detail) == 1_024
+
+      assert {:refused, {:venue_error, 400, "Invalid symbol: ALGO-USD"}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(%{"detail" => "Invalid symbol: ALGO-USD"}, 400),
+                 retry_attempts: 0
+               )
+    end
+
     test "a refusal with no readable detail still carries the status" do
       plug = fn conn -> Plug.Conn.resp(conn, 404, "not json") end
 

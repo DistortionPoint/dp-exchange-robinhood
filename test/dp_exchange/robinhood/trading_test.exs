@@ -547,12 +547,52 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert {:error, _reason} =
                Rest.place_order(@credentials, @market,
                  account_number: "RH-1",
-                 client_order_id: "mine-123",
+                 client_order_id: "0A1B2C3D-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
                  plug: failing(self()),
                  retry_delay: 1
                )
 
-      assert Enum.uniq(attempts()) == ["mine-123"]
+      assert Enum.uniq(attempts()) == ["0A1B2C3D-4e5f-4a6b-8c7d-9e0f1a2b3c4d"]
+    end
+
+    test "a key that is not a canonical UUID is refused before anything is sent" do
+      bad = [
+        "mine-123",
+        " 0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+        "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\n",
+        "0a1b2c3d4e5f4a6b8c7d9e0f1a2b3c4d",
+        "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4g",
+        42
+      ]
+
+      for key <- bad do
+        assert {:error, {:invalid_field, :client_order_id}} =
+                 Rest.place_order(@credentials, @market,
+                   account_number: "RH-1",
+                   client_order_id: key,
+                   plug: failing(self()),
+                   retry_delay: 1
+                 )
+
+        assert {:error, {:invalid_field, :client_order_id}} =
+                 Rest.place_order(
+                   @credentials,
+                   Map.put(@market, :client_order_id, key),
+                   account_number: "RH-1",
+                   plug: failing(self()),
+                   retry_delay: 1
+                 )
+
+        assert {:error, {:invalid_field, :client_order_id}} =
+                 Fake.place_order(
+                   @credentials,
+                   @market,
+                   account_number: "RH-1",
+                   client_order_id: key
+                 )
+      end
+
+      assert attempts() == []
     end
 
     test "two separate orders get two different generated keys" do

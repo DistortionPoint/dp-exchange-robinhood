@@ -19,6 +19,12 @@ defmodule DpExchange.Robinhood.Supervisor do
   alias DpExchange.Core.{Config, DefaultRateLimiter}
   alias DpExchange.Robinhood.Feed
 
+  @doc """
+  Starts this venue's tree: its rate limiter, then its feed (`one_for_one`, so a crashed feed
+  restarts without resetting the limiter). Registered as `opts[:name]`, default
+  `DpExchange.Robinhood.Supervisor`; the remaining `opts` go to `DpExchange.Robinhood.Feed`,
+  whose name is `opts[:feed]` and whose limiter is `opts[:limiter]`.
+  """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
