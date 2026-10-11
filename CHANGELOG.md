@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.81] - 2026-10-11
+
 ### Fixed
 
 - **A large symbol universe went out as one unbounded signed URL.** `best_bid_ask` takes a
