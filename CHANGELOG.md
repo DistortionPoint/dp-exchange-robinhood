@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.74] - 2026-10-11
+
 ### Fixed
 
 - **An order carrying a value outside the vendor's enums was decoded with `nil` in that
