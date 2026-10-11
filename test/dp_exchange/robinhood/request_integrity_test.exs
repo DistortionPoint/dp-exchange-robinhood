@@ -194,6 +194,7 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
 
     test "a symbol that is blank or not a string" do
       assert {:error, {:invalid_field, :symbol}} = place(%{@market | symbol: ""})
+      assert {:error, {:invalid_field, :symbol}} = place(%{@market | symbol: "  "})
       assert {:error, {:invalid_field, :symbol}} = place(%{@market | symbol: 5})
       refute_received {:hit, _method, _path, _query, _raw, _content_type}
     end

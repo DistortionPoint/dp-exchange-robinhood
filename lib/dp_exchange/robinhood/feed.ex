@@ -474,6 +474,11 @@ defmodule DpExchange.Robinhood.Feed do
       # the boot `:subscriber`, which is not in this set. Pids are monitored (`monitors`
       # below, shared with `notice_subscribers`) and pruned on `:DOWN`.
       data_subscribers: MapSet.new(),
+      # Which poll cycle is next (rotates the chunk that goes first) and whether the last
+      # cycle left symbols unrequested for want of budget (the latch behind the one
+      # `:degraded` notice per crossing). See `report_budget/2`.
+      cycle: 0,
+      budget_exhausted: false,
       # Monitor references for pid entries in `notice_subscribers`, so a dead one is dropped
       # rather than walked on every notice for the life of this feed — see the `:DOWN`
       # clause below and `Core.Fanout.watch/2`.
@@ -594,7 +599,7 @@ defmodule DpExchange.Robinhood.Feed do
   # value: `PollingFeed`'s `fetch_all` contract carries one outcome per call, and a cycle
   # that found a bad symbol also has every other symbol's events to publish.
   defp fetch_all(symbols, credentials, request_opts, on_refusal, parent, budget_ms) do
-    refused = known_refused(parent)
+    {refused, cycle} = cycle_plan(parent)
     {suspect, active} = Enum.split_with(symbols, &MapSet.member?(refused, &1))
 
     ctx = %{
@@ -605,14 +610,16 @@ defmodule DpExchange.Robinhood.Feed do
     }
 
     # Only the cycle's first request runs on the caller's own timeout.
-    active_outcomes = resolve(active, ctx, false)
+    active_outcomes = resolve(active, ctx, false, cycle)
 
     # A credential the venue rejected is rejected for the remembered symbols too, so asking
     # for them as well would spend a request to learn what the first one already said.
     outcomes =
       if auth_failure?(active_outcomes),
         do: active_outcomes,
-        else: active_outcomes ++ resolve(suspect, ctx, true)
+        else: active_outcomes ++ resolve(suspect, ctx, true, cycle)
+
+    report_budget(parent, outcomes)
 
     case for({:events, events} <- outcomes, do: events) |> List.flatten() do
       [] -> no_events(outcomes)
@@ -635,12 +642,26 @@ defmodule DpExchange.Robinhood.Feed do
   defp no_events(outcomes) do
     error = Enum.find(outcomes, &match?({:error, _reason}, &1))
     refused = Enum.find(outcomes, &match?({:refused, _reason}, &1))
+    skipped? = Enum.any?(outcomes, &match?({:skipped, _symbols}, &1))
 
-    case {error, refused} do
-      {{:error, reason}, _refused} -> {:error, reason}
-      {nil, {:refused, reason}} -> {:error, reason}
-      {nil, nil} -> {:ok, []}
+    case {error, refused, skipped?} do
+      {{:error, reason}, _refused, _skipped} -> {:error, reason}
+      {nil, {:refused, reason}, _skipped} -> {:error, reason}
+      {nil, nil, true} -> {:error, :bisect_budget_exhausted}
+      {nil, nil, false} -> {:ok, []}
     end
+  end
+
+  # **Symbols the cycle's budget left unrequested are reported, not swallowed.** A cycle that
+  # delivered some chunks used to hide the ones it ran out of budget for: an `{:error, _}` is
+  # dropped whenever any other outcome carried events. Each cycle tells this feed how many
+  # symbols it skipped (0 when none) and the feed latches it: one `:degraded` notice on the
+  # first cycle that skips, one on the first that does not after. Coverage needs nothing
+  # here: it is windowed, so a symbol that got no fresh book stops being reported covered.
+  defp report_budget(parent, outcomes) do
+    skipped = Enum.sum(for {:skipped, symbols} <- outcomes, do: length(symbols))
+
+    send(parent, {:poll_budget, skipped})
   end
 
   # One bulk request for `symbols`; on a refusal, split in half and ask again, down to
@@ -653,16 +674,21 @@ defmodule DpExchange.Robinhood.Feed do
   # kill, which would lose the findings so far. A request that cannot start inside the
   # budget ends as `{:error, _}` (silence, retried next cycle), and once the budget is spent
   # no further request is sent.
-  defp resolve([], _ctx, _capped?), do: []
+  defp resolve(symbols, ctx, capped?), do: resolve(symbols, ctx, capped?, 0)
+
+  defp resolve([], _ctx, _capped?, _cycle), do: []
 
   # More symbols than `Rest.max_bulk_symbols/0` go out as several requests of at most that
   # many, so the signed URL stays bounded at any universe size. Only the cycle's first
   # request may run uncapped. A rejected key (401/403) ends the cycle's requests, as it does
   # a bisection: every chunk would be refused alike. Halves made by bisection are already
   # within one chunk, so a refusal is still located inside its own chunk.
-  defp resolve(symbols, ctx, capped?) do
+  #
+  # **Which chunk goes first rotates with the cycle** (`plan_chunks/2`), so a universe too
+  # slow for the budget starves a different chunk each cycle, not always the tail.
+  defp resolve(symbols, ctx, capped?, cycle) do
     symbols
-    |> Enum.chunk_every(Rest.max_bulk_symbols())
+    |> plan_chunks(cycle)
     |> Enum.with_index()
     |> Enum.reduce_while([], fn {chunk, index}, acc ->
       outcomes = resolve_chunk(chunk, ctx, capped? or index > 0)
@@ -671,11 +697,27 @@ defmodule DpExchange.Robinhood.Feed do
     end)
   end
 
+  # One chunk (the common case, and every bisected half) is left in the caller's order. More
+  # than one are made from a sorted list, so the same set chunks the same way each cycle, and
+  # are rotated left by `cycle` chunks: cycle 0 starts at chunk 0, cycle 1 at chunk 1, and so
+  # on round again.
+  defp plan_chunks(symbols, cycle) do
+    cap = Rest.max_bulk_symbols()
+
+    if length(symbols) <= cap do
+      [symbols]
+    else
+      chunks = symbols |> Enum.sort() |> Enum.chunk_every(cap)
+      {head, tail} = Enum.split(chunks, rem(cycle, length(chunks)))
+      tail ++ head
+    end
+  end
+
   defp resolve_chunk(symbols, ctx, capped?) do
     remaining = ctx.deadline - System.monotonic_time(:millisecond)
 
     if capped? and remaining <= 0 do
-      [{:error, :bisect_budget_exhausted}]
+      [{:skipped, symbols}]
     else
       request_opts =
         if capped?, do: cap_timeout(ctx.request_opts, remaining), else: ctx.request_opts
@@ -714,24 +756,31 @@ defmodule DpExchange.Robinhood.Feed do
     if System.monotonic_time(:millisecond) >= ctx.deadline do
       # Out of budget. Left unresolved, as silence retried next cycle, not reported as
       # refused, because nothing here established which of these the venue objected to.
-      [{:error, reason}]
+      [{:error, reason}, {:skipped, symbols}]
     else
       {left, right} = Enum.split(symbols, div(length(symbols), 2))
-      resolve(left, ctx, true) ++ resolve(right, ctx, true)
+      left_outcomes = resolve(left, ctx, true)
+
+      # A key the venue rejected on the left half is rejected for the right half too.
+      if auth_failure?(left_outcomes),
+        do: left_outcomes,
+        else: left_outcomes ++ resolve(right, ctx, true)
     end
   end
 
-  # The set `Feed` holds of symbols the venue has refused and that have not delivered since.
-  # Read at the start of each cycle. A feed that does not answer is treated as holding
-  # none: every symbol goes into the bulk request, which is the old behaviour.
-  defp known_refused(parent) do
-    GenServer.call(parent, :refused_symbols, 5_000)
+  # The set `Feed` holds of symbols the venue has refused and that have not delivered since,
+  # and this cycle's number (which starts the chunk rotation; each call is the next cycle).
+  # Read at the start of each cycle. A feed that does not answer is treated as holding no
+  # refused symbols and as cycle 0: every symbol goes into the bulk request, as before.
+  defp cycle_plan(parent) do
+    GenServer.call(parent, :cycle_plan, 5_000)
   catch
-    :exit, _reason -> MapSet.new()
+    :exit, _reason -> {MapSet.new(), 0}
   end
 
   @impl true
-  def handle_call(:refused_symbols, _from, state), do: {:reply, state.refused, state}
+  def handle_call(:cycle_plan, _from, state),
+    do: {:reply, {state.refused, state.cycle}, %{state | cycle: state.cycle + 1}}
 
   def handle_call(:coverage, _from, state) do
     {:reply, poller_coverage(state), state}
@@ -832,6 +881,38 @@ defmodule DpExchange.Robinhood.Feed do
 
     {:noreply, state}
   end
+
+  # A cycle's count of symbols its budget left unrequested. The notice goes out on the
+  # crossing into exhaustion and on the crossing out, never once per cycle.
+  def handle_info({:poll_budget, skipped}, %{budget_exhausted: false} = state)
+      when is_integer(skipped) and skipped > 0 do
+    notice =
+      Notice.new(:degraded, :robinhood,
+        severity: :warning,
+        message:
+          "#{skipped} symbols were not requested this poll cycle: its request budget " <>
+            "(bisect_budget_ms) ran out. They are requested in later cycles, the chunk " <>
+            "that goes first rotating each cycle; until then they are not in coverage/1",
+        details: %{skipped: skipped, bisect_budget_ms: state.bisect_budget_ms}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+    {:noreply, %{state | budget_exhausted: true}}
+  end
+
+  def handle_info({:poll_budget, 0}, %{budget_exhausted: true} = state) do
+    notice =
+      Notice.new(:degraded, :robinhood,
+        severity: :info,
+        message: "poll cycle budget is sufficient again: every symbol was requested",
+        details: %{skipped: 0, bisect_budget_ms: state.bisect_budget_ms}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+    {:noreply, %{state | budget_exhausted: false}}
+  end
+
+  def handle_info({:poll_budget, _skipped}, state), do: {:noreply, state}
 
   def handle_info({:dp_exchange, :robinhood, %Notice{}} = message, state) do
     fan_out(state.notice_subscribers, message)

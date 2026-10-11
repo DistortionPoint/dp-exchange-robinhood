@@ -757,7 +757,10 @@ defmodule DpExchange.Robinhood.Fake do
   # subscriber still alive, and records a symbol as delivered only when a book was actually
   # sent to somebody. A registered name nothing holds is skipped, as `Core.Fanout` skips it.
   defp deliver(symbols) do
-    recipients = subscribers() |> Enum.map(&Fanout.resolve/1) |> Enum.filter(&is_pid/1)
+    # Unique, as `Core.Fanout.deliver/4` is: a process registered both as a pid and by name
+    # receives each book once.
+    recipients =
+      subscribers() |> Enum.map(&Fanout.resolve/1) |> Enum.filter(&is_pid/1) |> Enum.uniq()
 
     if recipients != [] do
       for symbol <- symbols do

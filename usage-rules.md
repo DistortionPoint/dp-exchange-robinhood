@@ -64,9 +64,15 @@ this venue's budget, and a second loop doubles the request count for no extra da
 **Cadence and cost.** One cycle every 30 seconds (`interval_ms:`, default `30_000`), and each
 cycle is ONE signed request carrying every wanted symbol (at most 100 per request, this
 package's own conservative cap since the vendor states none: a larger set is sent as several
-requests and merged). If the venue refuses the whole
-request (400 or 404), the batch is split in half and asked again, down to single symbols, for
-at most `bisect_budget_ms:` (default `20_000`; a positive integer or the feed does not start,
+requests and merged; every request after the cycle's first shares the `bisect_budget_ms:`
+below). A universe too slow to request whole inside that budget is not starved at its tail:
+which chunk goes first rotates each cycle, so every symbol is requested across cycles. The
+symbols a cycle left out are in no `coverage/1` until a fresh book arrives for them, and the
+first such cycle raises one `%Core.Notice{kind: :degraded, severity: :warning}` (to
+`subscriber:` and `subscribe_notices/1` registrants, `details.skipped` the count), with one
+`severity: :info` notice when a cycle again fits. Not once per cycle. If the
+venue refuses a request (400 or 404), it is split in half and asked again, down to single
+symbols, for at most `bisect_budget_ms:` (default `20_000`; a positive integer or the feed does not start,
 `{:invalid_option, :bisect_budget_ms}`). A symbol the venue refused alone is delivered to
 `subscriber:` as `{:dp_exchange, :robinhood, {:refused, symbol, reason}}`, left out of the
 bulk request from then on, and asked for by itself each cycle until it answers again or you

@@ -680,6 +680,172 @@ defmodule DpExchange.Robinhood.FeedTest do
       refute_receive {:request, _next_chunk}, 300
     end
 
+    # A venue slow enough that the first chunk alone spends the whole `bisect_budget_ms`
+    # (150ms of service against a 100ms budget) while `slow?` is 1: later chunks are skipped.
+    defp slow_universe_plug(slow?) do
+      test_pid = self()
+
+      fn conn ->
+        asked = query_symbols(conn.query_string)
+        send(test_pid, {:request, asked})
+        if :atomics.get(slow?, 1) == 1, do: Process.sleep(150)
+        rows = Enum.map(asked, &%{"symbol" => &1, "bid" => "1", "ask" => "2"})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{"results" => rows}))
+      end
+    end
+
+    defp slow_flag do
+      flag = :atomics.new(1, [])
+      :atomics.put(flag, 1, 1)
+      flag
+    end
+
+    test "the chunk sent first rotates with each cycle" do
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+      expected = symbols |> Enum.sort() |> Enum.chunk_every(Rest.max_bulk_symbols())
+
+      start_feed(
+        symbols: symbols,
+        interval_ms: 200,
+        retry_attempts: 0,
+        bisect_budget_ms: 100,
+        plug: slow_universe_plug(slow_flag())
+      )
+
+      firsts =
+        for _cycle <- 1..3 do
+          assert_receive {:request, asked}, 5_000
+          Enum.sort(asked)
+        end
+
+      assert firsts == expected
+    end
+
+    test "with a budget too small for every chunk, every symbol is still polled across cycles" do
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+
+      start_feed(
+        symbols: symbols,
+        interval_ms: 200,
+        retry_attempts: 0,
+        bisect_budget_ms: 100,
+        plug: slow_universe_plug(slow_flag())
+      )
+
+      arrived =
+        for _n <- 1..250 do
+          assert_receive {:dp_exchange, :robinhood,
+                          %DpExchange.Core.Types.TopOfBook{symbol: symbol}},
+                         5_000
+
+          symbol
+        end
+
+      assert Enum.sort(arrived) == Enum.sort(symbols)
+    end
+
+    test "the exhausted budget is reported once while other chunks deliver, then recovery" do
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+      flag = slow_flag()
+
+      start_feed(
+        symbols: symbols,
+        interval_ms: 200,
+        retry_attempts: 0,
+        bisect_budget_ms: 100,
+        plug: slow_universe_plug(flag)
+      )
+
+      # The first chunk delivers...
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+
+      # ...and the chunks the budget left out are reported, not swallowed.
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Notice{
+                        kind: :degraded,
+                        severity: :warning,
+                        details: %{skipped: skipped}
+                      }},
+                     5_000
+
+      assert skipped in 1..250
+
+      # Latched: later cycles that are still short do not repeat it.
+      refute_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Notice{kind: :degraded, severity: :warning}},
+                     800
+
+      # Fast again: every chunk fits the budget, and the crossing back is reported once.
+      :atomics.put(flag, 1, 0)
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Notice{
+                        kind: :degraded,
+                        severity: :info,
+                        details: %{skipped: 0}
+                      }},
+                     5_000
+    end
+
+    test "a refusal inside the second chunk is bisected there and every chunk still arrives" do
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+
+      start_feed(
+        symbols: symbols,
+        interval_ms: 60_000,
+        retry_attempts: 0,
+        plug: refusing("S150-USD")
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, "S150-USD", _reason}}, 5_000
+
+      arrived =
+        for _n <- 1..249 do
+          assert_receive {:dp_exchange, :robinhood,
+                          %DpExchange.Core.Types.TopOfBook{symbol: symbol}},
+                         5_000
+
+          symbol
+        end
+
+      assert Enum.sort(arrived) == Enum.sort(symbols -- ["S150-USD"])
+
+      requests = drain_requests()
+      assert Enum.all?(requests, &(length(&1) <= Rest.max_bulk_symbols()))
+      # The chunk after the refusing one was still requested.
+      assert Enum.any?(requests, &("S250-USD" in &1))
+    end
+
+    test "a 401 met inside a bisection ends it: the other half is not sent" do
+      test_pid = self()
+      counter = :counters.new(1, [])
+      symbols = for n <- 1..8, do: "S#{n}-USD"
+
+      plug = fn conn ->
+        asked = query_symbols(conn.query_string)
+        send(test_pid, {:request, asked})
+        :counters.add(counter, 1, 1)
+
+        conn = Plug.Conn.put_resp_content_type(conn, "application/json")
+
+        # The whole batch is refused (400) so it is split; the first half then meets a 401.
+        status = if :counters.get(counter, 1) == 1, do: 400, else: 401
+        Plug.Conn.resp(conn, status, Jason.encode!(%{"detail" => "no"}))
+      end
+
+      start_feed(symbols: symbols, interval_ms: 60_000, retry_attempts: 0, plug: plug)
+
+      assert_receive {:request, whole}, 5_000
+      assert length(whole) == 8
+      assert_receive {:request, left}, 5_000
+      assert length(left) == 4
+      refute_receive {:request, _right}, 500
+      refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
+    end
+
     test "a 401 is not split: one request a cycle, and no symbol is blamed" do
       test_pid = self()
 
@@ -1416,6 +1582,20 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert_receive {:dp_exchange, :robinhood,
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
                      5_000
+    end
+
+    test "a process that is the boot subscriber by name and a registered pid gets each book once" do
+      name = :"rh_boot_name_#{System.unique_integer([:positive])}"
+      true = Process.register(self(), name)
+
+      feed = start_feed(symbols: [], interval_ms: 1_000, subscriber: name)
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD"], self())
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     5_000
+
+      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 300
     end
 
     test "add_symbols with no subscriber registers nobody and the boot subscriber keeps receiving" do

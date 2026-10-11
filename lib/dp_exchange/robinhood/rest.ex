@@ -1306,9 +1306,14 @@ defmodule DpExchange.Robinhood.Rest do
   # `SymbolFormat` raises on a non-string, and a blank one builds `"symbol": ""`.
   defp order_symbol_field(request) do
     case order_field(request, :symbol) do
-      {:ok, symbol} when is_binary(symbol) and symbol != "" -> {:ok, symbol}
-      {:ok, _unusable} -> {:error, {:invalid_field, :symbol}}
-      error -> error
+      {:ok, symbol} when is_binary(symbol) ->
+        if String.trim(symbol) == "", do: {:error, {:invalid_field, :symbol}}, else: {:ok, symbol}
+
+      {:ok, _unusable} ->
+        {:error, {:invalid_field, :symbol}}
+
+      error ->
+        error
     end
   end
 

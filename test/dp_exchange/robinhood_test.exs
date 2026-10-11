@@ -582,6 +582,20 @@ defmodule DpExchange.RobinhoodTest do
       refute_received {:dp_exchange, :robinhood, _anything}
     end
 
+    test "a process subscribed both as a pid and by name receives each book once" do
+      name = :"rh_fake_dup_#{System.unique_integer([:positive])}"
+      true = Process.register(self(), name)
+
+      assert :ok = Fake.subscribe([], to: self())
+      assert :ok = Fake.subscribe(["ETH-USD"], to: name)
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "ETH-USD"}},
+                     5_000
+
+      refute_received {:dp_exchange, :robinhood, _again}
+    end
+
     test "subscribe([]) registers the subscriber and delivers nothing" do
       assert :ok = Fake.subscribe([])
       assert Fake.coverage() == %{}

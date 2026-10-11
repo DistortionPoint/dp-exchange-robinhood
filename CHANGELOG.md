@@ -19,6 +19,29 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A universe too slow for the poll budget starved its tail chunks every cycle, silently.**
+  Chunks after the first share `bisect_budget_ms`; once it was spent they were skipped as an
+  `{:error, :bisect_budget_exhausted}` that was dropped whenever another chunk delivered, and
+  the same chunks (always the last) were skipped next cycle too. Now (1) the chunk requested
+  first rotates each cycle (`Feed` keeps a cycle counter; a multi-chunk universe is sorted
+  so it chunks the same way each cycle), so across cycles every symbol is requested; (2) a
+  symbol left unrequested is not in `coverage/1` (coverage is windowed on fresh books); and
+  (3) the exhaustion is reported: one `%Core.Notice{kind: :degraded, severity: :warning,
+  details: %{skipped: n, bisect_budget_ms: ms}}` on the first cycle that skips, and one
+  `severity: :info` when a cycle again requests everything, latched like the feed's other
+  notices, not one per cycle. The request order for more than 100 symbols is now
+  sorted-chunk order.
+- **A 401/403 met inside a bisection no longer lets the other half be sent.** Only the
+  top-level chunks stopped on a rejected key; the right half of a split was still requested
+  after the left half was rejected. Both now stop.
+- **`Fake.subscribe/2` sent a book twice to a process registered both as a pid and by name**,
+  which `Core.Fanout` (the real feed's path) does not. Recipients are de-duplicated.
+- **A whitespace-only order `symbol` was accepted** by `Rest.place_order/3` (and so by
+  `Fake.place_order/3`) and went out as a blank `symbol`. It is
+  `{:error, {:invalid_field, :symbol}}` before anything is signed.
+
 ## [0.3.82] - 2026-10-11
 
 ### Fixed
