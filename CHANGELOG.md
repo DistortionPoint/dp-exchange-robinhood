@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.82] - 2026-10-11
+
 ### Fixed
 
 - **`subscribe/2` ignored `to:`.** Data reached only the `:subscriber` fixed at boot, against
