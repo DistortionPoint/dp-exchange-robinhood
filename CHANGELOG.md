@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.89] - 2026-10-12
+
 ### Fixed -- tick U (test-suite quality)
 
 - Tests only, no behaviour change. The tick T exponent-bound test used values that
