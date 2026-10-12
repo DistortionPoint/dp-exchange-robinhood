@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.84] - 2026-10-12
+
 ### Changed (BREAKING) -- trading conventions (family tick P)
 
 - **BREAKING: an unconfirmed placement is `{:error, {:order_unconfirmed, client_order_id,
