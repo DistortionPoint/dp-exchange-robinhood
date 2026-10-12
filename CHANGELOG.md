@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.87] - 2026-10-12
+
 ### Fixed
 
 - **A refused top-of-book side quoted the venue's raw value unbounded in the error.** It is
