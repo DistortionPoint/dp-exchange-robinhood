@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.93] - 2026-10-12
+
 - **Docs (`usage-rules.md` checked line by line against the code):** documents the poller
   crash-loop bound (`{:poller_crash_loop, reason}` after more than 5 crashes in 60s), the
   `:link_down` notice for an unanswered coverage read, every notice `subscribe_notices/1` receives,
