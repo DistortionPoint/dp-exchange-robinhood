@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.86] - 2026-10-12
+
 ### Fixed -- regression review of the trading conventions (family tick R)
 
 - **BREAKING: every 4xx except 429 answering a placement's ONLY attempt is
