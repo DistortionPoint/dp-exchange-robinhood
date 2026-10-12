@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.88] - 2026-10-12
+
 ### Fixed -- tick T (regression review of tick S, docs vs code, hot path)
 
 - **A number with an absurd exponent from the venue is unreadable, not a price.** `Rest`'s
