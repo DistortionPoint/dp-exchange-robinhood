@@ -275,14 +275,22 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp book_side(raw, side) do
     case decimal(raw) do
-      nil -> {:error, {:invalid_decimal, side, raw}}
+      nil -> {:error, {:invalid_decimal, side, bounded_raw(raw)}}
       price -> side_price(Decimal.compare(price, 0), price, raw, side)
     end
   end
 
   defp side_price(:gt, price, _raw, _side), do: {:ok, price}
   defp side_price(:eq, _price, _raw, _side), do: {:ok, nil}
-  defp side_price(:lt, _price, raw, side), do: {:error, {:invalid_decimal, side, raw}}
+
+  defp side_price(:lt, _price, raw, side),
+    do: {:error, {:invalid_decimal, side, bounded_raw(raw)}}
+
+  # The venue's value, quoted into an error tuple: a short one comes back as sent, anything
+  # long is cut so a hostile or broken reply cannot ride the error into every log.
+  defp bounded_raw(raw) when is_binary(raw) and byte_size(raw) <= 64, do: raw
+  defp bounded_raw(raw) when is_number(raw), do: raw
+  defp bounded_raw(raw), do: inspect(raw, limit: 10, printable_limit: 64)
 
   defp stated_book(row) do
     if is_nil(row["bid"]) and is_nil(row["ask"]),

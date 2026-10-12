@@ -779,6 +779,26 @@ defmodule DpExchange.Robinhood.RestTest do
       assert top.symbol == "BTC-USD"
     end
 
+    test "a row with an unreadable or negative side is dropped, not published as nil (MD6)" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"},
+          %{"symbol" => "ETH-USD", "bid" => "NaN", "ask" => "3"},
+          %{"symbol" => "LTC-USD", "bid" => "4", "ask" => "-5"}
+        ]
+      }
+
+      assert {:ok, [top]} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD", "LTC-USD"], @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      # The refused rows are absent, so a poller never records those symbols as delivered
+      # and its coverage lets them age out as uncovered.
+      assert top.symbol == "BTC-USD"
+    end
+
     test "a 400 on the bulk request is a refusal, same status handling as the single-symbol path" do
       body = %{"detail" => "Invalid symbol: NOPE-USD"}
 

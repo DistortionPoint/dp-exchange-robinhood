@@ -19,6 +19,11 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refused top-of-book side quoted the venue's raw value unbounded in the error.** It is
+  returned as sent when short and cut otherwise, so a broken reply cannot ride the error tuple.
+
 ## [0.3.86] - 2026-10-12
 
 ### Fixed -- regression review of the trading conventions (family tick R)
