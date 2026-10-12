@@ -82,28 +82,67 @@ defmodule DpExchange.Robinhood.Fake do
   # passed the wrong account see a portfolio here and a refusal against the venue.
   @account_number "RH-1"
 
+  @doc """
+  Child spec for the fake. Unlike the real venue's, it wraps no credentials and declares no
+  `type: :supervisor`, because `start_link/1` starts nothing.
+  See `c:DpExchange.Core.Venue.child_spec/1`.
+  """
   @impl true
   def child_spec(opts),
     do: %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
 
+  @doc """
+  Starts nothing and answers `:ignore`: the fake runs no process.
+  See `c:DpExchange.Core.Venue.start_link/1`.
+  """
   @impl true
   def start_link(_opts), do: :ignore
 
+  @doc """
+  The real facade's `DpExchange.Robinhood.provider_name/0`.
+  See `c:DpExchange.Core.Venue.provider_name/0`.
+  """
   @impl true
   def provider_name, do: DpExchange.Robinhood.provider_name()
+
+  @doc """
+  The real facade's `DpExchange.Robinhood.runtime_id/0`.
+  See `c:DpExchange.Core.Venue.runtime_id/0`.
+  """
   @impl true
   def runtime_id, do: DpExchange.Robinhood.runtime_id()
+
+  @doc """
+  The real facade's `DpExchange.Robinhood.asset_classes/0`.
+  See `c:DpExchange.Core.Venue.asset_classes/0`.
+  """
   @impl true
   def asset_classes, do: DpExchange.Robinhood.asset_classes()
+
+  @doc """
+  The real facade's `DpExchange.Robinhood.capabilities/0`, unchanged, so the fake declares
+  exactly what the real adapter does. See `c:DpExchange.Core.Venue.capabilities/0`.
+  """
   @impl true
   def capabilities, do: DpExchange.Robinhood.capabilities()
 
   # This venue has no last-trade endpoint at all — see `DpExchange.Robinhood`'s moduledoc
   # on `get_price/2`, `:unsupported` since DpCryptoManagement's issue #21. A fake that kept
   # answering here, backed by `@price`, would make that gap untestable.
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_price/2`.
+  """
   @impl true
   def get_price(_symbol, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  A fixed top of book for `BTC-USD`, `ETH-USD` or `DOGE-USD`, from memory.
+
+  Requires `opts[:credentials]` as the real venue does. A symbol outside the three is the
+  venue's own 400 refusal. See `DpExchange.Robinhood.get_top_of_book/2` and
+  `c:DpExchange.Core.Venue.get_top_of_book/2`.
+  """
   @impl true
   def get_top_of_book(symbol, opts \\ []) do
     with_injection(symbol, fn ->
@@ -157,6 +196,10 @@ defmodule DpExchange.Robinhood.Fake do
   defp unlisted(canonical),
     do: {:refused, {:venue_error, 400, "Invalid symbol: " <> canonical}}
 
+  @doc """
+  The fake's three symbols, sorted. Requires `opts[:credentials]`.
+  See `c:DpExchange.Core.Venue.get_symbols/1`.
+  """
   @impl true
   def get_symbols(opts \\ []) do
     with_injection(fn ->
@@ -165,21 +208,52 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_historical_prices/4`.
+  """
   @impl true
   def get_historical_prices(_symbol, _timeframe, _range, _opts), do: Venue.not_supported()
+
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_order_book/2`.
+  """
   @impl true
   def get_order_book(_symbol, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_trades/2`.
+  """
   @impl true
   def get_trades(_symbol, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_auction_imbalance/2`.
+  """
   @impl true
   def get_auction_imbalance(_symbol, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_volume_profile/3`.
+  """
   @impl true
   def get_volume_profile(_symbol, _timeframe, _opts \\ []), do: Venue.not_supported()
+
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_market_overview/1`.
+  """
   @impl true
   def get_market_overview(_opts), do: Venue.not_supported()
+
+  @doc """
+  The fake's three symbols as `Core.Instrument` structs, all `:spot` and `:tradable`.
+  Requires `opts[:credentials]`. See `c:DpExchange.Core.Venue.list_instruments/1`.
+  """
   @impl true
   def list_instruments(opts) do
     with_injection(fn ->
@@ -203,6 +277,13 @@ defmodule DpExchange.Robinhood.Fake do
     )
   end
 
+  @doc """
+  One BTC holding plus the account's USD cash, for the single account `RH-1`.
+
+  `opts[:account_number]` is required and any other account is `{:account_not_found, account}`,
+  as on the real venue. `opts[:asset_codes]` narrows the result.
+  See `c:DpExchange.Core.Venue.get_balances/2`.
+  """
   @impl true
   def get_balances(credentials, opts) do
     with_injection(fn ->
@@ -250,6 +331,10 @@ defmodule DpExchange.Robinhood.Fake do
     }
   end
 
+  @doc """
+  The fake's single account row, number `RH-1`, in the venue's raw map shape.
+  See `c:DpExchange.Core.Venue.get_accounts/2`.
+  """
   @impl true
   def get_accounts(credentials, _opts) do
     with_injection(fn ->
@@ -267,11 +352,27 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_fees/2`.
+  """
   @impl true
   def get_fees(_credentials, _opts), do: Venue.not_supported()
+
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_transfers/2`.
+  """
   @impl true
   def get_transfers(_credentials, _opts), do: Venue.not_supported()
 
+  @doc """
+  Records an `:open` order in the calling process, after the same request checks as
+  `DpExchange.Robinhood.Rest.place_order/3`.
+
+  `opts[:account_number]` is required; a repeated `client_order_id` returns the original
+  order. See `c:DpExchange.Core.Venue.place_order/3`.
+  """
   @impl true
   def place_order(credentials, request, opts \\ []) do
     with_injection(fn ->
@@ -344,26 +445,56 @@ defmodule DpExchange.Robinhood.Fake do
     @order_id_prefix <> suffix
   end
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.place_orders/3`.
+  """
   @impl true
   def place_orders(_credentials, _requests, _opts), do: Venue.not_supported()
 
   # Both refused, matching the real venue. A fake that answered where the real one
   # refuses lets a consumer's suite go green against behaviour that cannot happen.
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.preview_order/3`.
+  """
   @impl true
   def preview_order(_credentials, _request, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.replace_order/4`.
+  """
   @impl true
   def replace_order(_credentials, _id, _request, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.preview_replace/4`.
+  """
   @impl true
   def preview_replace(_credentials, _id, _changes, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.close_position/3`.
+  """
   @impl true
   def close_position(_credentials, _symbol, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.cancel_all_orders/2`.
+  """
   @impl true
   def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Cancels an order this process placed and returns it as `:cancelled`.
+
+  Takes no account number, as on the real venue. An id this fake never issued is
+  `{:refused, :not_found}`. See `c:DpExchange.Core.Venue.cancel_order/3`.
+  """
   @impl true
   def cancel_order(credentials, id, _opts \\ []) do
     with_injection(fn ->
@@ -389,6 +520,10 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
+  @doc """
+  An order this process placed. `opts[:account_number]` is required; an unknown id is
+  `{:refused, :not_found}`. See `c:DpExchange.Core.Venue.get_order/3`.
+  """
   @impl true
   def get_order(credentials, id, opts \\ []) do
     with_injection(fn ->
@@ -401,6 +536,12 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
+  @doc """
+  The orders this process placed, filtered by the venue-side options the real facade sends
+  (`:symbol`, `:side`, `:type`, `:state` and the date windows). `opts[:account_number]` is
+  required, and any `:cursor` is refused because the fake issues none.
+  See `c:DpExchange.Core.Venue.get_orders/2`.
+  """
   @impl true
   def get_orders(credentials, opts \\ []) do
     with_injection(fn ->
@@ -545,45 +686,108 @@ defmodule DpExchange.Robinhood.Fake do
     end
   end
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_transactions/2`.
+  """
   @impl true
   def get_transactions(_credentials, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_payment_methods/2`.
+  """
   @impl true
   def list_payment_methods(_credentials, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_payment_method/3`.
+  """
   @impl true
   def get_payment_method(_credentials, _id, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.add_payment_method/2`.
+  """
   @impl true
   def add_payment_method(_details, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.transfer_internal/4`.
+  """
   @impl true
   def transfer_internal(_asset, _amount, _opts, _request_opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.request_approved_address/4`.
+  """
   @impl true
   def request_approved_address(_asset, _network, _address, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.remove_approved_address/3`.
+  """
   @impl true
   def remove_approved_address(_network, _address, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_networks/2`.
+  """
   @impl true
   def list_networks(_asset, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_fee_promos/1`.
+  """
   @impl true
   def list_fee_promos(_opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_fx_rate/3`.
+  """
   @impl true
   def get_fx_rate(_pair, _at, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_notional_balances/3`.
+  """
   @impl true
   def get_notional_balances(_credentials, _currency, _opts), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_custody_fees/2`.
+  """
   @impl true
   def list_custody_fees(_credentials, _opts), do: Venue.not_supported()
+
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_trade_history/2`.
+  """
   @impl true
   def get_trade_history(_credentials, _opts), do: Venue.not_supported()
+
+  @doc """
+  Not implemented by this package, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.test_connection/2`.
+  """
   @impl true
   def test_connection(_credentials, _opts), do: Venue.not_supported()
+
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_rate_limit_status/2`.
+  """
   @impl true
   def get_rate_limit_status(_credentials, _opts), do: Venue.not_supported()
   # `Venue.quantization/1` is the required arity, but the real `DpExchange.Robinhood.
@@ -599,6 +803,11 @@ defmodule DpExchange.Robinhood.Fake do
   # account and trading surface below had the identical gap — `get_balances/2`,
   # `get_accounts/2`, `place_order/3`, `cancel_order/3`, `get_order/3` and `get_orders/2`
   # too: every one of them now gates on `authenticated/1` or `authenticated_credentials/1`.
+  @doc """
+  Fixed increments for a listed symbol, with `min_quantity: nil` as on the real venue.
+  Requires `opts[:credentials]`. See `DpExchange.Robinhood.quantization/2` and
+  `c:DpExchange.Core.Venue.quantization/1`.
+  """
   @impl true
   def quantization(symbol, opts \\ []) do
     with_injection(symbol, fn ->
@@ -621,6 +830,10 @@ defmodule DpExchange.Robinhood.Fake do
   # Matches the real facade — see `DpExchange.Robinhood.market_status/1`'s own doc for
   # why `:open` is the complete answer here rather than a guess: this venue's only asset
   # class is crypto, which has no exchange-mandated session to answer about.
+  @doc """
+  Always `{:ok, :open}`: crypto has no session. See `DpExchange.Robinhood.market_status/1`
+  and `c:DpExchange.Core.Venue.market_status/1`.
+  """
   @impl true
   def market_status(_opts) do
     with_injection(fn -> {:ok, :open} end)
@@ -632,6 +845,13 @@ defmodule DpExchange.Robinhood.Fake do
   @delivered_key {__MODULE__, :delivered}
   @subscribers_key {__MODULE__, :subscribers}
 
+  @doc """
+  Adds `symbols` to the wanted set and delivers a book (or the venue's refusal) for each to
+  `opts[:to]` (default: the caller) at once, from memory.
+
+  Checks the symbol list, then the subscriber, as the real facade does.
+  See `c:DpExchange.Core.Venue.subscribe/2`.
+  """
   @impl true
   def subscribe(symbols, opts \\ []) do
     # The same checks, in the same order, as the real facade: symbols, then the subscriber.
@@ -670,6 +890,10 @@ defmodule DpExchange.Robinhood.Fake do
     :ok
   end
 
+  @doc """
+  Removes `symbols` from the wanted set and from `coverage/1`.
+  See `c:DpExchange.Core.Venue.unsubscribe/2`.
+  """
   @impl true
   def unsubscribe(symbols, _opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
@@ -682,6 +906,11 @@ defmodule DpExchange.Robinhood.Fake do
   # Honours no `:to`, as the real `update_symbols/2` does not: it changes the polled set and
   # the books reach whoever `subscribe/2` registered. A symbol newly in the set is delivered
   # to those subscribers (a poll cycle's worth); with none registered nothing is delivered.
+  @doc """
+  Replaces the wanted set with `symbols` and delivers a book for each newly added one to
+  whoever `subscribe/2` registered. Honours no `:to`.
+  See `c:DpExchange.Core.Venue.update_symbols/2`.
+  """
   @impl true
   def update_symbols(symbols, _opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
@@ -697,6 +926,10 @@ defmodule DpExchange.Robinhood.Fake do
   # would let a consumer build on a route that does not exist. Only symbols this fake has
   # actually delivered a book for: `update_symbols/2` with nobody subscribed delivers
   # nothing, and a refused symbol never delivers, so neither is covered.
+  @doc """
+  `:internal_poll` for each symbol a book has been delivered for, never `:stream`.
+  See `c:DpExchange.Core.Venue.coverage/1`.
+  """
   @impl true
   def coverage(_opts \\ []), do: Map.new(delivered(), &{&1, :internal_poll})
 
@@ -805,112 +1038,252 @@ defmodule DpExchange.Robinhood.Fake do
   # venue had no streaming API when it had fifteen services. Where the venue genuinely does
   # not offer something, the comment beside it says so.
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_positions/1`.
+  """
   @impl true
   def get_positions(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_funding/2`.
+  """
   @impl true
   def get_funding(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_contract_stats/2`.
+  """
   @impl true
   def get_contract_stats(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_staking_rates/1`.
+  """
   @impl true
   def get_staking_rates(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_staking_balances/1`.
+  """
   @impl true
   def get_staking_balances(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_staking_rewards/1`.
+  """
   @impl true
   def get_staking_rewards(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_staking_history/1`.
+  """
   @impl true
   def get_staking_history(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.stake/3`.
+  """
   @impl true
   def stake(_asset, _amount, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.unstake/3`.
+  """
   @impl true
   def unstake(_asset, _amount, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.quote_conversion/4`.
+  """
   @impl true
   def quote_conversion(_from, _to, _amount, _opts \\ []),
     do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.commit_conversion/2`.
+  """
   @impl true
   def commit_conversion(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_conversion/2`.
+  """
   @impl true
   def get_conversion(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.convert/4`.
+  """
   @impl true
   def convert(_from, _to, _amount, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_trade_volume/2`.
+  """
   @impl true
   def get_trade_volume(_credentials, _opts \\ []), do: Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_portfolios/1`.
+  """
   @impl true
   def list_portfolios(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_deposit_address/3`.
+  """
   @impl true
   def get_deposit_address(_asset, _network, _opts \\ []),
     do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_approved_addresses/1`.
+  """
   @impl true
   def list_approved_addresses(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.estimate_withdrawal_fee/4`.
+  """
   @impl true
   def estimate_withdrawal_fee(_asset, _network, _amount, _opts \\ []),
     do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.withdraw/5`.
+  """
   @impl true
   def withdraw(_asset, _network, _amount, _address, _opts \\ []),
     do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_option_chain/2`.
+  """
   @impl true
   def get_option_chain(_underlying, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_option_expirations/2`.
+  """
   @impl true
   def get_option_expirations(_underlying, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_option_greeks/2`.
+  """
   @impl true
   def get_option_greeks(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.list_watchlists/1`.
+  """
   @impl true
   def list_watchlists(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_watchlist/2`.
+  """
   @impl true
   def get_watchlist(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.create_watchlist/3`.
+  """
   @impl true
   def create_watchlist(_name, _symbols, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.update_watchlist/2`.
+  """
   @impl true
   def update_watchlist(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.delete_watchlist/2`.
+  """
   @impl true
   def delete_watchlist(_id, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_financials/3`.
+  """
   @impl true
   def get_financials(_symbol, _kind, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_corporate_events/1`.
+  """
   @impl true
   def get_corporate_events(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_filings/2`.
+  """
   @impl true
   def get_filings(_symbol, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_news/1`.
+  """
   @impl true
   def get_news(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_screener/2`.
+  """
   @impl true
   def get_screener(_name, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.create_account/1`.
+  """
   @impl true
   def create_account(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.rename_account/3`.
+  """
   @impl true
   def rename_account(_id, _name, _opts \\ []), do: DpExchange.Core.Venue.not_supported()
 
+  @doc """
+  Not served by this venue, so not by this fake: answers `{:error, :not_supported}`.
+  See `c:DpExchange.Core.Venue.get_roles/1`.
+  """
   @impl true
   def get_roles(_opts \\ []), do: DpExchange.Core.Venue.not_supported()
 

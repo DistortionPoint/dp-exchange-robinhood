@@ -19,6 +19,9 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- Docs: every public facade function is documented in HexDocs (162 added); docs build is
+  warning-free.
+
 ## [0.3.90] - 2026-10-12
 
 - **Test suite (tick V, every test file read line by line):** feed tests run under
@@ -223,7 +226,7 @@ _No consumer-facing changes. Internal or packaging work only — recorded so eve
   `Rest` and `Fake`, and a symbol that is only whitespace is now refused too (it built
   `symbol=%20%20`). `place_order`'s `{:invalid_field, :symbol}` is unchanged: that names a
   request field.
-- Convention 12 (`Supervisor.start_link/1` and `Feed.start_link/1` wrap raw credentials) was
+- Convention 12 (`DpExchange.Robinhood.Supervisor.start_link/1` and `Feed.start_link/1` wrap raw credentials) was
   done in 0.3.81 and re-confirmed this round.
 
 ## [0.3.81] - 2026-10-11
@@ -242,7 +245,7 @@ _No consumer-facing changes. Internal or packaging work only — recorded so eve
   directly with more than the cap refuses `{:error, {:too_many_symbols, 100}}` rather than
   sending it. At the ~86-pair catalogue the behaviour is unchanged (one request).
 - **A raw `:credentials` map could reach a supervisor's or feed's start argument.**
-  `Supervisor.start_link/1` and `Feed.start_link/1` now wrap it (idempotently) as
+  `DpExchange.Robinhood.Supervisor.start_link/1` and `Feed.start_link/1` now wrap it (idempotently) as
   `child_spec/1` already did, so a consumer calling `start_link/1` directly no longer leaves
   the secrets in an OTP supervisor's state, which its crash report prints.
 
@@ -977,7 +980,7 @@ _No consumer-facing changes. Internal or packaging work only — recorded so eve
   which raises. A consumer's tier-1 tests could not have shown them the real behaviour even
   by accident: the fake crashed where the venue went quiet.
 
-  **`:limiter`** returned `nil` from `Supervisor.limiter_name/1`: the limiter started
+  **`:limiter`** returned `nil` from `DpExchange.Robinhood.Supervisor.limiter_name/1`: the limiter started
   unnamed while REST resolved `limiter: nil` to `Core.DefaultRateLimiter`'s global default —
   a different, usually absent limiter. **`:subscriber`** and `:interval_ms` on the feed are
   converted for the same reason.
@@ -1035,8 +1038,8 @@ _No consumer-facing changes. Internal or packaging work only — recorded so eve
   a fake exists not to have.
 
   `c:DpExchange.Core.Venue.subscribe/2`'s own doc does not state which it is, and it does not
-  need to — the contract settles it by shape. `c:update_symbols/2` exists to "change a live
-  subscription's symbol set" and `c:unsubscribe/2` to stop delivery for named symbols; neither
+  need to — the contract settles it by shape. `c:DpExchange.Core.Venue.update_symbols/2` exists to "change a live
+  subscription's symbol set" and `c:DpExchange.Core.Venue.unsubscribe/2` to stop delivery for named symbols; neither
   has any purpose if `subscribe/2` already replaces, since a caller would just subscribe the
   new list. Two callbacks the contract distinguishes, implemented as one function, is the tell.
 

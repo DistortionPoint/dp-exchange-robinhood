@@ -45,11 +45,21 @@ defmodule DpExchange.Robinhood.SymbolFormat do
   @spec quotes() :: [String.t()]
   def quotes, do: @mapping.quotes
 
+  @doc """
+  Normalises a native Robinhood symbol to canonical `BASE-QUOTE` (upper-cased, dashed).
+
+  See `c:DpExchange.Core.SymbolNormalizer.to_canonical_symbol/1`.
+  """
   @impl true
   @spec to_canonical_symbol(String.t()) :: String.t()
   def to_canonical_symbol(native) when is_binary(native),
     do: CanonicalPair.to_canonical(@mapping, native)
 
+  @doc """
+  Converts a canonical symbol to Robinhood's native form, which is the same `BASE-QUOTE`.
+
+  See `c:DpExchange.Core.SymbolNormalizer.to_exchange_symbol/1`.
+  """
   @impl true
   @spec to_exchange_symbol(String.t()) :: String.t()
   def to_exchange_symbol(canonical) when is_binary(canonical),
