@@ -1153,7 +1153,10 @@ defmodule DpExchange.Robinhood.Rest do
   @doc """
   One order — `GET /api/v2/crypto/trading/orders/{order_id}/`.
 
-  `opts[:account_number]` is required by v2.
+  `opts[:account_number]` is required by v2, otherwise `{:error, {:missing_option,
+  :account_number}}`. An id that is not a non-blank string is `{:error, {:invalid_order_id,
+  id}}`, decided before the account option and before credentials. A 404 is
+  `{:refused, :not_found}`.
 
   **This path is not in the vendor's OpenAPI `paths`.** It appears only in the sample client
   in the spec's own `info.description` (its `get_order` method). Its response is decoded as
@@ -1164,15 +1167,26 @@ defmodule DpExchange.Robinhood.Rest do
   @spec get_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
   def get_order(credentials, order_id, opts) do
-    with {:ok, account} <- required_account(opts),
-         {:ok, segment} <- order_id_segment(order_id) do
+    with {:ok, segment} <- order_id_segment(order_id),
+         {:ok, account} <- required_account(opts) do
       path =
         "/api/v2/crypto/trading/orders/" <>
           segment <> "/" <> query_string([{"account_number", account}])
 
-      with {:ok, body} <- get(path, credentials, opts), do: to_order(body)
+      path |> get(credentials, opts) |> read_order()
     end
   end
+
+  # An order endpoint's answer as an order. A 404 is the venue saying it holds no such order
+  # (`{:refused, :not_found}`, the family's one spelling); every other refusal keeps the
+  # venue's own status and detail.
+  defp read_order({:ok, body}), do: to_order(body)
+  defp read_order({:refused, reason}), do: {:refused, order_refusal(reason)}
+  defp read_order({:error, _reason} = error), do: error
+
+  defp order_refusal({:venue_error, 404}), do: :not_found
+  defp order_refusal({:venue_error, 404, _detail}), do: :not_found
+  defp order_refusal(other), do: other
 
   # An order id is ONE path segment, and it is part of what is signed. `URI.encode/1` leaves
   # `/`, `?`, `#` and `&` alone, so an id like `"x/cancel/?y"` rewrote the signed path into a
@@ -1181,13 +1195,13 @@ defmodule DpExchange.Robinhood.Rest do
   # collapse the segment (`/orders//cancel/`) and is refused rather than sent.
   defp order_id_segment(order_id) when is_binary(order_id) do
     if String.trim(order_id) == "",
-      do: {:error, {:missing_field, :id}},
+      do: {:error, {:invalid_order_id, order_id}},
       else: {:ok, URI.encode(order_id, &URI.char_unreserved?/1)}
   end
 
   # `nil` or an atom raised `FunctionClauseError` in the caller's process, on a call that
-  # moves funds; it is a missing id like a blank one.
-  defp order_id_segment(_not_a_string), do: {:error, {:missing_field, :id}}
+  # moves funds; it is an invalid id like a blank one (the family's `{:invalid_order_id, v}`).
+  defp order_id_segment(not_a_string), do: {:error, {:invalid_order_id, not_a_string}}
 
   @doc """
   Places an order — `POST /api/v2/crypto/trading/orders/`. **This moves funds.**
@@ -1203,30 +1217,122 @@ defmodule DpExchange.Robinhood.Rest do
   is silently ignored by the venue and the order is placed with none.
 
   `symbol`, `side`, `order_type` and a quantity are required. The quantity goes in as
-  `asset_quantity` — the venue's own field — and a limit order also needs `limit_price`.
-  A missing field is refused locally as `{:error, {:missing_field, key}}`, an order type
-  outside `:market`, `:limit`, `:stop` (or the venue's `:stop_loss`) and `:stop_limit` as
-  `{:error, {:unsupported_order_type, type}}`. `request.time_in_force` (`:gtc`, `:day`,
-  `:gfw` or `:gfm`) is sent on the three non-market types and refused as
-  `{:error, {:unsupported_time_in_force, tif}}` for anything else; a market order never
-  sends one. Also refused locally, before anything is signed: a `side` other than
-  `buy`/`sell` as `{:error, {:unsupported_side, side}}`, a quantity or price that is not a
-  positive finite number (`0`, negative, `NaN`, unparseable text) as `{:error,
-  {:invalid_field, key}}`, a `symbol` that is not a non-empty string, and a request that is
-  not a map as `{:error, {:invalid_request, :not_a_map}}`. The body is sent with
-  `content-type: application/json`, as the vendor's own client sends it. The response body
-  must be an order with an `id`, otherwise `{:error, {:missing_required_field, :id}}` (an
-  object without one) or `{:error, :unexpected_response_shape}` (not an object).
+  `asset_quantity` — the venue's own field — a limit order also needs `price` (the venue's
+  `limit_price`), a `:stop` / `:stop_loss` order needs `stop_price` and a `:stop_limit` order
+  needs both.
+
+  **Refused locally, before anything is signed or sent, in this order:** a request that is
+  not a map `{:invalid_order_request, request}`; a key this builder does not read
+  (`post_only`, `reduce_only`, ...) `{:unsupported_order_field, key}`; a `symbol` that is
+  not a non-blank string `{:invalid_symbol, v}`; a `side` other than `buy`/`sell` (atom or
+  string, any case) `{:invalid_side, v}`; a missing field `{:missing_field, key}`
+  (`order_type` is never defaulted or inferred); an order type outside `:market`, `:limit`,
+  `:stop` (or the venue's `:stop_loss`) and `:stop_limit` `{:unsupported_order_type, type}`;
+  a `time_in_force`: **a market order's config has no duration, so a supplied one is
+  `{:unexpected_field, :time_in_force}`; the other three types require one**
+  (`{:missing_field, :time_in_force}`, never a silent venue default) and it must be one of
+  `:gtc`, `:day`, `:gfw`, `:gfm`, otherwise `{:unsupported_order_combination, type, tif}`;
+  a quantity that is not a positive finite `Decimal`, integer or numeric string
+  `{:invalid_quantity, v}` (a float has already lost digits and is refused); the same for
+  `{:invalid_price, v}` and `{:invalid_stop_price, v}`; a `price` the type does not use
+  (market, stop) or a `stop_price` on a type without one (market, limit)
+  `{:unexpected_field, key}` rather than dropped; a `client_order_id` that is not a UUID
+  `{:invalid_client_order_id, v}`; no `opts[:account_number]` `{:missing_option,
+  :account_number}`; then missing or malformed credentials. The body is sent with
+  `content-type: application/json`, as the vendor's own client sends it.
+
+  **An unconfirmed write is never a bare error.** Once the request may have reached the
+  venue and success is not proven — a transport failure or timeout after retries, a 5xx, a
+  2xx whose body is not JSON, is not an order object or has no `id`, or a refusal on an
+  attempt after the first (the earlier attempt may have been accepted) — the answer is
+  `{:error, {:order_unconfirmed, client_order_id, reason}}`, carrying the `client_order_id`
+  actually sent (the package-generated one included), so the caller can look the order up
+  with `get_order/3` or re-send the SAME id. Our own rate limiter refusing before the first
+  send stays a plain `{:error, reason}`. A 2xx that carries an `id` is a confirmed order even
+  if a field holds a value this package does not know: the order exists, so it is
+  `{:ok, %Order{}}` with that field `nil`.
   """
   @spec place_order(map(), map(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
   def place_order(credentials, request, opts) do
-    with {:ok, account} <- required_account(opts),
-         {:ok, body} <- order_body(request, opts) do
+    with {:ok, parts} <- normalize_order_request(request),
+         {:ok, supplied} <- supplied_client_order_id(request, opts),
+         {:ok, account} <- required_account(opts),
+         :ok <- Auth.validate_credentials(credentials) do
+      client_order_id = supplied || generate_client_order_id()
       path = "/api/v2/crypto/trading/orders/" <> query_string([{"account_number", account}])
+      calls = :atomics.new(1, signed: false)
+      body = order_body(parts, client_order_id)
 
-      with {:ok, response} <- post(path, body, credentials, opts), do: to_order(response)
+      path
+      |> post(body, credentials, opts, &counting(&1, calls))
+      |> confirm_order(client_order_id, calls, opts)
     end
+  end
+
+  # Counts how many times a request was signed. `Core.HttpClient` signs once per attempt
+  # (twice on a blocking limiter), so the count is how a failure is told apart: an error with
+  # nothing yet sent is a refusal to send, and an error after a first attempt is an
+  # unconfirmed write.
+  defp counting(signer, calls) do
+    fn ->
+      :atomics.add(calls, 1, 1)
+      signer.()
+    end
+  end
+
+  # How many attempts actually left the process. Blocking limiter: signed before and after the
+  # limiter wait, so two calls per attempt. Otherwise one per attempt, the last of which was
+  # never sent when it was the limiter that refused.
+  defp sent_attempts(calls, opts, limiter_refused?) do
+    signed = :atomics.get(calls, 1)
+
+    cond do
+      Config.opt(opts, :rate_limit_blocking, false) -> div(signed, 2)
+      limiter_refused? -> max(signed - 1, 0)
+      true -> signed
+    end
+  end
+
+  defp confirm_order({:ok, decoded}, client_order_id, _calls, _opts) do
+    case to_order(decoded, :lenient) do
+      {:ok, _order} = confirmed -> confirmed
+      {:error, reason} -> unconfirmed(client_order_id, reason)
+    end
+  end
+
+  defp confirm_order({:refused, reason}, client_order_id, calls, opts) do
+    if sent_attempts(calls, opts, false) > 1,
+      do: unconfirmed(client_order_id, {:refused_after_retry, reason}),
+      else: {:refused, order_refusal(reason)}
+  end
+
+  defp confirm_order({:error, reason}, client_order_id, calls, opts) do
+    limiter? = limiter_refusal?(reason)
+
+    if limiter? and sent_attempts(calls, opts, true) == 0,
+      do: {:error, reason},
+      else: unconfirmed(client_order_id, reason)
+  end
+
+  defp limiter_refusal?(
+         {:exchange_error, _provider, "Throttled by our own rate limiter" <> _rest}
+       ),
+       do: true
+
+  defp limiter_refusal?({:exchange_error, _provider, "Rate limiter unavailable"}), do: true
+  defp limiter_refusal?({:exchange_error, _provider, :rate_limit_timeout}), do: true
+  defp limiter_refusal?(_reason), do: false
+
+  defp unconfirmed(client_order_id, reason),
+    do: {:error, {:order_unconfirmed, client_order_id, bound_reason(reason)}}
+
+  # A reason carried in an error tuple is data a caller stores and logs; past a couple of
+  # kilobytes it is text, not a reason.
+  defp bound_reason(reason) do
+    if :erlang.external_size(reason) <= 2_048,
+      do: reason,
+      else: inspect(reason, limit: 20, printable_limit: 512)
   end
 
   @doc """
@@ -1248,6 +1354,12 @@ defmodule DpExchange.Robinhood.Rest do
   order's real state (`open` if the cancel is still in flight, `canceled` once it lands,
   or `filled`/`partially_filled` if a fill won the race). Read that state rather than
   assume it.
+
+  **A cancel is sent once.** It is never retried internally, whatever `:retry_attempts`
+  says: a second attempt after a timeout cannot tell the caller whether the first took
+  effect, and the answer to "is it cancelled" is `get_order/3`. A blank or non-string id is
+  `{:error, {:invalid_order_id, id}}`, decided before credentials, and a 404 is
+  `{:refused, :not_found}`.
   """
   @spec cancel_order(map(), String.t(), keyword()) ::
           {:ok, Order.t()} | {:error, term()} | {:refused, term()}
@@ -1255,7 +1367,7 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, segment} <- order_id_segment(order_id) do
       path = "/api/v2/crypto/trading/orders/" <> segment <> "/cancel/"
 
-      with {:ok, body} <- post(path, nil, credentials, opts), do: to_order(body)
+      path |> post(nil, credentials, Keyword.put(opts, :retry_attempts, 1)) |> read_order()
     end
   end
 
@@ -1265,108 +1377,192 @@ defmodule DpExchange.Robinhood.Rest do
     case Keyword.get(opts, :account_number) do
       account when is_binary(account) ->
         if String.trim(account) == "",
-          do: {:error, {:account_number_required, :robinhood}},
+          do: {:error, {:missing_option, :account_number}},
           else: {:ok, account}
 
       _missing ->
-        {:error, {:account_number_required, :robinhood}}
+        {:error, {:missing_option, :account_number}}
     end
   end
 
   @doc """
-  Whether `request` is an order this package would send, answered with the refusal
-  `place_order/3` would give and without sending anything.
+  The order `request` describes, validated and normalised, without sending anything.
 
-  `:ok`, `{:error, {:missing_field, key}}` for an absent `symbol`, `side`, `order_type`,
-  `quantity`, or the `price` / `stop_price` the type needs, `{:error,
-  {:unsupported_order_type, type}}` or `{:error, {:unsupported_time_in_force, tif}}`. It is
-  the same code `place_order/3` builds its body with, exposed so
-  `DpExchange.Robinhood.Fake` refuses exactly what the real path refuses instead of
-  accepting an empty request and handing back an open order.
+  `{:ok, parts}` with `:symbol` (as given), `:side` (`:buy` or `:sell`), `:type` (the
+  contract's `:market`, `:limit`, `:stop` or `:stop_limit`; `:stop_loss` is `:stop`),
+  `:time_in_force` (an atom, or `nil` for a market order), `:quantity` (the wire string),
+  and `:price` / `:stop_price` (wire strings, `nil` where the type has none) — or the
+  refusal `place_order/3` would give, in the order `place_order/3` checks (see its doc). It
+  is the code `place_order/3` builds its body from, exposed so `DpExchange.Robinhood.Fake`
+  refuses exactly what the real path refuses and answers with the same normalised fields.
   """
-  @spec validate_order_request(term()) :: :ok | {:error, term()}
-  def validate_order_request(request) do
-    with {:ok, _parts} <- order_parts(request), do: :ok
-  end
+  @spec normalize_order_request(term()) :: {:ok, map()} | {:error, term()}
+  def normalize_order_request(request), do: order_parts(request)
+
+  @order_keys [
+    :symbol,
+    :side,
+    :order_type,
+    :quantity,
+    :price,
+    :stop_price,
+    :time_in_force,
+    :client_order_id
+  ]
 
   # A request that is not a map used to raise (`BadMapError`) inside the caller's process,
   # on the call that moves funds; it is a refusal like any other malformed order.
   defp order_parts(request) when not is_map(request),
-    do: {:error, {:invalid_request, :not_a_map}}
+    do: {:error, {:invalid_order_request, request}}
 
   defp order_parts(request) do
-    with {:ok, symbol} <- order_symbol_field(request),
+    with :ok <- known_order_keys(request),
+         {:ok, symbol} <- order_symbol_field(request),
          {:ok, side} <- order_side_field(request),
-         {:ok, type} <- order_field(request, :order_type),
-         {:ok, config} <- order_config(type, request) do
-      {:ok, {symbol, side, type, config}}
+         {:ok, type} <- order_type_field(request),
+         {:ok, tif} <- order_time_in_force(type, request),
+         {:ok, quantity} <- order_amount(request, :quantity, :invalid_quantity),
+         {:ok, prices} <- order_prices(type, request) do
+      {:ok,
+       Map.merge(
+         %{symbol: symbol, side: side, type: type, time_in_force: tif, quantity: quantity},
+         prices
+       )}
+    end
+  end
+
+  # Any key this builder does not read is refused: `post_only: true` or `reduce_only: true`
+  # was ignored, and the order went out without the constraint the caller asked for.
+  defp known_order_keys(request) do
+    case Enum.find(Map.keys(request), &(&1 not in @order_keys)) do
+      nil -> :ok
+      key -> {:error, {:unsupported_order_field, key}}
     end
   end
 
   # `SymbolFormat` raises on a non-string, and a blank one builds `"symbol": ""`.
   defp order_symbol_field(request) do
-    case order_field(request, :symbol) do
+    case Map.fetch(request, :symbol) do
+      :error ->
+        {:error, {:missing_field, :symbol}}
+
       {:ok, symbol} when is_binary(symbol) ->
-        if String.trim(symbol) == "", do: {:error, {:invalid_field, :symbol}}, else: {:ok, symbol}
+        if String.trim(symbol) == "", do: {:error, {:invalid_symbol, symbol}}, else: {:ok, symbol}
 
-      {:ok, _unusable} ->
-        {:error, {:invalid_field, :symbol}}
-
-      error ->
-        error
+      {:ok, unusable} ->
+        {:error, {:invalid_symbol, unusable}}
     end
   end
 
   # The venue's `side` enum is `buy`/`sell`. Any other atom used to go out as
-  # `to_string(side)` -- `:hold` became `"hold"` -- in a signed order body.
+  # `to_string(side)` -- `:hold` became `"hold"` -- in a signed order body. A string is
+  # accepted in any case.
   defp order_side_field(request) do
     with {:ok, side} <- order_field(request, :side) do
-      case side do
-        side when side in [:buy, "buy"] -> {:ok, :buy}
-        side when side in [:sell, "sell"] -> {:ok, :sell}
-        other -> {:error, {:unsupported_side, other}}
+      case side_name(side) do
+        "buy" -> {:ok, :buy}
+        "sell" -> {:ok, :sell}
+        _other -> {:error, {:invalid_side, side}}
       end
     end
   end
 
-  # A quantity or price: present AND a positive, finite number, as the wire string. See
-  # `positive_string/1`.
-  defp order_amount(request, key) do
+  defp side_name(side) when is_atom(side) and not is_nil(side), do: side |> Atom.to_string()
+  defp side_name(side) when is_binary(side), do: String.downcase(side)
+  defp side_name(_other), do: nil
+
+  # The order type is required, never defaulted or inferred from which prices are present.
+  # The venue's four types, the contract's `:stop` and the venue's own `:stop_loss` (and the
+  # string spellings the wire uses) all name a type; anything else is named back.
+  defp order_type_field(request) do
+    with {:ok, type} <- order_field(request, :order_type) do
+      case type do
+        type when type in [:market, "market"] -> {:ok, :market}
+        type when type in [:limit, "limit"] -> {:ok, :limit}
+        type when type in [:stop, :stop_loss, "stop", "stop_loss"] -> {:ok, :stop}
+        type when type in [:stop_limit, "stop_limit"] -> {:ok, :stop_limit}
+        other -> {:error, {:unsupported_order_type, other}}
+      end
+    end
+  end
+
+  # `market_order_config` carries no `time_in_force` in the vendor's schema, so a market
+  # order has nowhere honest to put one: a supplied duration is refused, not dropped. The
+  # other three types send one, and the venue's default for an absent one is not this
+  # package's to assume, so it is required and must be one `capabilities/0` declares.
+  defp order_time_in_force(:market, request) do
+    case Map.get(request, :time_in_force) do
+      nil -> {:ok, nil}
+      _supplied -> {:error, {:unexpected_field, :time_in_force}}
+    end
+  end
+
+  defp order_time_in_force(type, request) do
+    with {:ok, tif} <- order_field(request, :time_in_force) do
+      if Map.has_key?(@tif_names, tif),
+        do: {:ok, tif},
+        else: {:error, {:unsupported_order_combination, type, tif}}
+    end
+  end
+
+  # `price` is the venue's `limit_price` and exists for `limit` and `stop_limit`;
+  # `stop_price` exists for `stop` and `stop_limit`. A field the type does not use is
+  # refused rather than dropped; one it needs is required.
+  defp order_prices(type, request) do
+    uses_price? = type in [:limit, :stop_limit]
+    uses_stop? = type in [:stop, :stop_limit]
+
+    with :ok <- unused_field(request, :price, uses_price?),
+         :ok <- unused_field(request, :stop_price, uses_stop?),
+         {:ok, price} <- optional_amount(request, :price, :invalid_price, uses_price?),
+         {:ok, stop} <- optional_amount(request, :stop_price, :invalid_stop_price, uses_stop?) do
+      {:ok, %{price: price, stop_price: stop}}
+    end
+  end
+
+  defp unused_field(request, key, uses?) do
+    if not uses? and Map.get(request, key) != nil,
+      do: {:error, {:unexpected_field, key}},
+      else: :ok
+  end
+
+  defp optional_amount(_request, _key, _tag, false), do: {:ok, nil}
+  defp optional_amount(request, key, tag, true), do: order_amount(request, key, tag)
+
+  # A quantity or price: present AND a positive, finite number, as the wire string. A float
+  # is refused: it has already lost the digits the caller meant. See `positive_string/1`.
+  defp order_amount(request, key, tag) do
     with {:ok, value} <- order_field(request, key) do
-      case positive_string(value) do
+      case order_number(value) do
         {:ok, string} -> {:ok, string}
-        :error -> {:error, {:invalid_field, key}}
+        :error -> {:error, {tag, value}}
       end
     end
   end
 
-  defp order_body(request, opts) do
-    with {:ok, {symbol, side, type, config}} <- order_parts(request),
-         {:ok, supplied} <- supplied_client_order_id(request, opts) do
-      wire_type = wire_order_type(type)
+  defp order_number(value) when is_float(value), do: :error
+  defp order_number(value), do: positive_string(value)
 
-      {:ok,
-       %{
-         "client_order_id" => supplied || generate_client_order_id(),
-         "side" => to_string(side),
-         "type" => wire_type,
-         "symbol" => SymbolFormat.to_exchange_symbol(symbol),
-         "#{wire_type}_order_config" => config
-       }}
-    end
+  defp order_body(parts, client_order_id) do
+    wire_type = wire_order_type(parts.type)
+
+    %{
+      "client_order_id" => client_order_id,
+      "side" => Atom.to_string(parts.side),
+      "type" => wire_type,
+      "symbol" => SymbolFormat.to_exchange_symbol(parts.symbol),
+      "#{wire_type}_order_config" => order_config(parts)
+    }
   end
 
   # The wire's own spelling for the `"type"` field and the `"#{type}_order_config"` key it
-  # selects — never the raw, interpolated `type` the caller passed. `order_config/2` below
-  # accepts both `:stop` (this contract's shared atom) and `:stop_loss` (the venue's own),
-  # but the venue itself answers to exactly one spelling, `"stop_loss"`, on both the `type`
-  # field and the config key. Interpolating the caller's atom directly produced
-  # `"stop_order_config"` for a caller that passed `:stop` — the very atom
-  # `capabilities().supported_order_types` declares — which the venue does not recognise
-  # and silently drops, so the order shipped with no config object at all rather than
-  # refusing.
+  # selects — never the raw, interpolated `type` the caller passed. The venue answers to
+  # exactly one spelling, `"stop_loss"`, on both the `type` field and the config key.
+  # Interpolating the caller's `:stop` produced `"stop_order_config"`, which the venue does
+  # not recognise and silently drops, so the order shipped with no config object at all
+  # rather than refusing.
   defp wire_order_type(:stop), do: "stop_loss"
-  defp wire_order_type(type), do: to_string(type)
+  defp wire_order_type(type), do: Atom.to_string(type)
 
   defp order_field(request, key) do
     case Map.get(request, key) do
@@ -1375,75 +1571,17 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
-  # The venue's four order types, and what each config must carry. A limit without a price
-  # is an order the venue rejects; refusing here says which field rather than relaying a
-  # message about a config key.
-  #
-  # `market_order_config` carries no `time_in_force` in the vendor's schema, so a market
-  # order never gets one — even if the caller supplied one, it would have nowhere honest to
-  # go.
-  defp order_config(type, request) when type in [:market, "market"] do
-    with {:ok, quantity} <- order_amount(request, :quantity) do
-      {:ok, %{"asset_quantity" => quantity}}
-    end
+  # What each of the venue's four configs carries: the size always, `limit_price` for limit
+  # and stop-limit, `stop_price` for stop and stop-limit, and a duration for all but market.
+  defp order_config(parts) do
+    %{"asset_quantity" => parts.quantity}
+    |> put_config("limit_price", parts.price)
+    |> put_config("stop_price", parts.stop_price)
+    |> put_config("time_in_force", parts.time_in_force && tif_name(parts.time_in_force))
   end
 
-  defp order_config(type, request) when type in [:limit, "limit"] do
-    with {:ok, quantity} <- order_amount(request, :quantity),
-         {:ok, price} <- order_amount(request, :price),
-         {:ok, tif} <- order_time_in_force(request) do
-      {:ok, %{"asset_quantity" => quantity, "limit_price" => price} |> put_time_in_force(tif)}
-    end
-  end
-
-  # `:stop` is the shared contract's atom for this order type and is what a consumer moving
-  # between venues passes; `:stop_loss` is this venue's own wire name for the same thing.
-  # Only the second was accepted until 2026-09-07, so a caller passing the atom
-  # `capabilities/0` now declares — and that `DpExchange.Webull` already maps the same way,
-  # `:stop` -> `"STOP_LOSS"` — was refused with `{:unsupported_order_type, :stop}` on a
-  # venue that serves it. Both are accepted; the venue's own spelling is not withdrawn.
-  defp order_config(type, request) when type in [:stop, :stop_loss, "stop_loss"] do
-    with {:ok, quantity} <- order_amount(request, :quantity),
-         {:ok, stop} <- order_amount(request, :stop_price),
-         {:ok, tif} <- order_time_in_force(request) do
-      {:ok, %{"asset_quantity" => quantity, "stop_price" => stop} |> put_time_in_force(tif)}
-    end
-  end
-
-  defp order_config(type, request) when type in [:stop_limit, "stop_limit"] do
-    with {:ok, quantity} <- order_amount(request, :quantity),
-         {:ok, price} <- order_amount(request, :price),
-         {:ok, stop} <- order_amount(request, :stop_price),
-         {:ok, tif} <- order_time_in_force(request) do
-      {:ok,
-       %{"asset_quantity" => quantity, "limit_price" => price, "stop_price" => stop}
-       |> put_time_in_force(tif)}
-    end
-  end
-
-  defp order_config(type, _request), do: {:error, {:unsupported_order_type, type}}
-
-  # `opts[:time_in_force]` is absent for almost every caller today, and absence must build
-  # exactly the config this package built before this atom existed — no key at all, not a
-  # key holding a default the venue was never asked for. A value present but unrepresentable
-  # (an atom `@tif_names` has no wire name for — `:ioc`, `:fok`, `:gtd`) is refused, rather
-  # than sent as nothing and silently ignored the way a wrong config key already is on this
-  # venue.
-  defp order_time_in_force(request) do
-    case Map.get(request, :time_in_force) do
-      nil ->
-        {:ok, nil}
-
-      tif ->
-        case tif_name(tif) do
-          nil -> {:error, {:unsupported_time_in_force, tif}}
-          name -> {:ok, name}
-        end
-    end
-  end
-
-  defp put_time_in_force(config, nil), do: config
-  defp put_time_in_force(config, name), do: Map.put(config, "time_in_force", name)
+  defp put_config(config, _key, nil), do: config
+  defp put_config(config, key, value), do: Map.put(config, key, value)
 
   defp tif_name(tif), do: Map.get(@tif_names, tif)
   defp tif_atom(name), do: Map.get(@tif_atoms, name)
@@ -1487,16 +1625,16 @@ defmodule DpExchange.Robinhood.Rest do
   @doc """
   The `client_order_id` the caller supplied for `request` (the request's own key first, then
   `opts[:client_order_id]`): `{:ok, nil}` when none was (`nil` or `""`), `{:ok, id}` for a
-  canonical UUID, `{:error, {:invalid_field, :client_order_id}}` for anything else. Exposed
+  canonical UUID, `{:error, {:invalid_client_order_id, value}}` for anything else. Exposed
   so `DpExchange.Robinhood.Fake` refuses exactly what `place_order/3` refuses.
   """
   @spec supplied_client_order_id(map(), keyword()) ::
-          {:ok, String.t() | nil} | {:error, {:invalid_field, :client_order_id}}
+          {:ok, String.t() | nil} | {:error, {:invalid_client_order_id, term()}}
   def supplied_client_order_id(request, opts) do
     case Map.get(request, :client_order_id) || Config.opt(opts, :client_order_id, nil) do
       nil -> {:ok, nil}
       "" -> {:ok, nil}
-      id -> if uuid?(id), do: {:ok, id}, else: {:error, {:invalid_field, :client_order_id}}
+      id -> if uuid?(id), do: {:ok, id}, else: {:error, {:invalid_client_order_id, id}}
     end
   end
 
@@ -1548,12 +1686,22 @@ defmodule DpExchange.Robinhood.Rest do
   # `to_orders/1` refuses the whole batch on one unreadable row, because a list with an order
   # silently missing reads as complete. `Core.Types.Order` admits `id: nil` for
   # acknowledgements that carry little else; this venue's V2 order object always carries one.
-  defp to_order(%{"id" => id} = row) when is_binary(id) and id != "" do
-    with :ok <- known_enums(row), do: {:ok, order_struct(row)}
+  #
+  # **Two modes.** A read (`:strict`) refuses a present value outside the venue's enums, see
+  # `known_enums/1`. The answer to a PLACEMENT (`:lenient`) cannot: the order exists, it
+  # carries an id, and refusing it would hand the caller an error for an order that is live.
+  # The field this package cannot read is `nil` and the caller reconciles with `get_order/3`.
+  defp to_order(row), do: to_order(row, :strict)
+
+  defp to_order(%{"id" => id} = row, mode) when is_binary(id) and id != "" do
+    case mode do
+      :lenient -> {:ok, order_struct(row)}
+      :strict -> with :ok <- known_enums(row), do: {:ok, order_struct(row)}
+    end
   end
 
-  defp to_order(row) when is_map(row), do: {:error, {:missing_required_field, :id}}
-  defp to_order(_row), do: {:error, :unexpected_response_shape}
+  defp to_order(row, _mode) when is_map(row), do: {:error, {:missing_required_field, :id}}
+  defp to_order(_row, _mode), do: {:error, :unexpected_response_shape}
 
   # A PRESENT value outside `OrderResponse`'s enums (`side`, `type`, `state`, and
   # `time_in_force` in the type-named config; `pending` is added to `state` as the venue's
@@ -1781,16 +1929,16 @@ defmodule DpExchange.Robinhood.Rest do
   # one call that moves funds. And cancel sent `{}` where the vendor's sample sends nothing,
   # signed as `{}` rather than as the empty string the vendor's example signs. `body: nil`
   # is no body: signed as `""` and sent as none, exactly as the vendor's client does.
-  defp post(path, body, credentials, opts) do
+  defp post(path, body, credentials, opts, wrap \\ &Function.identity/1) do
     {encoded, wire_body, extra} = post_body(body)
 
-    # Signed per attempt, not once: see `signer/6`.
+    # Signed per attempt, not once: see `signer/6`. `wrap` lets a caller observe each signing.
     url = base_url(opts) <> path
 
     case HttpClient.request(
            :post,
            url,
-           signer("POST", path, encoded, credentials, opts, extra),
+           wrap.(signer("POST", path, encoded, credentials, opts, extra)),
            wire_body,
            request_opts(opts)
          ) do
@@ -1879,6 +2027,7 @@ defmodule DpExchange.Robinhood.Rest do
       :limiter,
       :timeout,
       :retry_attempts,
+      :retry_delay,
       :log_requests,
       :plug,
       :req_adapter,

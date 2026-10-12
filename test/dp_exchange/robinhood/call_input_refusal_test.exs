@@ -70,12 +70,15 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
       refute_received {:request, _path, _query}
     end
 
-    test "an order id that is not a string is a missing id" do
+    test "an order id that is not a string is an invalid order id, before the account" do
       for bad <- [nil, :id, 5] do
-        assert {:error, {:missing_field, :id}} =
+        # No account option at all: the id is decided first.
+        assert {:error, {:invalid_order_id, ^bad}} = Rest.get_order(@credentials, bad, opts())
+
+        assert {:error, {:invalid_order_id, ^bad}} =
                  Rest.get_order(@credentials, bad, opts(account_number: "RH-1"))
 
-        assert {:error, {:missing_field, :id}} = Rest.cancel_order(@credentials, bad, opts())
+        assert {:error, {:invalid_order_id, ^bad}} = Rest.cancel_order(@credentials, bad, opts())
       end
 
       refute_received {:request, _path, _query}
@@ -83,7 +86,7 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
 
     test "a blank account number is no account number" do
       for blank <- ["", "  "] do
-        expected = {:error, {:account_number_required, :robinhood}}
+        expected = {:error, {:missing_option, :account_number}}
         assert expected == Rest.get_orders(@credentials, opts(account_number: blank))
         assert expected == Rest.get_balances(@credentials, opts(account_number: blank))
         assert expected == Rest.get_order(@credentials, "abc", opts(account_number: blank))
@@ -157,15 +160,16 @@ defmodule DpExchange.Robinhood.CallInputRefusalTest do
 
     test "an order id that is not a string" do
       for bad <- [nil, :id, 5] do
-        assert {:error, {:missing_field, :id}} =
+        assert {:error, {:invalid_order_id, ^bad}} =
                  Fake.get_order(@credentials, bad, account_number: "RH-1")
 
-        assert {:error, {:missing_field, :id}} = Fake.cancel_order(@credentials, bad, [])
+        assert {:error, {:invalid_order_id, ^bad}} = Fake.get_order(@credentials, bad, [])
+        assert {:error, {:invalid_order_id, ^bad}} = Fake.cancel_order(@credentials, bad, [])
       end
     end
 
     test "a blank account number" do
-      assert {:error, {:account_number_required, :robinhood}} =
+      assert {:error, {:missing_option, :account_number}} =
                Fake.get_orders(@credentials, account_number: " ")
     end
 

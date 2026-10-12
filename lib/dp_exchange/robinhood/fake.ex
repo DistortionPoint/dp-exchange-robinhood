@@ -168,7 +168,7 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_historical_prices(_symbol, _timeframe, _range, _opts), do: Venue.not_supported()
   @impl true
-  def get_order_book(_symbol, _opts), do: Venue.not_supported()
+  def get_order_book(_symbol, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def get_trades(_symbol, _opts \\ []), do: Venue.not_supported()
@@ -273,19 +273,19 @@ defmodule DpExchange.Robinhood.Fake do
   def get_transfers(_credentials, _opts), do: Venue.not_supported()
 
   @impl true
-  def place_order(credentials, request, opts) do
+  def place_order(credentials, request, opts \\ []) do
     with_injection(fn ->
-      # Account, then the order itself, then credentials: the order `Rest.place_order/3`
-      # refuses in (`required_account/1`, `order_body/2`, and only then the signer). An
-      # empty request used to be accepted here and answered with an open order of all-`nil`
-      # fields, a success the real package can never give.
-      with {:ok, _account} <- fake_account(opts),
-           :ok <- Rest.validate_order_request(request),
+      # The order `Rest.place_order/3` refuses in: the request (unknown keys, symbol, side,
+      # type, duration, size, prices), its `client_order_id`, the account option, and only
+      # then credentials. An empty request used to be accepted here and answered with an open
+      # order of all-`nil` fields, a success the real package can never give.
+      with {:ok, parts} <- Rest.normalize_order_request(request),
            {:ok, key} <- Rest.supplied_client_order_id(request, opts),
+           {:ok, _account} <- fake_account(opts),
            :ok <- authenticated_credentials(credentials) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
-        {:ok, place_once(request, key)}
+        {:ok, place_once(parts, key)}
       end
     end)
   end
@@ -296,21 +296,21 @@ defmodule DpExchange.Robinhood.Fake do
   # `:stop` for the venue's `stop_loss`, and `price` / `stop_price` / `time_in_force` only for
   # the types whose config carries them -- `limit_order_config` echoes no `time_in_force`
   # on a read (`Rest`'s comment above `@tif_names`), and a market order has no price at all.
-  # The request has already passed `Rest.validate_order_request/1`, so every amount parses.
-  defp fake_order(request) do
-    type = fake_order_type(Map.get(request, :order_type))
+  # `parts` is `Rest.normalize_order_request/1`'s answer, so the side is an atom, the type is
+  # the contract's and every amount is a validated wire string.
+  defp fake_order(parts) do
+    type = parts.type
     now = DateTime.utc_now()
 
     %Types.Order{
       id: next_order_id(),
-      symbol: SymbolFormat.to_canonical_symbol(Map.get(request, :symbol)),
-      side: fake_side(Map.get(request, :side)),
+      symbol: SymbolFormat.to_canonical_symbol(parts.symbol),
+      side: parts.side,
       order_type: type,
-      time_in_force: if(type in [:stop, :stop_limit], do: Map.get(request, :time_in_force)),
-      quantity: fake_decimal(Map.get(request, :quantity)),
-      price: if(type in [:limit, :stop_limit], do: fake_decimal(Map.get(request, :price))),
-      stop_price:
-        if(type in [:stop, :stop_limit], do: fake_decimal(Map.get(request, :stop_price))),
+      time_in_force: if(type in [:stop, :stop_limit], do: parts.time_in_force),
+      quantity: Decimal.new(parts.quantity),
+      price: parts.price && Decimal.new(parts.price),
+      stop_price: parts.stop_price && Decimal.new(parts.stop_price),
       filled_quantity: Decimal.new("0"),
       average_price: nil,
       status: :open,
@@ -344,19 +344,6 @@ defmodule DpExchange.Robinhood.Fake do
     @order_id_prefix <> suffix
   end
 
-  defp fake_side(side) when side in [:buy, "buy"], do: :buy
-  defp fake_side(side) when side in [:sell, "sell"], do: :sell
-
-  defp fake_order_type(type) when type in [:market, "market"], do: :market
-  defp fake_order_type(type) when type in [:limit, "limit"], do: :limit
-  defp fake_order_type(type) when type in [:stop, :stop_loss, "stop_loss"], do: :stop
-  defp fake_order_type(type) when type in [:stop_limit, "stop_limit"], do: :stop_limit
-
-  defp fake_decimal(%Decimal{} = value), do: value
-  defp fake_decimal(value) when is_integer(value), do: Decimal.new(value)
-  defp fake_decimal(value) when is_float(value), do: Decimal.from_float(value)
-  defp fake_decimal(value) when is_binary(value), do: Decimal.new(value)
-
   @impl true
   def place_orders(_credentials, _requests, _opts), do: Venue.not_supported()
 
@@ -378,7 +365,7 @@ defmodule DpExchange.Robinhood.Fake do
   def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
   @impl true
-  def cancel_order(credentials, id, _opts) do
+  def cancel_order(credentials, id, _opts \\ []) do
     with_injection(fn ->
       # `:cancelled`, matching `Rest.cancel_order/3`: the v2 endpoint this venue calls
       # returns a full `V2CryptoOrder` reflecting the venue's real state, not a bare
@@ -403,10 +390,11 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @impl true
-  def get_order(credentials, id, opts) do
+  def get_order(credentials, id, opts \\ []) do
     with_injection(fn ->
-      with {:ok, _account} <- fake_account(opts),
-           :ok <- fake_order_id(id),
+      # The id first, then the account option, then credentials: `Rest.get_order/3`'s order.
+      with :ok <- fake_order_id(id),
+           {:ok, _account} <- fake_account(opts),
            :ok <- authenticated_credentials(credentials) do
         find_order(id)
       end
@@ -414,7 +402,7 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @impl true
-  def get_orders(credentials, opts) do
+  def get_orders(credentials, opts \\ []) do
     with_injection(fn ->
       with {:ok, _account} <- fake_account(opts),
            :ok <- Rest.validate_order_filters(opts),
@@ -479,13 +467,12 @@ defmodule DpExchange.Robinhood.Fake do
   defp state_name(state), do: to_string(state)
 
   # An order this process placed. Anything else is an id the fake never issued, which the
-  # venue answers with a 404: `{:refused, {:venue_error, 404}}`, the shape `Rest`'s
-  # `refusal/2` gives a status with no readable detail. This answered a canned BTC-USD
-  # partially-filled order for ANY id.
+  # venue answers with a 404, which `Rest` delivers as `{:refused, :not_found}`. This
+  # answered a canned BTC-USD partially-filled order for ANY id.
   defp find_order(id) do
     case Map.fetch(Process.get(@orders_key, %{}), id) do
       {:ok, _order} = found -> found
-      :error -> {:refused, {:venue_error, 404}}
+      :error -> {:refused, :not_found}
     end
   end
 
@@ -503,14 +490,14 @@ defmodule DpExchange.Robinhood.Fake do
   #
   # `key` is `Rest.supplied_client_order_id/2`'s answer, already checked to be a UUID (or
   # absent). UUIDs are hex, so case is not part of the identity: kept lower-cased.
-  defp place_once(request, key) do
+  defp place_once(parts, key) do
     with key when is_binary(key) <- key && String.downcase(key),
          {:ok, id} <- Map.fetch(Process.get(@keys_key, %{}), key),
          {:ok, original} <- Map.fetch(Process.get(@orders_key, %{}), id) do
       original
     else
       _no_original ->
-        order = remember_order(fake_order(request))
+        order = remember_order(fake_order(parts))
         remember_key(key && String.downcase(key), order)
         order
     end
@@ -526,10 +513,10 @@ defmodule DpExchange.Robinhood.Fake do
   # `Rest.get_order/3` and `Rest.cancel_order/3` refuse a blank id before signing anything
   # (an empty path segment is a different endpoint). The fake answered an order for `""`.
   defp fake_order_id(id) when is_binary(id) do
-    if String.trim(id) == "", do: {:error, {:missing_field, :id}}, else: :ok
+    if String.trim(id) == "", do: {:error, {:invalid_order_id, id}}, else: :ok
   end
 
-  defp fake_order_id(_not_a_string), do: {:error, {:missing_field, :id}}
+  defp fake_order_id(not_a_string), do: {:error, {:invalid_order_id, not_a_string}}
 
   # `Rest` refuses a symbol that is not a non-empty string before signing; the canonicaliser
   # raises on one.
@@ -550,11 +537,11 @@ defmodule DpExchange.Robinhood.Fake do
     case Keyword.get(opts, :account_number) do
       account when is_binary(account) ->
         if String.trim(account) == "",
-          do: {:error, {:account_number_required, :robinhood}},
+          do: {:error, {:missing_option, :account_number}},
           else: {:ok, account}
 
       _missing ->
-        {:error, {:account_number_required, :robinhood}}
+        {:error, {:missing_option, :account_number}}
     end
   end
 

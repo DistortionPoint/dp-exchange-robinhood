@@ -82,9 +82,9 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
     end
   end
 
-  describe "a float quantity is sent in full notation" do
-    test "0.00001 goes out in full notation, never as 1.0e-5" do
-      request = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: 0.00001}
+  describe "an order amount is sent in full notation, and a float is refused" do
+    test "1e-5 as text goes out as 0.00001, never as 1.0e-5" do
+      request = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1e-5"}
 
       _result =
         Rest.place_order(@credentials, request,
@@ -95,6 +95,19 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
 
       assert_receive {:request, _query, raw}
       assert %{"market_order_config" => %{"asset_quantity" => "0.00001"}} = Jason.decode!(raw)
+    end
+
+    test "a float quantity has already lost digits: refused, nothing sent" do
+      request = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: 0.00001}
+
+      assert {:error, {:invalid_quantity, 0.00001}} =
+               Rest.place_order(@credentials, request,
+                 account_number: "RH-1",
+                 plug: capturing(%{}, self()),
+                 retry_attempts: 0
+               )
+
+      refute_received {:request, _query, _raw}
     end
   end
 

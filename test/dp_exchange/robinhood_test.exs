@@ -696,12 +696,12 @@ defmodule DpExchange.RobinhoodTest do
       # v2 call without the account number v2 requires, which is a different assertion and
       # a better one: it is the shape of the mistake a v1 habit produces.
       assert Fake.get_balances(@credentials, []) ==
-               {:error, {:account_number_required, :robinhood}}
+               {:error, {:missing_option, :account_number}}
 
       assert {:ok, [_account]} = Fake.get_accounts(@credentials, [])
 
-      assert Fake.place_order(@credentials, %{}, []) ==
-               {:error, {:account_number_required, :robinhood}}
+      assert Fake.place_order(@credentials, @order, []) ==
+               {:error, {:missing_option, :account_number}}
 
       # `:cancelled`: the v2 cancel endpoint returns a full order reflecting the venue's
       # real state, and the fake's ordinary case matches that — see `Fake.cancel_order/3`.
@@ -709,10 +709,10 @@ defmodule DpExchange.RobinhoodTest do
       assert {:ok, %{status: :cancelled}} = Fake.cancel_order(@credentials, placed.id, [])
 
       assert Fake.get_order(@credentials, "id", []) ==
-               {:error, {:account_number_required, :robinhood}}
+               {:error, {:missing_option, :account_number}}
 
       assert Fake.get_orders(@credentials, []) ==
-               {:error, {:account_number_required, :robinhood}}
+               {:error, {:missing_option, :account_number}}
 
       assert Fake.get_trade_history(@credentials, []) == {:error, :not_supported}
       assert Fake.test_connection(@credentials, []) == {:error, :not_supported}

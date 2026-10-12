@@ -91,30 +91,33 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
 
   describe "place_order/3: the fake validates the order as Rest does, in the same order" do
     test "an empty request is refused with the field the real path names" do
-      assert Rest.validate_order_request(%{}) == {:error, {:missing_field, :symbol}}
+      assert Rest.normalize_order_request(%{}) == {:error, {:missing_field, :symbol}}
       assert Fake.place_order(@credentials, %{}, @account) == {:error, {:missing_field, :symbol}}
     end
 
-    test "a limit order without a price is refused" do
+    test "a limit order without a duration or a price is refused, the duration first" do
       request = %{@order | order_type: :limit}
 
       assert Fake.place_order(@credentials, request, @account) ==
+               {:error, {:missing_field, :time_in_force}}
+
+      assert Fake.place_order(@credentials, Map.put(request, :time_in_force, :gtc), @account) ==
                {:error, {:missing_field, :price}}
     end
 
-    test "an unsupported order type and an unrepresentable time in force are refused" do
+    test "an unsupported order type and an undeclared time in force are refused" do
       assert Fake.place_order(@credentials, %{@order | order_type: :trailing}, @account) ==
                {:error, {:unsupported_order_type, :trailing}}
 
       limit = Map.merge(@order, %{order_type: :limit, price: "1", time_in_force: :ioc})
 
       assert Fake.place_order(@credentials, limit, @account) ==
-               {:error, {:unsupported_time_in_force, :ioc}}
+               {:error, {:unsupported_order_combination, :limit, :ioc}}
     end
 
-    test "the account is checked first and the credentials last" do
-      assert Fake.place_order(%{}, %{}, []) == {:error, {:account_number_required, :robinhood}}
-      assert Fake.place_order(%{}, %{}, @account) == {:error, {:missing_field, :symbol}}
+    test "the request is checked first, then the account, and the credentials last" do
+      assert Fake.place_order(%{}, %{}, []) == {:error, {:missing_field, :symbol}}
+      assert Fake.place_order(%{}, @order, []) == {:error, {:missing_option, :account_number}}
 
       assert Fake.place_order(%{}, @order, @account) ==
                {:error, {:missing_credentials, :robinhood}}
@@ -175,15 +178,12 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     end
 
     test "an id the fake never issued is the venue's 404, on a read and on a cancel" do
-      assert Fake.get_order(@credentials, "never-issued", @account) ==
-               {:refused, {:venue_error, 404}}
-
-      assert Fake.cancel_order(@credentials, "never-issued", @account) ==
-               {:refused, {:venue_error, 404}}
+      assert Fake.get_order(@credentials, "never-issued", @account) == {:refused, :not_found}
+      assert Fake.cancel_order(@credentials, "never-issued", @account) == {:refused, :not_found}
     end
 
     test "a valid order is still accepted as open" do
-      assert Rest.validate_order_request(@order) == :ok
+      assert {:ok, %{type: :market}} = Rest.normalize_order_request(@order)
       assert {:ok, %{status: :open}} = Fake.place_order(@credentials, @order, @account)
     end
   end
@@ -380,10 +380,10 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     test "a key that is not a UUID is refused, as Rest refuses it" do
       request = Map.put(@order, :client_order_id, "not-a-uuid")
 
-      assert {:error, {:invalid_field, :client_order_id}} =
+      assert {:error, {:invalid_client_order_id, "not-a-uuid"}} =
                Fake.place_order(@credentials, request, @account)
 
-      assert {:error, {:invalid_field, :client_order_id}} =
+      assert {:error, {:invalid_client_order_id, "not-a-uuid"}} =
                Rest.supplied_client_order_id(request, @account)
 
       assert {:ok, nil} = Rest.supplied_client_order_id(@order, @account)

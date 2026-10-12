@@ -184,7 +184,7 @@ test was passing against behaviour this venue cannot produce.
 a new one per order; `get_order/3` and `get_orders/2` (narrowed by `:symbol`, `:side`, `:type` and
 `:state`) return those orders with their own symbol, side, size and price, and
 `cancel_order/3` returns the order cancelled and later reads say `:cancelled`. An id the
-fake never issued is the venue's 404, `{:refused, {:venue_error, 404}}`, on a read and on a
+fake never issued is the venue's 404, `{:refused, :not_found}`, on a read and on a
 cancel. A test that reads an order it never placed gets that refusal, not a canned order.
 **`client_order_id` is an idempotency key in the fake too:** placing again with a key it has
 already seen (on the request, or `opts[:client_order_id]`) returns the original order, as
@@ -291,7 +291,8 @@ absent is unmeasured, not a negative.
 required query parameter** on `get_balances/2`, `get_orders/2`, `get_order/3` and
 `place_order/3` — v1 took none and answered for the credential's own account, so a call
 without one is a v1 habit v2 will not honour. Each refuses locally with
-`{:error, {:account_number_required, :robinhood}}` rather than sending it.
+`{:error, {:missing_option, :account_number}}` rather than sending it (for `get_order/3` and
+`place_order/3` the order id and the order request are checked first).
 
 `cancel_order/3` is the exception: it takes no account number, and it is a **POST**, not a
 DELETE. `get_accounts/2` itself reads only the first page of `V2AccountsResponse` — a
@@ -350,21 +351,33 @@ rather than three points taken at three times.
 package builds that key from the type rather than taking it from you: **a config under the
 wrong key is silently ignored and the order is placed with none.**
 
-A limit without a price, or a stop-limit without a stop, is refused **by field name** before
-the request, as `{:error, {:missing_field, key}}` (`:symbol`, `:side`, `:order_type`,
-`:quantity`, `:price` or `:stop_price`). An order type outside `:market`, `:limit`, `:stop`
-(the contract's atom; the venue's own `:stop_loss` is accepted too) and `:stop_limit` is
-refused as `{:error, {:unsupported_order_type, type}}`.
+**Everything is refused before anything is signed, in this order** (the Fake gives the same
+answer in the same order): a request that is not a map `{:invalid_order_request, request}`;
+a key the builder does not read (`post_only`, `reduce_only`, ...)
+`{:unsupported_order_field, key}`; `{:invalid_symbol, v}`; `{:invalid_side, v}` (`:buy` /
+`:sell`, or the strings in any case); `{:missing_field, key}` for `:symbol`, `:side`,
+`:order_type` (never defaulted or inferred), `:time_in_force`, `:quantity`, `:price` or
+`:stop_price`; an order type outside `:market`, `:limit`, `:stop` (the contract's atom; the
+venue's own `:stop_loss` is accepted too) and `:stop_limit`
+`{:unsupported_order_type, type}`; `{:invalid_quantity, v}`, `{:invalid_price, v}`,
+`{:invalid_stop_price, v}` (zero, negative, `NaN`, unparseable, **or a float** — a float has
+already lost digits; pass a `Decimal`, an integer or a numeric string);
+`{:unexpected_field, key}` for a `price` on a market or stop order or a `stop_price` on a
+market or limit order (a field the type does not use is never silently dropped);
+`{:invalid_client_order_id, v}`; then `{:missing_option, :account_number}`; then missing or
+malformed credentials.
 
-**`time_in_force` is real on `limit`, `stop_loss` and `stop_limit` orders**, and this
-package supports all four values the vendor's own schema documents — `:gtc`, `:day` (the
-venue's own `gfd`, "good for day"), `:gfw` and `:gfm` ("good for week" and "good for
-month") — pass any of them as the `:time_in_force` key of `place_order/3`'s request map.
-Anything else this package cannot send is refused locally as
-`{:error, {:unsupported_time_in_force, tif}}` rather than silently dropped, which would
-have placed your order under an instruction the venue never received. `market_order_config`
-carries no `time_in_force` in the venue's own schema, so a market order never sends one
-regardless of what you pass. `gfw` and `gfm` decoded to `nil` for one release — not invented
+**`time_in_force` is required on `limit`, `stop` and `stop_limit` orders** — the venue's
+default for an absent one is not this package's to assume — and this package supports all
+four values the vendor's own schema documents — `:gtc`, `:day` (the venue's own `gfd`,
+"good for day"), `:gfw` and `:gfm` ("good for week" and "good for month") — pass any of
+them as the `:time_in_force` key of `place_order/3`'s request map. Anything else
+(`:ioc`, `:fok`, `:gtd`, a string, ...) is refused locally as
+`{:error, {:unsupported_order_combination, type, tif}}` rather than silently dropped, which
+would have placed your order under an instruction the venue never received.
+`market_order_config` carries no `time_in_force` in the venue's own schema, so **a market
+order takes none: a supplied one is `{:error, {:unexpected_field, :time_in_force}}`**, not
+dropped. `gfw` and `gfm` decoded to `nil` for one release — not invented
 locally and not mapped to a nearest-match value, because Core's `time_in_force` vocabulary
 had no atom for either yet. `dp_exchange_core` 0.1.45 added both, so that gap is closed and
 `capabilities().supported_time_in_force` now lists all four you can actually place.
@@ -379,8 +392,27 @@ passed to `place_order/3`, not something you can re-derive from reading the orde
 
 **A `client_order_id` you supply must be a UUID** (canonical 8-4-4-4-12 hex, either case;
 the vendor's `format: uuid`). Anything else, including a non-string, is
-`{:error, {:invalid_field, :client_order_id}}` before anything is signed; `nil` and `""`
+`{:error, {:invalid_client_order_id, value}}` before anything is signed; `nil` and `""`
 still mean "none supplied". The Fake refuses the same.
+
+**A placement that may have reached the venue and was not confirmed is never a bare
+error.** A 5xx or transport failure after the retries, a 2xx whose body is not JSON, is not
+an order object or has no `id`, or a refusal on an attempt after the first (the earlier
+attempt may have been accepted) is
+`{:error, {:order_unconfirmed, client_order_id, reason}}`, carrying the `client_order_id`
+that was actually sent — the one this package generated included. Look the order up with
+`get_order/3`, or re-send with that SAME id; a new id may place a second order. Errors
+decided before anything is sent (validation, missing credentials, our own rate limiter
+refusing the first send) stay plain `{:error, reason}`. A 2xx that carries an `id` is a
+confirmed order even if a field holds a value this package does not know (an unknown `side`
+or `state`): you get `{:ok, %Order{}}` with that field `nil`; a *read* of such an order
+(`get_order/3`) still refuses it.
+
+**A cancel is sent once.** `cancel_order/3` is never retried internally, whatever
+`:retry_attempts` says; if it fails ambiguously, `get_order/3` says what happened. An id
+that is not a non-blank string is `{:error, {:invalid_order_id, id}}` on `get_order/3` and
+`cancel_order/3`, decided before the account option and credentials. A 404 on an order call
+is `{:refused, :not_found}`.
 
 **`client_order_id` is an idempotency key.** It is generated when you do not supply one, and
 re-sending the same one returns the original order instead of placing a second. If a request's
@@ -455,16 +487,18 @@ package could not decode. The realistic cause is not malformed JSON from Robinho
 answering `200 text/html`. **Worth retrying**: nothing about the request was wrong.
 
 `{:error, :unexpected_response_shape}` — the body decoded and is not the thing this endpoint
-returns. From `get_order/3`, `place_order/3`, `cancel_order/3` and `get_orders/2` that means
+returns. From `get_order/3`, `cancel_order/3` and `get_orders/2` that means
 it was not an order object (an object that is an order but carries no `id` is
 `{:error, {:missing_required_field, :id}}` instead); from `get_balances/2`, that a holdings
 row named no asset. **Not retryable on its own** — the same request produces the same
 shape.
 
-On `place_order/3` the distinction matters most. Neither error tells you whether an order was
-placed, and both are more honest than the empty `%Order{}` this package used to return as
-success. Re-read with `get_orders/2` before re-sending, and pass the same `client_order_id`
-if you do — the venue treats it as an idempotency key.
+On `place_order/3` neither of these (nor `{:undecodable_response, _}`) is ever returned
+bare: the request was sent, so the answer is
+`{:error, {:order_unconfirmed, client_order_id, reason}}` with `reason` being the shape
+above, and they are both more honest than the empty `%Order{}` this package used to return
+as success. Re-read with `get_order/3` (or `get_orders/2`) before re-sending, and pass that
+same `client_order_id` if you do — the venue treats it as an idempotency key.
 
 ## A slow subscriber gets dropped, and told — it does not get an unbounded mailbox
 

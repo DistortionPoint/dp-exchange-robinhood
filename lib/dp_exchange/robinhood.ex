@@ -391,7 +391,7 @@ defmodule DpExchange.Robinhood do
   def get_historical_prices(_symbol, _timeframe, _range, _opts), do: Venue.not_supported()
 
   @impl true
-  def get_order_book(_symbol, _opts), do: Venue.not_supported()
+  def get_order_book(_symbol, _opts \\ []), do: Venue.not_supported()
 
   @impl true
   def get_trades(_symbol, _opts \\ []), do: Venue.not_supported()
@@ -451,10 +451,16 @@ defmodule DpExchange.Robinhood do
   `client_order_id` is generated when the caller does not supply one **and is an idempotency
   key**, so a retry of a request whose response was never seen should pass the same one. A
   key you supply must be a canonical UUID (the vendor's `format: uuid`), otherwise
-  `{:error, {:invalid_field, :client_order_id}}` before anything is signed.
+  `{:error, {:invalid_client_order_id, value}}` before anything is signed.
+
+  `order_type` and `time_in_force` are required (a market order takes no `time_in_force`; a
+  supplied one is `{:unexpected_field, :time_in_force}`), an unread key is
+  `{:unsupported_order_field, key}`, and a write that may have reached the venue without
+  being confirmed is `{:error, {:order_unconfirmed, client_order_id, reason}}`. The full
+  list of refusals, in order, is on `DpExchange.Robinhood.Rest.place_order/3`.
   """
   @impl true
-  def place_order(credentials, request, opts),
+  def place_order(credentials, request, opts \\ []),
     do: Rest.place_order(credentials, request, with_limiter(opts))
 
   @doc """
@@ -523,7 +529,7 @@ defmodule DpExchange.Robinhood do
   once it lands, or a fill if one won the race) rather than an assumed outcome.
   """
   @impl true
-  def cancel_order(credentials, id, opts),
+  def cancel_order(credentials, id, opts \\ []),
     do: Rest.cancel_order(credentials, id, with_limiter(opts))
 
   @doc """
@@ -532,7 +538,8 @@ defmodule DpExchange.Robinhood do
   See `DpExchange.Robinhood.Rest.get_order/3`.
   """
   @impl true
-  def get_order(credentials, id, opts), do: Rest.get_order(credentials, id, with_limiter(opts))
+  def get_order(credentials, id, opts \\ []),
+    do: Rest.get_order(credentials, id, with_limiter(opts))
 
   @doc """
   Orders on one account. `opts[:account_number]` is required by v2.
@@ -542,7 +549,7 @@ defmodule DpExchange.Robinhood do
   is fetched, because the venue's endpoint has no `limit` parameter of its own to send.
   """
   @impl true
-  def get_orders(credentials, opts), do: Rest.get_orders(credentials, with_limiter(opts))
+  def get_orders(credentials, opts \\ []), do: Rest.get_orders(credentials, with_limiter(opts))
 
   @impl true
   def get_trade_history(_credentials, _opts), do: Venue.not_supported()

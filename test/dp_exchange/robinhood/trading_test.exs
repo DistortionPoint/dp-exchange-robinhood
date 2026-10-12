@@ -130,17 +130,21 @@ defmodule DpExchange.Robinhood.TradingTest do
     test "every account-scoped call refuses without the account number" do
       # v1 took none and answered for the credential's own account, so a call without one is
       # a v1 habit that v2 will not honour.
-      assert {:error, {:account_number_required, :robinhood}} =
+      assert {:error, {:missing_option, :account_number}} =
                Rest.get_balances(@credentials, [])
 
-      assert {:error, {:account_number_required, :robinhood}} =
+      assert {:error, {:missing_option, :account_number}} =
                Rest.get_orders(@credentials, [])
 
-      assert {:error, {:account_number_required, :robinhood}} =
+      assert {:error, {:missing_option, :account_number}} =
                Rest.get_order(@credentials, "o-1", [])
 
-      assert {:error, {:account_number_required, :robinhood}} =
-               Rest.place_order(@credentials, %{}, [])
+      assert {:error, {:missing_option, :account_number}} =
+               Rest.place_order(
+                 @credentials,
+                 %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"},
+                 []
+               )
     end
   end
 
@@ -566,7 +570,7 @@ defmodule DpExchange.Robinhood.TradingTest do
       ]
 
       for key <- bad do
-        assert {:error, {:invalid_field, :client_order_id}} =
+        assert {:error, {:invalid_client_order_id, ^key}} =
                  Rest.place_order(@credentials, @market,
                    account_number: "RH-1",
                    client_order_id: key,
@@ -574,7 +578,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                    retry_delay: 1
                  )
 
-        assert {:error, {:invalid_field, :client_order_id}} =
+        assert {:error, {:invalid_client_order_id, ^key}} =
                  Rest.place_order(
                    @credentials,
                    Map.put(@market, :client_order_id, key),
@@ -583,7 +587,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                    retry_delay: 1
                  )
 
-        assert {:error, {:invalid_field, :client_order_id}} =
+        assert {:error, {:invalid_client_order_id, ^key}} =
                  Fake.place_order(
                    @credentials,
                    @market,
@@ -650,6 +654,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                    symbol: "BTC-USD",
                    side: :sell,
                    order_type: :limit,
+                   time_in_force: :gtc,
                    quantity: Decimal.new("0.5"),
                    price: Decimal.new("60000")
                  },
@@ -662,7 +667,8 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert Jason.decode!(raw)["limit_order_config"] == %{
                "asset_quantity" => "0.5",
-               "limit_price" => "60000"
+               "limit_price" => "60000",
+               "time_in_force" => "gtc"
              }
     end
 
@@ -670,7 +676,13 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert {:error, {:missing_field, :price}} =
                Rest.place_order(
                  @credentials,
-                 %{symbol: "BTC-USD", side: :buy, order_type: :limit, quantity: Decimal.new("1")},
+                 %{
+                   symbol: "BTC-USD",
+                   side: :buy,
+                   order_type: :limit,
+                   quantity: Decimal.new("1"),
+                   time_in_force: :gtc
+                 },
                  account_number: "RH-1"
                )
     end
@@ -684,7 +696,8 @@ defmodule DpExchange.Robinhood.TradingTest do
                    side: :buy,
                    order_type: :stop_limit,
                    quantity: Decimal.new("1"),
-                   price: Decimal.new("60000")
+                   price: Decimal.new("60000"),
+                   time_in_force: :gtc
                  },
                  account_number: "RH-1"
                )
@@ -774,7 +787,8 @@ defmodule DpExchange.Robinhood.TradingTest do
                      side: :buy,
                      order_type: order_type,
                      quantity: Decimal.new("1"),
-                     stop_price: Decimal.new("50000")
+                     stop_price: Decimal.new("50000"),
+                     time_in_force: :gtc
                    },
                    account_number: "RH-1",
                    plug: capturing(%{"id" => "o-5"}, me),
@@ -787,67 +801,134 @@ defmodule DpExchange.Robinhood.TradingTest do
       end
     end
 
-    test "no time_in_force means no key at all, not a default" do
-      me = self()
+    test "a missing time_in_force is refused for every type that sends one, never defaulted" do
+      # The venue's default for an absent duration is not this package's to assume.
+      base = %{symbol: "BTC-USD", side: :buy, quantity: Decimal.new("1")}
 
-      assert {:ok, _order} =
-               Rest.place_order(
-                 @credentials,
-                 %{
-                   symbol: "BTC-USD",
-                   side: :buy,
-                   order_type: :limit,
-                   quantity: Decimal.new("1"),
-                   price: Decimal.new("50000")
-                 },
-                 account_number: "RH-1",
-                 plug: capturing(%{"id" => "o-5"}, me),
-                 retry_attempts: 0
-               )
-
-      assert_receive {:request, "POST", _path, _query, raw}
-      refute Map.has_key?(Jason.decode!(raw)["limit_order_config"], "time_in_force")
+      for extra <- [
+            %{order_type: :limit, price: Decimal.new("50000")},
+            %{order_type: :stop, stop_price: Decimal.new("50000")},
+            %{order_type: :stop_limit, price: "1", stop_price: "2"}
+          ] do
+        assert {:error, {:missing_field, :time_in_force}} =
+                 Rest.place_order(@credentials, Map.merge(base, extra), account_number: "RH-1")
+      end
     end
 
-    test "a time_in_force this venue cannot honour is refused, not silently dropped" do
+    test "a time_in_force this venue does not serve is an unsupported combination" do
       # Core's vocabulary has :ioc — a real atom this venue has no wire name for. Silently
       # omitting it would place a GTC-equivalent order under a caller's IOC instruction.
-      assert {:error, {:unsupported_time_in_force, :ioc}} =
-               Rest.place_order(
-                 @credentials,
-                 %{
-                   symbol: "BTC-USD",
-                   side: :buy,
-                   order_type: :limit,
-                   quantity: Decimal.new("1"),
-                   price: Decimal.new("50000"),
-                   time_in_force: :ioc
-                 },
-                 account_number: "RH-1"
-               )
+      for tif <- [:ioc, :fok, :gtd, :garbage, "gtc", 5] do
+        assert {:error, {:unsupported_order_combination, :limit, ^tif}} =
+                 Rest.place_order(
+                   @credentials,
+                   %{
+                     symbol: "BTC-USD",
+                     side: :buy,
+                     order_type: :limit,
+                     quantity: Decimal.new("1"),
+                     price: Decimal.new("50000"),
+                     time_in_force: tif
+                   },
+                   account_number: "RH-1"
+                 )
+      end
     end
 
-    test "market orders have no time_in_force slot on the vendor's schema, and none is sent" do
+    test "a market order takes no time_in_force: any supplied one is refused, not dropped" do
+      me = self()
+
+      for tif <- [:gtc, :day, :ioc, :fok, :garbage] do
+        assert {:error, {:unexpected_field, :time_in_force}} =
+                 Rest.place_order(
+                   @credentials,
+                   %{
+                     symbol: "BTC-USD",
+                     side: :buy,
+                     order_type: :market,
+                     quantity: Decimal.new("1"),
+                     time_in_force: tif
+                   },
+                   account_number: "RH-1",
+                   plug: capturing(%{"id" => "o-6"}, me),
+                   retry_attempts: 0
+                 )
+      end
+
+      refute_received {:request, _method, _path, _query, _raw}
+    end
+
+    test "a price on a market or stop order, a stop_price on a market or limit order" do
+      base = %{symbol: "BTC-USD", side: :buy, quantity: Decimal.new("1")}
+      one = Decimal.new("1")
+
+      cases = [
+        {%{order_type: :market, price: one}, :price},
+        {%{order_type: :market, stop_price: one}, :stop_price},
+        {%{order_type: :stop, stop_price: one, price: one, time_in_force: :gtc}, :price},
+        {%{order_type: :limit, price: one, stop_price: one, time_in_force: :gtc}, :stop_price}
+      ]
+
+      for {extra, key} <- cases do
+        assert {:error, {:unexpected_field, ^key}} =
+                 Rest.place_order(@credentials, Map.merge(base, extra), account_number: "RH-1")
+      end
+    end
+
+    test "a key the builder does not read is refused, not ignored" do
+      for key <- [:post_only, :reduce_only, :account_number, "price"] do
+        request =
+          Map.put(
+            %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"},
+            key,
+            true
+          )
+
+        assert {:error, {:unsupported_order_field, ^key}} =
+                 Rest.place_order(@credentials, request, account_number: "RH-1")
+
+        assert {:error, {:unsupported_order_field, ^key}} =
+                 Fake.place_order(@credentials, request, account_number: "RH-1")
+      end
+    end
+
+    test "an order type is required, never inferred from the prices given" do
+      request = %{symbol: "BTC-USD", side: :buy, quantity: "1", price: "1"}
+
+      assert {:error, {:missing_field, :order_type}} =
+               Rest.place_order(@credentials, request, account_number: "RH-1")
+    end
+
+    test "validation tags: request, symbol, side, quantity" do
+      market = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"}
+      opts = [account_number: "RH-1"]
+
+      assert {:error, {:invalid_order_request, nil}} = Rest.place_order(@credentials, nil, opts)
+      assert {:error, {:invalid_symbol, nil}} = place(%{market | symbol: nil}, opts)
+      assert {:error, {:invalid_symbol, " "}} = place(%{market | symbol: " "}, opts)
+      assert {:error, {:invalid_side, :hold}} = place(%{market | side: :hold}, opts)
+      assert {:error, {:invalid_side, "short"}} = place(%{market | side: "short"}, opts)
+      assert {:error, {:invalid_quantity, 0.5}} = place(%{market | quantity: 0.5}, opts)
+      assert {:error, {:invalid_quantity, "0"}} = place(%{market | quantity: "0"}, opts)
+    end
+
+    test "a string side is accepted in any case" do
       me = self()
 
       assert {:ok, _order} =
                Rest.place_order(
                  @credentials,
-                 %{
-                   symbol: "BTC-USD",
-                   side: :buy,
-                   order_type: :market,
-                   quantity: Decimal.new("1"),
-                   time_in_force: :gtc
-                 },
+                 %{symbol: "BTC-USD", side: "SeLL", order_type: :market, quantity: "1"},
                  account_number: "RH-1",
-                 plug: capturing(%{"id" => "o-6"}, me),
+                 plug: capturing(%{"id" => "o-7"}, me),
                  retry_attempts: 0
                )
 
       assert_receive {:request, "POST", _path, _query, raw}
-      refute Map.has_key?(Jason.decode!(raw)["market_order_config"], "time_in_force")
+      assert Jason.decode!(raw)["side"] == "sell"
     end
+
+    defp place(request, opts), do: Rest.place_order(@credentials, request, opts)
 
     test "a client order id is generated when absent and honoured when given" do
       # The venue treats it as an idempotency key: a retry of a request whose response was

@@ -19,6 +19,56 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed (BREAKING) -- trading conventions (family tick P)
+
+- **BREAKING: an unconfirmed placement is `{:error, {:order_unconfirmed, client_order_id,
+  reason}}`.** A 5xx or transport failure after the retries, a 2xx that is not JSON
+  (was `{:error, {:undecodable_response, :robinhood}}`), is not an object (was
+  `{:error, :unexpected_response_shape}`) or has no `id` (was `{:error,
+  {:missing_required_field, :id}}`), and a refusal on a retried attempt (was
+  `{:refused, _}`; the first attempt may have been accepted) now carry the `client_order_id`
+  that was sent, the generated one included, so a caller can reconcile instead of retrying
+  into a duplicate. Errors decided before a send (validation, credentials, our own rate
+  limiter refusing the first send) stay plain.
+- **A confirmed placement is never an error.** A 2xx with an `id` whose `side`, `type`,
+  `state` or `time_in_force` holds a value outside the venue's enums was
+  `{:error, {:unknown_enum, field, value}}` for an order that existed; it is now
+  `{:ok, %Order{}}` with that field `nil`. `get_order/3` still refuses it.
+- **BREAKING: `order_type` and `time_in_force` are required; nothing is silently dropped.**
+  `time_in_force` absent on `limit`/`stop`/`stop_limit` was sent as none (the venue's
+  default applied): now `{:error, {:missing_field, :time_in_force}}`. A `time_in_force` on a
+  market order (any value, including undeclared `:ioc`/`:fok`/`:garbage`) was dropped: now
+  `{:error, {:unexpected_field, :time_in_force}}`. A `price` or `stop_price` on a type that
+  does not use it was dropped: now `{:error, {:unexpected_field, key}}`. A tif outside
+  `:gtc`/`:day`/`:gfw`/`:gfm` was `{:unsupported_time_in_force, tif}`: now
+  `{:unsupported_order_combination, type, tif}`.
+- **BREAKING: unknown request keys are refused** (`post_only`, `reduce_only`, ...):
+  `{:error, {:unsupported_order_field, key}}`; they were ignored.
+- **BREAKING: validation tags unified.** Request not a map `{:invalid_request, :not_a_map}`
+  -> `{:invalid_order_request, request}`; `{:unsupported_side, v}` -> `{:invalid_side, v}`
+  (strings are accepted in any case); `{:invalid_field, :quantity}` -> `{:invalid_quantity,
+  v}`; price/stop price `{:invalid_field, key}` -> `{:invalid_price, v}` /
+  `{:invalid_stop_price, v}`; symbol `{:invalid_field, :symbol}` -> `{:invalid_symbol, v}`;
+  `{:invalid_field, :client_order_id}` -> `{:invalid_client_order_id, v}`. **A float
+  quantity/price is refused** (it was converted; the digits it lost were not the caller's).
+  Check order: request, unknown keys, symbol, side, type, duration, quantity, prices,
+  client_order_id, account, credentials (the account used to come first).
+- **BREAKING: order ids.** `get_order/3` / `cancel_order/3` with a nil, non-string or blank
+  id: `{:missing_field, :id}` -> `{:invalid_order_id, id}`, and `get_order/3` now checks the
+  id before the account option (the cancel never took one).
+- **BREAKING: a 404 on an order call is `{:refused, :not_found}`** (was
+  `{:refused, {:venue_error, 404, detail}}`); the Fake answers the same for an unknown id.
+- **BREAKING: `{:error, {:account_number_required, :robinhood}}` is now
+  `{:error, {:missing_option, :account_number}}`** on every account-scoped call.
+- **`cancel_order/3` is sent once.** It went through the client's default three attempts;
+  `:retry_attempts` is now forced to 1 for it.
+- `Rest.validate_order_request/1` is replaced by `Rest.normalize_order_request/1`, which
+  returns the validated, normalised order (the Fake builds its order from it).
+- `place_order`, `cancel_order`, `get_order` take `opts \\ []`, `get_orders/1` and
+  `get_order_book/1` exist (the latter answers `{:error, :not_supported}`), on the facade and
+  the Fake.
+- `:retry_delay` is now forwarded to the HTTP client (it was dropped by the option filter).
+
 ## [0.3.83] - 2026-10-11
 
 ### Fixed

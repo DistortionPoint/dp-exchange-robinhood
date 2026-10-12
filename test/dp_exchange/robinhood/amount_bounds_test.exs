@@ -28,14 +28,14 @@ defmodule DpExchange.Robinhood.AmountBoundsTest do
       for quantity <- huge do
         request = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: quantity}
 
-        assert Rest.validate_order_request(request) == {:error, {:invalid_field, :quantity}}
+        assert Rest.normalize_order_request(request) == {:error, {:invalid_quantity, quantity}}
       end
     end
 
     test "a modest exponent is still accepted" do
       request = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1e-8"}
 
-      assert Rest.validate_order_request(request) == :ok
+      assert {:ok, %{quantity: "0.00000001"}} = Rest.normalize_order_request(request)
     end
   end
 

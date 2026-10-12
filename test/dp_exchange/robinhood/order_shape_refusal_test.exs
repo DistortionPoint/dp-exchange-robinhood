@@ -75,8 +75,11 @@ defmodule DpExchange.Robinhood.OrderShapeRefusalTest do
         quantity: Decimal.new("0.01")
       }
 
-      assert {:error, :unexpected_response_shape} =
+      # The request was sent, so the write is unconfirmed, and it names the key it sent.
+      assert {:error, {:order_unconfirmed, client_order_id, :unexpected_response_shape}} =
                Rest.place_order(@credentials, request, opts(["accepted"]))
+
+      assert client_order_id =~ ~r/\A[0-9a-f-]{36}\z/
     end
 
     test "cancel_order/3 refuses" do
@@ -133,8 +136,10 @@ defmodule DpExchange.Robinhood.OrderShapeRefusalTest do
         quantity: Decimal.new("0.01")
       }
 
-      assert {:error, {:undecodable_response, :robinhood}} =
+      assert {:error, {:order_unconfirmed, id, {:undecodable_response, :robinhood}}} =
                interrupted(&Rest.place_order(@credentials, request, &1))
+
+      assert is_binary(id)
     end
 
     test "get_balances/2 refuses rather than reporting an empty portfolio" do
@@ -153,8 +158,13 @@ defmodule DpExchange.Robinhood.OrderShapeRefusalTest do
       # refusal. This must NOT become `{:error, {:undecodable_response, _}}`: that would
       # turn a permanent, correctly-classified refusal into a generic error and lose the
       # status with it.
-      assert {:refused, {:venue_error, 404}} =
+      # An order endpoint's 404 is the family's `:not_found`; other statuses keep the venue's
+      # own shape (see `Rest.get_top_of_book/3`'s 404 elsewhere).
+      assert {:refused, :not_found} =
                Rest.get_order(@credentials, "o-1", Keyword.put(@account, :plug, html(404)))
+
+      assert {:refused, {:venue_error, 403}} =
+               Rest.get_order(@credentials, "o-1", Keyword.put(@account, :plug, html(403)))
     end
   end
 

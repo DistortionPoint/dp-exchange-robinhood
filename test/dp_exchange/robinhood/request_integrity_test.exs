@@ -93,10 +93,10 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
       plug = hitting(%{"id" => "x"}, self())
 
       for blank <- ["", "  "] do
-        assert {:error, {:missing_field, :id}} =
+        assert {:error, {:invalid_order_id, ^blank}} =
                  Rest.cancel_order(@credentials, blank, plug: plug, retry_attempts: 0)
 
-        assert {:error, {:missing_field, :id}} =
+        assert {:error, {:invalid_order_id, ^blank}} =
                  Rest.get_order(@credentials, blank,
                    account_number: "RH-1",
                    plug: plug,
@@ -108,8 +108,8 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     end
 
     test "the fake refuses a blank id as the real path does" do
-      assert Fake.cancel_order(@credentials, "", []) == {:error, {:missing_field, :id}}
-      assert Fake.get_order(@credentials, " ", @account) == {:error, {:missing_field, :id}}
+      assert Fake.cancel_order(@credentials, "", []) == {:error, {:invalid_order_id, ""}}
+      assert Fake.get_order(@credentials, " ", @account) == {:error, {:invalid_order_id, " "}}
     end
   end
 
@@ -165,16 +165,23 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
 
   describe "place_order/3 refuses what it would otherwise sign and send" do
     test "a side outside buy/sell" do
-      assert {:error, {:unsupported_side, :hold}} = place(%{@market | side: :hold})
-      assert {:error, {:unsupported_side, "BUY"}} = place(%{@market | side: "BUY"})
+      assert {:error, {:invalid_side, :hold}} = place(%{@market | side: :hold})
+      assert {:error, {:invalid_side, "hold"}} = place(%{@market | side: "hold"})
+      assert {:error, {:invalid_side, 5}} = place(%{@market | side: 5})
       refute_received {:hit, _method, _path, _query, _raw, _content_type}
     end
 
+    test "a string side is read in any case, and sent in the venue's lower case" do
+      assert {:ok, _order} = place(%{@market | side: "BUY"})
+      assert_receive {:hit, "POST", _path, _query, raw, _content_type}
+      assert Jason.decode!(raw)["side"] == "buy"
+    end
+
     test "a quantity that is not a positive finite number" do
-      unreadable = ["0", "-1", "NaN", "Infinity", "abc", "", 0, -2, 0.0, Decimal.new("-1")]
+      unreadable = ["0", "-1", "NaN", "Infinity", "abc", "", 0, -2, 0.0, 1.5, Decimal.new("-1")]
 
       for bad <- unreadable do
-        assert {:error, {:invalid_field, :quantity}} = place(%{@market | quantity: bad})
+        assert {:error, {:invalid_quantity, ^bad}} = place(%{@market | quantity: bad})
       end
 
       assert {:error, {:missing_field, :quantity}} = place(%{@market | quantity: nil})
@@ -183,25 +190,27 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     end
 
     test "a price or stop price that is not a positive finite number" do
-      limit = %{@market | order_type: :limit}
-      assert {:error, {:invalid_field, :price}} = place(Map.put(limit, :price, "0"))
-      assert {:error, {:invalid_field, :price}} = place(Map.put(limit, :price, "NaN"))
+      limit = Map.put(%{@market | order_type: :limit}, :time_in_force, :gtc)
+      assert {:error, {:invalid_price, "0"}} = place(Map.put(limit, :price, "0"))
+      assert {:error, {:invalid_price, "NaN"}} = place(Map.put(limit, :price, "NaN"))
+      assert {:error, {:invalid_price, 1.5}} = place(Map.put(limit, :price, 1.5))
 
-      stop = %{@market | order_type: :stop}
-      assert {:error, {:invalid_field, :stop_price}} = place(Map.put(stop, :stop_price, -1))
+      stop = Map.put(%{@market | order_type: :stop}, :time_in_force, :gtc)
+      assert {:error, {:invalid_stop_price, -1}} = place(Map.put(stop, :stop_price, -1))
       refute_received {:hit, _method, _path, _query, _raw, _content_type}
     end
 
     test "a symbol that is blank or not a string" do
-      assert {:error, {:invalid_field, :symbol}} = place(%{@market | symbol: ""})
-      assert {:error, {:invalid_field, :symbol}} = place(%{@market | symbol: "  "})
-      assert {:error, {:invalid_field, :symbol}} = place(%{@market | symbol: 5})
+      assert {:error, {:invalid_symbol, ""}} = place(%{@market | symbol: ""})
+      assert {:error, {:invalid_symbol, "  "}} = place(%{@market | symbol: "  "})
+      assert {:error, {:invalid_symbol, 5}} = place(%{@market | symbol: 5})
+      assert {:error, {:invalid_symbol, nil}} = place(%{@market | symbol: nil})
       refute_received {:hit, _method, _path, _query, _raw, _content_type}
     end
 
     test "a request that is not a map" do
-      assert {:error, {:invalid_request, :not_a_map}} = place("BTC-USD")
-      assert Rest.validate_order_request(nil) == {:error, {:invalid_request, :not_a_map}}
+      assert {:error, {:invalid_order_request, "BTC-USD"}} = place("BTC-USD")
+      assert Rest.normalize_order_request(nil) == {:error, {:invalid_order_request, nil}}
       refute_received {:hit, _method, _path, _query, _raw, _content_type}
     end
 
@@ -210,11 +219,19 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
             %{@market | side: :hold},
             %{@market | quantity: "NaN"},
             %{@market | quantity: 0},
-            %{@market | symbol: ""}
+            %{@market | quantity: 0.5},
+            %{@market | symbol: ""},
+            Map.put(@market, :post_only, true),
+            Map.put(@market, :price, "1"),
+            Map.put(@market, :time_in_force, :gtc),
+            %{@market | order_type: :limit}
           ] do
-        assert {:error, _reason} = expected = Rest.validate_order_request(request)
+        assert {:error, _reason} = expected = Rest.normalize_order_request(request)
         assert Fake.place_order(@credentials, request, @account) == expected
+        assert place(request) == expected
       end
+
+      refute_received {:hit, _method, _path, _query, _raw, _content_type}
     end
 
     test "a string quantity in scientific notation is sent in full notation" do
@@ -267,7 +284,7 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
         symbol: "BTC-USD",
         side: :sell,
         order_type: :limit,
-        quantity: 0.25,
+        quantity: "0.25",
         price: "60000",
         time_in_force: :gtc
       }
