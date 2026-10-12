@@ -200,7 +200,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       # `PollingFeed` retries an error and reports a refusal once — only the adapter can
       # tell a delisted symbol from a network blip, so only the adapter decides. The venue
       # must actually SAY so (a 404 with a body) for this to fire — see
-      # `Rest.first_result/1`'s moduledoc note and DpCryptoManagement's issue #25: an empty
+      # the comment on `Rest.result_for/2` and DpCryptoManagement's issue #25: an empty
       # `results` page is silence, not a statement, and must NOT reach this path (covered
       # by "an empty page is retried, never reported as a refusal" below).
       {:ok, _feed} =

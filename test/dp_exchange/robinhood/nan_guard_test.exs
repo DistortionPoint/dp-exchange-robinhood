@@ -69,6 +69,31 @@ defmodule DpExchange.Robinhood.NaNGuardTest do
       assert Decimal.equal?(top.bid, Decimal.new("77840.00"))
     end
 
+    test "an absurd exponent is refused before any compare can allocate for it" do
+      # Finite to `Decimal`, parsed instantly, and a billion-digit integer on the first
+      # `Decimal.compare/2`. Bounded to +-1000 like the other venues' copies.
+      for value <- ["1E+999999999", "1E-999999999"] do
+        assert {:error, {:invalid_decimal, :bid, ^value}} =
+                 Rest.get_top_of_book("BTC-USD", @credentials,
+                   plug: responding(book(value)),
+                   retry_attempts: 0
+                 )
+      end
+    end
+
+    test "a long unreadable bid is cut before it rides the error tuple" do
+      long = String.duplicate("x", 5_000)
+
+      assert {:error, {:invalid_decimal, :bid, shown}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(book(long)),
+                 retry_attempts: 0
+               )
+
+      assert is_binary(shown)
+      assert byte_size(shown) < 200
+    end
+
     test "what a NaN would have done downstream, stated rather than assumed" do
       {nan, ""} = Decimal.parse("NaN")
 

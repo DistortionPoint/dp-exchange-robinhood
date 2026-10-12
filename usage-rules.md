@@ -232,7 +232,10 @@ unreadable (an empty string, `NaN`, a non-number, a negative) is refused by
 `nil`: `nil` means "the venue says there is no order". A row with neither key at all (a
 renamed field) is `{:error, {:missing_required_field, :bid_ask}}`. On the bulk/feed path a
 refused row is dropped (that symbol is uncovered this cycle), never delivered as an empty
-book.
+book. In `value`, a short string is quoted as the venue sent it and a long one is cut. A
+number with an absurd exponent (beyond +-1000) is unreadable like `NaN`. The bulk read
+returns only symbols it was asked for, each once: a row for another symbol is dropped, and a
+symbol the venue answers twice is returned as its first readable row.
 
 `bid` and `ask` are both real and both still live — through `get_top_of_book/2` and the
 `:top_of_book` poll above. If your code wants "the price," pick one of `bid` or `ask`

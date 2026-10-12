@@ -765,7 +765,7 @@ defmodule DpExchange.Robinhood.RestTest do
       # The vendor's document does not say what happens when one symbol in a batch is
       # delisted, unlisted or malformed. A `results` row simply absent for one of the
       # symbols asked for is silence about THAT symbol on THIS request, not a statement
-      # the symbol does not exist — the same principle `first_result/1` already applies
+      # the symbol does not exist — the same principle `result_for/2` already applies
       # on the single-symbol path (DpCryptoManagement issue #25). This function must not
       # turn that silence into either an `:error` or a `:refused`.
       body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}]}
@@ -815,6 +815,27 @@ defmodule DpExchange.Robinhood.RestTest do
                  plug: responding(%{}, 500),
                  retry_attempts: 0
                )
+    end
+
+    test "an unrequested symbol's row is dropped and a repeated one is returned once" do
+      body = %{
+        "results" => [
+          %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"},
+          %{"symbol" => "DOGE-USD", "bid" => "5", "ask" => "6"},
+          %{"symbol" => "BTC-USD", "bid" => "9", "ask" => "10"},
+          %{"symbol" => "eth-usd", "bid" => "3", "ask" => "4"}
+        ]
+      }
+
+      assert {:ok, [btc, eth]} =
+               Rest.get_top_of_book_bulk(["BTC-USD", "ETH-USD"], @credentials,
+                 plug: responding(body),
+                 retry_attempts: 0
+               )
+
+      assert btc.symbol == "BTC-USD"
+      assert Decimal.equal?(btc.bid, Decimal.new(1))
+      assert eth.symbol == "ETH-USD"
     end
 
     test "a row with no symbol is dropped rather than published under a fabricated key" do

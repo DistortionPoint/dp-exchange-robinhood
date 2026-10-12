@@ -49,7 +49,7 @@ defmodule DpExchange.Robinhood.Feed do
   condition, but the first — what the venue actually does on a partial-bad batch — is
   still not stated anywhere this package can read.
 
-  **So this does not guess.** `fetch_all/5` below sends the bulk request and reads
+  **So this does not guess.** `fetch_all/6` below sends the bulk request and reads
   whatever comes back:
 
   - A `results` array with every row filled: published, same as before, at 1/86th the
@@ -59,11 +59,11 @@ defmodule DpExchange.Robinhood.Feed do
     venue statement that the symbol does not exist, and `PollingFeed` already treats a
     symbol absent from a bulk response as uncovered-and-retried, never as refused (see its
     own `publish_and_record/2`). Turning silence into a refusal is the exact defect
-    DpCryptoManagement issue #25 fixed on the single-symbol path (`Rest.first_result/1`'s
-    own moduledoc), and this path must not reintroduce it on the bulk one.
+    DpCryptoManagement issue #25 fixed on the single-symbol path (the comment on
+    `Rest.result_for/2`), and this path must not reintroduce it on the bulk one.
   - The WHOLE request refused (400/401/403/404) — the shape a single bad symbol could
     plausibly produce, and the one this module used to have no safe answer for.
-    `fetch_all/5` splits the batch and asks again until it reaches the symbol the venue
+    `fetch_all/6` splits the batch and asks again until it reaches the symbol the venue
     objects to (see "A refused batch is bisected, and a refused symbol is remembered"
     below). It reports every refusal it finds by CALLING the same `on_refusal` function
     `PollingFeed` itself would have called, directly, rather than by returning
@@ -89,9 +89,10 @@ defmodule DpExchange.Robinhood.Feed do
   fetch. That fetch is killed at `:fetch_timeout_ms`, which is 30s at this feed's 30s
   interval. This venue's documented limit is 100 requests a minute per account (bursts of
   300), so 300 symbols could not finish in time on the limiter alone, and fewer could not
-  either once ordinary latency and retries were added. A killed fetch publishes nothing. The next cycle sent the same bulk
-  request, was refused again, and fell back again, so one bad symbol past that size meant
-  every symbol delivered nothing, every cycle: the failure the fallback existed to prevent.
+  either once ordinary latency and retries were added. A killed fetch publishes nothing. The
+  next cycle sent the same bulk request, was refused again, and fell back again, so one bad
+  symbol past that size meant every symbol delivered nothing, every cycle: the failure the
+  fallback existed to prevent.
   It also ran on a 401, where every per-symbol request is refused alike, spending one
   request per symbol per cycle to learn nothing.
 
@@ -501,6 +502,10 @@ defmodule DpExchange.Robinhood.Feed do
       # something to rebuild the poller FROM: the opts this process started with are
       # static and never carry an `update_symbols/2` call made after boot.
       symbols: symbols,
+      # The same set as a `MapSet`, for the per-book membership test in `handle_info/2`
+      # (one book per symbol per cycle: a list scan there is O(n^2) over the universe).
+      # Kept in step with `symbols` by `replace_symbols/2` and nowhere else.
+      symbol_set: MapSet.new(symbols),
       # Symbols the venue has refused and that have not delivered since. Added on a
       # `{:refused, symbol, _}`, removed when that symbol's book arrives or it leaves scope.
       # The fetch reads it so the bulk request leaves them out.
@@ -565,7 +570,7 @@ defmodule DpExchange.Robinhood.Feed do
     budget_ms = state.bisect_budget_ms
 
     # Named so it can be handed to `PollingFeed` for its own per-symbol refusal channel
-    # AND reused inside `fetch_all/5`'s bisection below — one function, one
+    # AND reused inside `fetch_all/6`'s bisection below — one function, one
     # meaning ("the venue just said so"), used from both places rather than reimplemented.
     on_refusal = fn symbol, reason ->
       send(parent, {:dp_exchange, :robinhood, {:refused, symbol, reason}})
@@ -799,7 +804,7 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call({:remove_symbols, symbols}, _from, state),
-    do: change_symbols(state, symbols, fn drop -> Enum.reject(state.symbols, &(&1 in drop)) end)
+    do: change_symbols(state, symbols, fn drop -> without(state.symbols, drop) end)
 
   def handle_call(:wanted, _from, state), do: {:reply, state.symbols, state}
 
@@ -830,6 +835,11 @@ defmodule DpExchange.Robinhood.Feed do
     end
   end
 
+  defp without(symbols, drop) do
+    dropped = MapSet.new(drop)
+    Enum.reject(symbols, &MapSet.member?(dropped, &1))
+  end
+
   # No subscriber given: nothing to register. The boot `:subscriber` already receives, and
   # registering it again would only put the one configuration pid under a monitor.
   defp register_data_subscriber(state, nil), do: {:ok, state}
@@ -848,10 +858,13 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   defp replace_symbols(state, symbols) do
+    symbol_set = MapSet.new(symbols)
+
     state = %{
       state
       | symbols: symbols,
-        refused: MapSet.intersection(state.refused, MapSet.new(symbols))
+        symbol_set: symbol_set,
+        refused: MapSet.intersection(state.refused, symbol_set)
     }
 
     {:reply, PollingFeed.update_symbols(state.poller, symbols), state}
@@ -924,13 +937,13 @@ defmodule DpExchange.Robinhood.Feed do
   # the unsubscribe returned. A late refusal put the removed symbol back into `refused`,
   # where nothing would ever take it out. Found 2026-10-10.
   def handle_info({:dp_exchange, :robinhood, {:refused, symbol, _reason}} = message, state) do
-    if symbol in state.symbols,
+    if MapSet.member?(state.symbol_set, symbol),
       do: {:noreply, deliver(%{state | refused: MapSet.put(state.refused, symbol)}, message)},
       else: {:noreply, state}
   end
 
   def handle_info({:dp_exchange, :robinhood, %{symbol: symbol}} = message, state) do
-    if symbol in state.symbols,
+    if MapSet.member?(state.symbol_set, symbol),
       do: {:noreply, deliver(%{state | refused: MapSet.delete(state.refused, symbol)}, message)},
       else: {:noreply, state}
   end

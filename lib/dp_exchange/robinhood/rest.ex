@@ -138,9 +138,10 @@ defmodule DpExchange.Robinhood.Rest do
   Every row present is mapped; every symbol absent from `results` simply is not in the
   returned list — the caller (`Core.PollingFeed`, via `Feed`) already treats "asked for but
   not in the response" as uncovered-and-retried, never as a refusal, and this function does
-  nothing that would turn silence into a statement (see `first_result/1` below for the same
-  principle on the single-symbol path, and DpCryptoManagement issue #25 for what mistaking
-  the two costs).
+  nothing that would turn silence into a statement (see the comment on `result_for/2` for the
+  same principle on the single-symbol path, and DpCryptoManagement issue #25 for what
+  mistaking the two costs). A row naming a symbol that was not asked for is dropped, and a
+  symbol answered twice is returned once (its first readable row).
 
   More than `max_bulk_symbols/0` distinct symbols is refused as
   `{:error, {:too_many_symbols, cap}}` before anything is signed; `Feed` chunks to the cap.
@@ -160,9 +161,33 @@ defmodule DpExchange.Robinhood.Rest do
 
       with {:ok, body} <- get(path, credentials, opts),
            {:ok, rows} <- bulk_rows(body) do
-        {:ok, rows |> Enum.map(&row_to_top_of_book/1) |> Enum.reject(&is_nil/1)}
+        {:ok, answered_books(rows, natives)}
       end
     end
+  end
+
+  # Only the symbols asked for, each once. A row for a symbol that was not requested is not
+  # an answer to this call (a caller keying on the result would publish it under a name it
+  # never subscribed), and a symbol the venue answers twice is published once, as its first
+  # readable row, rather than as two books that may disagree. One pass, one `MapSet`.
+  defp answered_books(rows, natives) do
+    asked =
+      MapSet.new(natives, fn {"symbol", native} -> SymbolFormat.to_canonical_symbol(native) end)
+
+    {books, _seen} =
+      Enum.reduce(rows, {[], MapSet.new()}, fn row, {books, seen} = acc ->
+        case row_to_top_of_book(row) do
+          %TopOfBook{symbol: symbol} = book ->
+            if MapSet.member?(asked, symbol) and not MapSet.member?(seen, symbol),
+              do: {[book | books], MapSet.put(seen, symbol)},
+              else: acc
+
+          nil ->
+            acc
+        end
+      end)
+
+    Enum.reverse(books)
   end
 
   # The vendor states no maximum number of `symbol` parameters (nothing measured), and the
@@ -2244,7 +2269,7 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp decimal(nil), do: nil
   defp decimal(""), do: nil
-  defp decimal(%Decimal{} = value), do: value
+  defp decimal(%Decimal{} = value), do: finite(value)
   defp decimal(value) when is_integer(value), do: Decimal.new(value)
   defp decimal(value) when is_float(value), do: Decimal.from_float(value)
 
@@ -2267,13 +2292,18 @@ defmodule DpExchange.Robinhood.Rest do
   # which is why this comment is in each of them now rather than one of them.
   defp decimal(value) when is_binary(value) do
     case Decimal.parse(value) do
-      {parsed, ""} ->
-        if Decimal.nan?(parsed) or Decimal.inf?(parsed), do: nil, else: parsed
-
-      _unparsable ->
-        nil
+      {parsed, ""} -> finite(parsed)
+      _unparsable -> nil
     end
   end
 
   defp decimal(_other), do: nil
+
+  # NaN, Infinity and an exponent beyond +-1000 are not a number here. `1E999999999` is finite
+  # to `Decimal` and parses instantly, but the first `Decimal.compare/2` or add against it
+  # aligns exponents and allocates an integer of a billion digits: a few bytes of venue reply
+  # cost this process its memory. The same bound `dp_exchange_schwab` applies.
+  defp finite(%Decimal{exp: exp} = value) do
+    if Decimal.nan?(value) or Decimal.inf?(value) or abs(exp) > 1000, do: nil, else: value
+  end
 end

@@ -19,6 +19,26 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed -- tick T (regression review of tick S, docs vs code, hot path)
+
+- **A number with an absurd exponent from the venue is unreadable, not a price.** `Rest`'s
+  decimal reader let `"1E+999999999"` through (finite to `Decimal`), and the first
+  `Decimal.compare/2` against it allocates a billion-digit integer. An exponent beyond +-1000
+  is now treated like `NaN`: `{:invalid_decimal, :bid | :ask, value}` on a book, `nil`
+  elsewhere. The same bound the other venues' readers have.
+- **`get_top_of_book_bulk/3` returns only symbols it was asked for, each once.** A `results`
+  row naming another symbol was returned (and `Feed` filtered it), and a symbol answered twice
+  came back as two books that may disagree. Extra rows are dropped and a repeat returns its
+  first readable row.
+- Hot path: `Feed` tests a delivered book's symbol against a `MapSet` (`state.symbol_set`,
+  kept in step with `state.symbols`) instead of scanning the list once per book, which was
+  O(n^2) over a 1,000-symbol universe each cycle; `remove_symbols/2` no longer scans the
+  list once per removed symbol.
+- Docs: `Feed` and `Rest` named `fetch_all/5` (it is `/6`) and `Rest.first_result/1` (it is
+  the `result_for/2` comment); a run-on line in `Feed`'s moduledoc is wrapped; `usage-rules.md`
+  states the bounded `value`, the exponent bound and the bulk read's filtering; the README
+  pins `~> 0.3.87`.
+
 ## [0.3.87] - 2026-10-12
 
 ### Fixed
