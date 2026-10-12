@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.94] - 2026-10-12
+
 - **Security: signed requests are https only.** A `:base_url` that is not https with a host
   (loopback may use http for a local stub) answers `{:error, {:insecure_base_url, scheme}}`, or
   `{:invalid_base_url, :not_a_string}`, before anything is signed; it sent the API key,
