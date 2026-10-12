@@ -48,16 +48,14 @@ defmodule DpExchange.Robinhood.NaNGuardTest do
 
   describe "a NaN or Infinity from the venue is dropped, never admitted as a number" do
     for value <- @poison do
-      test "#{value} as a bid is nil, not a Decimal" do
-        assert {:ok, top} =
+      test "#{value} as a bid refuses the book, it does not become nil (MD6)" do
+        # `nil` is `TopOfBook`'s "no resting order". An unreadable price must not turn into
+        # that claim (family tick R).
+        assert {:error, {:invalid_decimal, :bid, unquote(value)}} =
                  Rest.get_top_of_book("BTC-USD", @credentials,
                    plug: responding(book(unquote(value))),
                    retry_attempts: 0
                  )
-
-        assert top.bid == nil
-        # The ask beside it is untouched — one poisoned field must not discard a good one.
-        assert Decimal.equal?(top.ask, Decimal.new("77850.00"))
       end
     end
 

@@ -1346,7 +1346,7 @@ defmodule DpExchange.Robinhood.TradingTest do
         })
       end
 
-      assert {:error, :too_many_order_pages} =
+      assert {:error, :history_truncated} =
                Rest.get_orders(@credentials,
                  account_number: "RH-1",
                  plug: plug,

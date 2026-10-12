@@ -91,8 +91,9 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
 
   describe "place_order/3: the fake validates the order as Rest does, in the same order" do
     test "an empty request is refused with the field the real path names" do
-      assert Rest.normalize_order_request(%{}) == {:error, {:missing_field, :symbol}}
-      assert Fake.place_order(@credentials, %{}, @account) == {:error, {:missing_field, :symbol}}
+      # An absent symbol is `{:invalid_symbol, nil}` on every venue (family tick R, DV2).
+      assert Rest.normalize_order_request(%{}) == {:error, {:invalid_symbol, nil}}
+      assert Fake.place_order(@credentials, %{}, @account) == {:error, {:invalid_symbol, nil}}
     end
 
     test "a limit order without a duration or a price is refused, the duration first" do
@@ -116,7 +117,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     end
 
     test "the request is checked first, then the account, and the credentials last" do
-      assert Fake.place_order(%{}, %{}, []) == {:error, {:missing_field, :symbol}}
+      assert Fake.place_order(%{}, %{}, []) == {:error, {:invalid_symbol, nil}}
       assert Fake.place_order(%{}, @order, []) == {:error, {:missing_option, :account_number}}
 
       assert Fake.place_order(%{}, @order, @account) ==

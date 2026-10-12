@@ -70,19 +70,14 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       assert top.venue_time == nil
     end
 
-    test "an empty bid is nil rather than zero" do
-      # Zero is a price. A venue that did not quote a bid has not quoted a bid of nothing.
+    test "an empty-string bid is present but unreadable: refused, not nil (MD6)" do
       body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "1", "bid" => ""}]}
 
-      assert {:ok, top} =
+      assert {:error, {:invalid_decimal, :bid, ""}} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(body),
                  retry_attempts: 0
                )
-
-      # The assertion moved to TopOfBook with the field. Same rule: zero is a price, and a
-      # venue that did not quote a bid has not quoted a bid of nothing.
-      assert top.bid == nil
     end
   end
 

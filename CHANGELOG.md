@@ -19,6 +19,35 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed -- regression review of the trading conventions (family tick R)
+
+- **BREAKING: every 4xx except 429 answering a placement's ONLY attempt is
+  `{:refused, {:venue_error, status, ...}}` (DV6).** 405, 406 and 415 used to be plain
+  errors, and 422, 409 and every other undocumented 4xx used to be `:order_unconfirmed`. The
+  venue received the request and said no. The venue's 429 on the only attempt stays a plain
+  `{:error, _}`. A 429 or a 4xx answering a RETRY stays `:order_unconfirmed` (a 4xx's reason
+  is `{:refused_after_retry, refusal}`), because the earlier attempt may have been accepted.
+  `cancel_order/3` follows the same rule.
+- **BREAKING: an absent order `symbol` is `{:invalid_symbol, nil}` (DV2)**, as
+  `symbol: nil` always was; it was `{:missing_field, :symbol}`. The Fake follows.
+- **BREAKING: `get_orders/2` walking past its page bound answers
+  `{:error, :history_truncated}` (DV7)**, the family's one spelling; it was
+  `{:error, :too_many_order_pages}`.
+- **BREAKING: `get_top_of_book/3` refuses a present but unreadable bid or ask (MD6).** A
+  non-number, an empty string, NaN, Infinity or a negative is
+  `{:error, {:invalid_decimal, :bid | :ask, value}}`; it used to become `nil`, which
+  `TopOfBook` reads as "no resting order". A `0` is now that statement (`nil`); an absent or
+  `null` side is `nil`; both sides absent is still `{:missing_required_field, :bid_ask}`;
+  both `0` is an empty book. In `get_top_of_book_bulk/3` and the `Feed` poll a refused row is
+  dropped (that symbol is uncovered this cycle) and the rest of the batch is unaffected.
+- **DV9 verified, with a test:** `subscribe([])` registers the subscriber, changes nothing
+  in the polled set and sends no request (`Core.PollingFeed` never fetches for an empty set).
+- **Only a signature that was actually produced counts as a send attempt** in
+  `place_order/3`'s unconfirmed-versus-plain decision.
+- Docs: `cancel_order/3` named `{:missing_field, :id}` for a blank id (it is
+  `{:invalid_order_id, id}`); `usage-rules.md` said a non-string `client_order_id` counts as
+  absent (it is `{:invalid_client_order_id, value}`).
+
 ## [0.3.85] - 2026-10-12
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

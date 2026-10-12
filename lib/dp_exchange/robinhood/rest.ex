@@ -96,6 +96,11 @@ defmodule DpExchange.Robinhood.Rest do
   there is no `get_price/3` reading this same payload, and on the v1/v2 field-name defect
   this function used to carry.
 
+  **`nil` on a side means the venue says there is no order there.** A `bid` or `ask` of `0`
+  is that, and so is an absent or `null` side. A side that is present but unreadable (empty
+  string, NaN, non-number, negative) is `{:error, {:invalid_decimal, :bid | :ask, value}}`;
+  neither key at all is `{:error, {:missing_required_field, :bid_ask}}`.
+
   One symbol, one signed request. See `get_top_of_book_bulk/3` for the repeatable-`symbol`
   form this endpoint also serves, which `Feed` uses as its normal path and falls back to
   this function per symbol only when the bulk call is itself refused.
@@ -239,13 +244,19 @@ defmodule DpExchange.Robinhood.Rest do
   # delivered as `{:ok, _}` — an empty book that reads as a quiet market rather than a
   # parser that has stopped understanding the venue. Both sides unreadable is refused; one
   # side is a real one-sided book and is still returned.
+  #
+  # **Tick R (MD6): `nil` means the venue said there is no order, and nothing else.** A bid or
+  # ask of `0` is no resting order on that side (`nil`). A side that is PRESENT but cannot be
+  # read - a non-number, an empty string, NaN, a negative - refuses the book as
+  # `{:error, {:invalid_decimal, :bid | :ask, value}}`; it used to become `nil`, which
+  # `TopOfBook` reads as "no resting order", a statement the venue never made. A side that is
+  # absent or `null` is `nil`; with BOTH absent the row names no book at all and is refused as
+  # before. (In `get_top_of_book_bulk/3` a refused row is dropped, like any unreadable row:
+  # that symbol is uncovered this cycle and the rest of the batch is unaffected.)
   defp to_top_of_book(symbol, row) do
-    bid = decimal(row["bid"])
-    ask = decimal(row["ask"])
-
-    if is_nil(bid) and is_nil(ask) do
-      {:error, {:missing_required_field, :bid_ask}}
-    else
+    with {:ok, bid} <- book_side(row["bid"], :bid),
+         {:ok, ask} <- book_side(row["ask"], :ask),
+         :ok <- stated_book(row) do
       {:ok,
        %TopOfBook{
          symbol: symbol,
@@ -258,6 +269,25 @@ defmodule DpExchange.Robinhood.Rest do
          provider: :robinhood
        }}
     end
+  end
+
+  defp book_side(nil, _side), do: {:ok, nil}
+
+  defp book_side(raw, side) do
+    case decimal(raw) do
+      nil -> {:error, {:invalid_decimal, side, raw}}
+      price -> side_price(Decimal.compare(price, 0), price, raw, side)
+    end
+  end
+
+  defp side_price(:gt, price, _raw, _side), do: {:ok, price}
+  defp side_price(:eq, _price, _raw, _side), do: {:ok, nil}
+  defp side_price(:lt, _price, raw, side), do: {:error, {:invalid_decimal, side, raw}}
+
+  defp stated_book(row) do
+    if is_nil(row["bid"]) and is_nil(row["ask"]),
+      do: {:error, {:missing_required_field, :bid_ask}},
+      else: :ok
   end
 
   # `V2BestBidAsk` — the schema the venue's own OpenAPI document names for this response —
@@ -1003,8 +1033,9 @@ defmodule DpExchange.Robinhood.Rest do
   here as "do not walk `next`", not as a count this package can ask the venue to cap; pass
   `opts[:cursor]` alongside it to choose which page. Without `opts[:limit]`, every page is
   walked to the end with the same bounded `walk/7` `get_symbols/2` uses, failing closed
-  (`{:error, :too_many_order_pages}`) rather than returning a truncated history as
-  complete.
+  (`{:error, :history_truncated}`, the family's one spelling for a history that could not be
+  read to its end; it was `:too_many_order_pages`) rather than returning a truncated history
+  as complete.
   """
   @spec get_orders(map(), keyword()) ::
           {:ok, [Order.t()]} | {:error, term()} | {:refused, term()}
@@ -1022,7 +1053,7 @@ defmodule DpExchange.Robinhood.Rest do
       if Config.opt(opts, :limit, nil) != nil do
         get_orders_one_page(path, credentials, opts)
       else
-        with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_order_pages) do
+        with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :history_truncated) do
           to_orders(rows)
         end
       end
@@ -1248,7 +1279,10 @@ defmodule DpExchange.Robinhood.Rest do
   `{:error, {:order_unconfirmed, client_order_id, reason}}`, carrying the `client_order_id`
   actually sent (the package-generated one included), so the caller can look the order up
   with `get_order/3` or re-send the SAME id. Our own rate limiter refusing before the first
-  send stays a plain `{:error, reason}`. A 2xx that carries an `id` is a confirmed order even
+  send stays a plain `{:error, reason}`, and so does the venue's 429 on the ONLY attempt.
+  **Every other 4xx the venue answers to the only attempt is `{:refused, _}`** (405, 406,
+  415, 422, 409 and the rest: it received the request and did not act). A 429, or a 4xx, on
+  a RETRY stays unconfirmed. A 2xx that carries an `id` is a confirmed order even
   if a field holds a value this package does not know: the order exists, so it is
   `{:ok, %Order{}}` with that field `nil`.
   """
@@ -1274,10 +1308,17 @@ defmodule DpExchange.Robinhood.Rest do
   # (twice on a blocking limiter), so the count is how a failure is told apart: an error with
   # nothing yet sent is a refusal to send, and an error after a first attempt is an
   # unconfirmed write.
+  # Only a signature that was produced counts: a signing failure sends nothing.
   defp counting(signer, calls) do
     fn ->
-      :atomics.add(calls, 1, 1)
-      signer.()
+      case signer.() do
+        {:ok, _headers} = signed ->
+          :atomics.add(calls, 1, 1)
+          signed
+
+        other ->
+          other
+      end
     end
   end
 
@@ -1307,13 +1348,28 @@ defmodule DpExchange.Robinhood.Rest do
       else: {:refused, order_refusal(reason)}
   end
 
+  # Three answers. Our own limiter refusing before anything was sent, and the venue's 429 on
+  # the ONLY attempt, are plain errors: the order cannot exist. (Every OTHER 4xx on the only
+  # attempt is `{:refused, _}`, handled above: tick R, DV6.) Everything else, and a 429 to a
+  # RETRY (an earlier attempt may have been accepted), is unconfirmed.
   defp confirm_order({:error, reason}, client_order_id, calls, opts) do
     limiter? = limiter_refusal?(reason)
 
-    if limiter? and sent_attempts(calls, opts, true) == 0,
-      do: {:error, reason},
-      else: unconfirmed(client_order_id, reason)
+    cond do
+      limiter? -> limiter_answer(reason, client_order_id, sent_attempts(calls, opts, true))
+      throttled?(reason) and sent_attempts(calls, opts, false) <= 1 -> {:error, reason}
+      true -> unconfirmed(client_order_id, reason)
+    end
   end
+
+  defp limiter_answer(reason, _client_order_id, 0), do: {:error, reason}
+  defp limiter_answer(reason, client_order_id, _sent), do: unconfirmed(client_order_id, reason)
+
+  defp throttled?({:exchange_error, _provider, "Rate limited by the venue" <> _rest}),
+    do: true
+
+  defp throttled?({:exchange_error, _provider, "HTTP 429" <> _rest}), do: true
+  defp throttled?(_reason), do: false
 
   defp limiter_refusal?(
          {:exchange_error, _provider, "Throttled by our own rate limiter" <> _rest}
@@ -1341,7 +1397,7 @@ defmodule DpExchange.Robinhood.Rest do
   **A POST, not a DELETE**, and it takes no account number where every other order call
   does. It sends **no body** (signed as the empty string), as the vendor's own client does.
   The id is one percent-encoded path segment; a blank id is refused as `{:error,
-  {:missing_field, :id}}` rather than sent as `/orders//cancel/`.
+  {:invalid_order_id, id}}` rather than sent as `/orders//cancel/`.
 
   **v2's cancel response is a full `V2CryptoOrder`, decoded the same way `get_order/3` and
   `place_order/3` decode theirs** — confirmed against the vendor's own OpenAPI document,
@@ -1443,8 +1499,10 @@ defmodule DpExchange.Robinhood.Rest do
   # `SymbolFormat` raises on a non-string, and a blank one builds `"symbol": ""`.
   defp order_symbol_field(request) do
     case Map.fetch(request, :symbol) do
+      # An absent symbol is `{:invalid_symbol, nil}` on every venue, exactly as `symbol: nil`
+      # (family tick R, DV2; it was `{:missing_field, :symbol}`).
       :error ->
-        {:error, {:missing_field, :symbol}}
+        {:error, {:invalid_symbol, nil}}
 
       {:ok, symbol} when is_binary(symbol) ->
         if String.trim(symbol) == "", do: {:error, {:invalid_symbol, symbol}}, else: {:ok, symbol}
@@ -1945,7 +2003,13 @@ defmodule DpExchange.Robinhood.Rest do
       {:ok, %{status: status, body: response}} when status in 200..299 ->
         decoded_body(response)
 
-      {:ok, %{status: status, body: response}} when status in [400, 401, 403, 404] ->
+      # **Every 4xx except 429 is the venue's refusal of the request it received** (family
+      # tick R, DV6) - 405, 406, 415, 422 and 409 included, not only the four the error table
+      # lists. `confirm_order/4` decides whether it answered the ONLY attempt (a refusal) or a
+      # RETRY (the earlier attempt may have been accepted: unconfirmed). 429 is the venue
+      # throttling; `Core.HttpClient` turns it into its "Rate limited by the venue" error
+      # before it reaches here, and a 429 that did arrive is a plain error below.
+      {:ok, %{status: status, body: response}} when status in 400..499 and status != 429 ->
         {:refused, refusal(status, response)}
 
       {:ok, %{status: status, body: response}} ->

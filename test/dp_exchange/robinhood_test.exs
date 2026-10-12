@@ -204,6 +204,22 @@ defmodule DpExchange.RobinhoodTest do
       assert MapSet.member?(registered, self())
     end
 
+    test "subscribe([]) schedules and sends no request (DV9)", %{name: name, feed: feed} do
+      plug = fn _conn -> raise "subscribe([]) reached the venue" end
+      {:ok, probe} = Feed.start_link(name: :"#{name}_probe", symbols: [], plug: plug)
+
+      assert :ok = Robinhood.subscribe([], feed: :"#{name}_probe")
+
+      # `:sys.get_state/1` on the poller is a synchronous call, so the cast `subscribe([])`
+      # made has been handled by the time it answers: nothing wanted, nothing in flight.
+      poller = :sys.get_state(probe).poller
+      poller_state = :sys.get_state(poller)
+      assert MapSet.size(poller_state.symbols) == 0
+      assert poller_state.in_flight == nil
+      assert Robinhood.wanted(feed: :"#{name}_probe") == []
+      assert Process.alive?(feed)
+    end
+
     test "subscribe([]) registers the subscriber and polls nothing", %{name: name, feed: feed} do
       assert :ok = Robinhood.subscribe([], feed: name)
 

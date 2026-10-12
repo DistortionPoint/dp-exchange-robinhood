@@ -256,6 +256,95 @@ defmodule DpExchange.Robinhood.OrderWritesTest do
       assert [^id] = sent_ids()
     end
 
+    test "a blocking limiter refusing the first send is plain, a retry refused is unconfirmed" do
+      Config.put_override(:rate_limit_module, RefusingLimiter)
+
+      assert {:error, {:exchange_error, :robinhood, :rate_limit_timeout}} =
+               Rest.place_order(
+                 @credentials,
+                 @market,
+                 opts(
+                   plug: answering(200, ~s({"id":"o"}), self()),
+                   retry_attempts: 3,
+                   rate_limit_blocking: true
+                 )
+               )
+
+      assert sent_ids() == []
+
+      Config.put_override(:rate_limit_module, OnceLimiter)
+
+      assert {:error,
+              {:order_unconfirmed, id, {:exchange_error, :robinhood, :rate_limit_timeout}}} =
+               Rest.place_order(
+                 @credentials,
+                 @market,
+                 opts(
+                   plug: answering(500, "boom", self()),
+                   retry_attempts: 2,
+                   rate_limit_blocking: true
+                 )
+               )
+
+      assert [^id] = sent_ids()
+    end
+
+    test "the venue's 429 on the only attempt is a plain error, and is sent once" do
+      assert {:error, {:exchange_error, :robinhood, text}} =
+               Rest.place_order(
+                 @credentials,
+                 @market,
+                 opts(plug: answering(429, "{}", self()), retry_attempts: 3)
+               )
+
+      assert is_binary(text)
+      assert length(sent_ids()) == 1
+    end
+
+    test "EVERY 4xx but 429 on the only attempt is a refusal (family tick R, DV6)" do
+      for status <- [405, 406, 409, 415, 422] do
+        assert {:refused, {:venue_error, ^status}} =
+                 Rest.place_order(
+                   @credentials,
+                   @market,
+                   opts(plug: answering(status, "{}", self()), retry_attempts: 3)
+                 )
+
+        assert length(sent_ids()) == 1
+      end
+    end
+
+    test "a 429 or a 4xx answering a RETRY is unconfirmed" do
+      for status <- [405, 422] do
+        calls = :counters.new(1, [])
+        me = self()
+
+        plug = fn conn ->
+          :counters.add(calls, 1, 1)
+          {:ok, raw, conn} = Plug.Conn.read_body(conn)
+          send(me, {:sent, conn.request_path, raw})
+          answer = if :counters.get(calls, 1) == 1, do: 500, else: status
+          Plug.Conn.resp(conn, answer, "{}")
+        end
+
+        assert {:error, {:order_unconfirmed, id, reason}} =
+                 Rest.place_order(@credentials, @market, opts(plug: plug, retry_attempts: 2))
+
+        assert reason == {:refused_after_retry, {:venue_error, status}}
+
+        assert [^id, ^id] = sent_ids()
+      end
+    end
+
+    test "a cancel's 4xx other than 429 is a refusal too" do
+      assert {:refused, {:venue_error, 422}} =
+               Rest.cancel_order(@credentials, "o-1",
+                 account_number: "RH-1",
+                 plug: answering(422, "{}", self()),
+                 retry_attempts: 0
+               )
+    end
+
     test "missing or malformed credentials are plain errors and nothing is sent" do
       plug = answering(200, ~s({"id":"o"}), self())
 

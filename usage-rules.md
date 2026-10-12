@@ -225,9 +225,14 @@ documented surface is nine operations in total, and none of the other eight is a
 `{:error, :not_supported}`, and `venue_does_not_serve/0` lists it as the venue's own
 absence, not a gap in this package.
 
-A book whose `bid` AND `ask` are both unreadable (renamed field, empty, `NaN`) is refused as
-`{:error, {:missing_required_field, :bid_ask}}` by `get_top_of_book/2`, and dropped from the
-bulk/feed path — never delivered as an empty book. One readable side is a real one-sided book.
+A `bid` or `ask` of `0` means no resting order on that side (`nil`); an absent or `null`
+side is `nil` too, so one side alone is a real one-sided book. A side that is PRESENT but
+unreadable (an empty string, `NaN`, a non-number, a negative) is refused by
+`get_top_of_book/2` as `{:error, {:invalid_decimal, :bid | :ask, value}}` and never becomes
+`nil`: `nil` means "the venue says there is no order". A row with neither key at all (a
+renamed field) is `{:error, {:missing_required_field, :bid_ask}}`. On the bulk/feed path a
+refused row is dropped (that symbol is uncovered this cycle), never delivered as an empty
+book.
 
 `bid` and `ask` are both real and both still live — through `get_top_of_book/2` and the
 `:top_of_book` poll above. If your code wants "the price," pick one of `bid` or `ask`
@@ -306,7 +311,7 @@ have more than one.
 paginated endpoint (`V2HoldingsResponse`, `V2OrdersResponse`) and return it as `{:ok, _}` —
 a holding or an order past page one was simply not in the reply, indistinguishable from not
 existing. Both now walk every page to the end and fail closed
-(`{:error, :too_many_holdings_pages}` / `{:error, :too_many_order_pages}`) rather than hand
+(`{:error, :too_many_holdings_pages}` / `{:error, :history_truncated}`) rather than hand
 back a truncated list as complete.
 
 `get_orders/2` has one more case: pass `opts[:limit]` to fetch exactly **one** page instead
@@ -403,7 +408,12 @@ attempt may have been accepted) is
 that was actually sent — the one this package generated included. Look the order up with
 `get_order/3`, or re-send with that SAME id; a new id may place a second order. Errors
 decided before anything is sent (validation, missing credentials, our own rate limiter
-refusing the first send) stay plain `{:error, reason}`. A 2xx that carries an `id` is a
+refusing the first send) stay plain `{:error, reason}`, and so does the venue's 429 to the
+ONLY attempt: the order cannot exist. **Every other 4xx the venue answers to the only attempt
+is `{:refused, _}`** (405, 406, 415, 422, 409 and the rest: it received the request and did
+not act; `cancel_order/3` follows the same rule). A 429 or a 4xx answering a retry is
+`:order_unconfirmed` (the reason is `{:refused_after_retry, refusal}` for a 4xx), because the
+earlier attempt may have been accepted. A 2xx that carries an `id` is a
 confirmed order even if a field holds a value this package does not know (an unknown `side`
 or `state`): you get `{:ok, %Order{}}` with that field `nil`; a *read* of such an order
 (`get_order/3`) still refuses it.
@@ -417,8 +427,9 @@ is `{:refused, :not_found}`.
 **`client_order_id` is an idempotency key.** It is generated when you do not supply one, and
 re-sending the same one returns the original order instead of placing a second. If a request's
 response never reached you, retry with the *same* id — the request map's `:client_order_id`
-(read first) or `opts[:client_order_id]` is there for exactly that. A blank or non-string
-value counts as absent and a fresh id is generated.
+(read first) or `opts[:client_order_id]` is there for exactly that. `nil` and `""` count as
+absent and a fresh id is generated; any other value that is not a UUID is
+`{:error, {:invalid_client_order_id, value}}`.
 
 ## Cancelling returns the venue's real state, not an assumed one
 

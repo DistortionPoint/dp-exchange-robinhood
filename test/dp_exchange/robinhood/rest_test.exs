@@ -663,18 +663,35 @@ defmodule DpExchange.Robinhood.RestTest do
                )
     end
 
-    test "NaN on both sides refuses" do
+    test "NaN on both sides refuses, naming the first unreadable side" do
       body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "NaN", "ask" => "Inf"}]}
 
-      assert {:error, {:missing_required_field, :bid_ask}} =
+      assert {:error, {:invalid_decimal, :bid, "NaN"}} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(body),
                  retry_attempts: 0
                )
     end
 
-    test "one readable side is still a real one-sided book" do
-      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "", "ask" => "2"}]}
+    test "a present side that is unreadable or negative refuses, whichever side (MD6)" do
+      for {bid, ask, expected} <- [
+            {"", "2", {:invalid_decimal, :bid, ""}},
+            {"1", "abc", {:invalid_decimal, :ask, "abc"}},
+            {"-1", "2", {:invalid_decimal, :bid, "-1"}},
+            {"1", "-2", {:invalid_decimal, :ask, "-2"}}
+          ] do
+        body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => bid, "ask" => ask}]}
+
+        assert {:error, ^expected} =
+                 Rest.get_top_of_book("BTC-USD", @credentials,
+                   plug: responding(body),
+                   retry_attempts: 0
+                 )
+      end
+    end
+
+    test "one absent side is still a real one-sided book" do
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => nil, "ask" => "2"}]}
 
       assert {:ok, %{bid: nil, ask: ask}} =
                Rest.get_top_of_book("BTC-USD", @credentials,
@@ -683,6 +700,29 @@ defmodule DpExchange.Robinhood.RestTest do
                )
 
       assert Decimal.equal?(ask, Decimal.new(2))
+    end
+
+    test "a bid or ask of 0 means no resting order on that side: nil" do
+      for zero <- ["0", "0.00", 0] do
+        body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => zero, "ask" => "2"}]}
+
+        assert {:ok, %{bid: nil, ask: ask}} =
+                 Rest.get_top_of_book("BTC-USD", @credentials,
+                   plug: responding(body),
+                   retry_attempts: 0
+                 )
+
+        assert Decimal.equal?(ask, Decimal.new(2))
+      end
+
+      # Both sides empty is a legitimately empty book, not a parser that stopped understanding.
+      both = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "0", "ask" => "0"}]}
+
+      assert {:ok, %{bid: nil, ask: nil}} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(both),
+                 retry_attempts: 0
+               )
     end
   end
 
