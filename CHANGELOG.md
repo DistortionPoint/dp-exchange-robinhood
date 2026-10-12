@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.91] - 2026-10-12
+
 - Docs: every public facade function is documented in HexDocs (162 added); docs build is
   warning-free.
 
