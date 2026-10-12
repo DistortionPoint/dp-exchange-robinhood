@@ -48,6 +48,7 @@ defmodule DpExchange.Robinhood.Rest do
 
   @base_url "https://trading.robinhood.com"
   @host "trading.robinhood.com"
+  @loopback_hosts ["localhost", "127.0.0.1", "::1", "[::1]"]
   @trading_pairs_path "/api/v2/crypto/trading/trading_pairs/"
   @accounts_path "/api/v2/crypto/trading/accounts/"
 
@@ -80,9 +81,41 @@ defmodule DpExchange.Robinhood.Rest do
   @tif_names %{gtc: "gtc", day: "gfd", gfw: "gfw", gfm: "gfm"}
   @tif_atoms Map.new(@tif_names, fn {atom, name} -> {name, atom} end)
 
-  @doc "Base URL, overridable for tests."
-  @spec base_url(keyword()) :: String.t()
+  @doc """
+  Base URL, overridable for tests. Every request is signed, so it must be `https` with a
+  host (a loopback host may use `http` for a local stub); anything else is refused before
+  anything is signed, as `{:error, {:insecure_base_url, scheme}}` or `{:error,
+  {:invalid_base_url, :not_a_string}}`.
+  """
+  @spec base_url(keyword()) :: term()
   def base_url(opts), do: Config.opt(opts, :base_url, @base_url)
+
+  # **Every call here is signed, so every call carries `x-api-key` and a live signature.**
+  # `:base_url` is a consumer option (and a `Config` seam), and it was concatenated into the
+  # request URL unchecked: `base_url: "http://..."` sent the api key, the signature and an
+  # order body in cleartext, and a non-string raised inside the caller's process. Fail
+  # closed: the scheme must be `https` with a host. The one exception is a loopback host
+  # (`localhost`, `127.0.0.1`, `::1`) over `http`, which is the documented seam for a local
+  # stub server and never leaves the machine. The refusal names the scheme only, never the
+  # URL: a consumer may have put userinfo in it.
+  defp secure_base_url(opts) do
+    case base_url(opts) do
+      url when is_binary(url) -> check_base_uri(URI.parse(url), url)
+      _not_a_string -> {:error, {:invalid_base_url, :not_a_string}}
+    end
+  end
+
+  # The trailing slash is trimmed because the signed path starts with one: `base <> path`
+  # would send `//api/...` while the signature covers `/api/...`.
+  defp check_base_uri(%URI{scheme: "https", host: host}, url)
+       when is_binary(host) and host != "",
+       do: {:ok, String.trim_trailing(url, "/")}
+
+  defp check_base_uri(%URI{scheme: "http", host: host}, url) when host in @loopback_hosts,
+    do: {:ok, String.trim_trailing(url, "/")}
+
+  defp check_base_uri(%URI{scheme: scheme}, _url),
+    do: {:error, {:insecure_base_url, scheme}}
 
   @doc """
   Best bid and ask for `symbol` — the top of the book, not a traded price.
@@ -640,7 +673,7 @@ defmodule DpExchange.Robinhood.Rest do
   defp cursor_uri(%URI{host: host} = uri, opts) do
     if host in [@host, URI.parse(base_url(opts)).host],
       do: {:ok, uri},
-      else: {:error, {:foreign_next_url, host}}
+      else: {:error, {:foreign_next_url, bounded_raw(host)}}
   end
 
   defp cursor_path("/api/" <> _rest), do: :ok
@@ -1325,7 +1358,10 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, parts} <- normalize_order_request(request),
          {:ok, supplied} <- supplied_client_order_id(request, opts),
          {:ok, account} <- required_account(opts),
-         :ok <- Auth.validate_credentials(credentials) do
+         :ok <- Auth.validate_credentials(credentials),
+         # Checked here as well as in `post/5`: a refusal out of `post/5` would be read by
+         # `confirm_order/4` as a send that may have happened, and nothing has been sent.
+         {:ok, _base} <- secure_base_url(opts) do
       client_order_id = supplied || generate_client_order_id()
       path = "/api/v2/crypto/trading/orders/" <> query_string([{"account_number", account}])
       calls = :atomics.new(1, signed: false)
@@ -1818,7 +1854,8 @@ defmodule DpExchange.Robinhood.Rest do
     end)
   end
 
-  defp unknown_enum(field, value), do: {:error, {:unknown_enum, field, value}}
+  # The venue's value, bounded: it rides an error tuple into every caller's log.
+  defp unknown_enum(field, value), do: {:error, {:unknown_enum, field, bounded_raw(value)}}
 
   # The orders endpoint answers with a page, `{"next": …, "results": [...]}`, and never with a
   # bare order — so, unlike `account_rows/1`, there is no bare-object clause to fall into.
@@ -2021,11 +2058,14 @@ defmodule DpExchange.Robinhood.Rest do
   # signed as `{}` rather than as the empty string the vendor's example signs. `body: nil`
   # is no body: signed as `""` and sent as none, exactly as the vendor's client does.
   defp post(path, body, credentials, opts, wrap \\ &Function.identity/1) do
+    with {:ok, base} <- secure_base_url(opts),
+         do: post_to(base <> path, path, body, credentials, opts, wrap)
+  end
+
+  defp post_to(url, path, body, credentials, opts, wrap) do
     {encoded, wire_body, extra} = post_body(body)
 
     # Signed per attempt, not once: see `signer/6`. `wrap` lets a caller observe each signing.
-    url = base_url(opts) <> path
-
     case HttpClient.request(
            :post,
            url,
@@ -2093,8 +2133,10 @@ defmodule DpExchange.Robinhood.Rest do
   # --- request ------------------------------------------------------------
 
   defp get(path, credentials, opts) do
-    url = base_url(opts) <> path
+    with {:ok, base} <- secure_base_url(opts), do: get_from(base <> path, path, credentials, opts)
+  end
 
+  defp get_from(url, path, credentials, opts) do
     case HttpClient.request(
            :get,
            url,

@@ -20,6 +20,26 @@ defmodule DpExchange.Robinhood.Supervisor do
   alias DpExchange.Robinhood.{Credentials, Feed}
 
   @doc """
+  The child spec for supervising this tree directly, with `opts[:credentials]` wrapped.
+
+  `use Supervisor` generates a `child_spec/1` that stores the raw options as the start
+  argument, and OTP prints that argument (`Start Call:`) in the report it logs whenever the
+  child terminates. A consumer supervising this module directly, rather than through
+  `DpExchange.Robinhood`, would have put the raw api key and private key into their logs.
+  Wrapped here, before the supervisor captures the MFA, exactly as the facade and `Feed` do.
+  """
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts) do
+    opts = Credentials.wrap_opt(opts)
+
+    %{
+      id: Keyword.get(opts, :name, __MODULE__),
+      start: {__MODULE__, :start_link, [opts]},
+      type: :supervisor
+    }
+  end
+
+  @doc """
   Starts this venue's tree: its rate limiter, then its feed (`one_for_one`, so a crashed feed
   restarts without resetting the limiter). Registered as `opts[:name]`, default
   `DpExchange.Robinhood.Supervisor`; the remaining `opts` go to `DpExchange.Robinhood.Feed`,

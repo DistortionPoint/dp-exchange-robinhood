@@ -19,6 +19,17 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Security: signed requests are https only.** A `:base_url` that is not https with a host
+  (loopback may use http for a local stub) answers `{:error, {:insecure_base_url, scheme}}`, or
+  `{:invalid_base_url, :not_a_string}`, before anything is signed; it sent the API key,
+  signature and order body in the clear, and a refused `place_order/3` is a plain error, never
+  `order_unconfirmed`. A trailing `/` on `:base_url` is trimmed so the sent path matches the
+  signed one.
+- **Security: `Supervisor.child_spec/1` wraps `:credentials`**, so a consumer supervising it
+  directly no longer has the raw key in OTP's `Start Call:` crash-report line.
+- **`{:unknown_enum, _, value}` and `{:foreign_next_url, host}` carry a bounded copy** of the
+  venue's text.
+
 ## [0.3.93] - 2026-10-12
 
 - **Docs (`usage-rules.md` checked line by line against the code):** documents the poller
