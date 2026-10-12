@@ -19,6 +19,16 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed -- tick U (test-suite quality)
+
+- Tests only, no behaviour change. The tick T exponent-bound test used values that
+  `Decimal.parse/1` itself refuses (past 6144), so it never reached this package's own
+  +-1000 bound; it now also sends `1E+2000`, `1E-2000` and `1E+1001`, which `Decimal`
+  parses. The two link-telemetry tests now require the emitting poller to descend from the
+  test's own feed (the provider atom alone is shared by every concurrent test). The
+  declared-`:unsupported` sweeps assert they sweep something, and the auth timestamp unit
+  check no longer fails on a one-second scheduling stall.
+
 ## [0.3.88] - 2026-10-12
 
 ### Fixed -- tick T (regression review of tick S, docs vs code, hot path)

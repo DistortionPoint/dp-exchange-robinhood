@@ -1364,16 +1364,18 @@ defmodule DpExchange.Robinhood.FeedTest do
       handler_id = "rh-link-#{System.unique_integer([:positive])}"
       # Core 0.3.61 names the poll's telemetry by its `:provider`, which this feed sets to
       # `:robinhood`, the same atom as its notices. It used to carry the label string
-      # "robinhood". Scoped to the shared atom; safe because the assertion is positive: a
-      # stray event from another concurrent robinhood test satisfies the same properties.
+      # "robinhood". The provider atom is shared by every concurrent robinhood test, so the
+      # handler also requires the emitting process to descend from THIS test (the poller is
+      # started under the feed, which `start_feed/1` links to the test): a stray event from
+      # another test's feed can no longer satisfy the assertions.
       label = :robinhood
 
       :telemetry.attach(
         handler_id,
         [:dp_exchange, :link, :event],
         fn event, measurements, metadata, _config ->
-          # Scoped by provider: `:telemetry` handlers are global to the VM.
-          if metadata.provider == label do
+          # Scoped by provider and by ancestry: `:telemetry` handlers are global to the VM.
+          if metadata.provider == label and test_pid in Process.get(:"$ancestors", []) do
             send(test_pid, {:telemetry, event, measurements, metadata})
           end
         end,
@@ -1402,8 +1404,9 @@ defmodule DpExchange.Robinhood.FeedTest do
         handler_id,
         [:dp_exchange, :link, :up],
         fn event, measurements, metadata, _config ->
-          # Scoped by provider: `:telemetry` handlers are global to the VM.
-          if metadata.provider == :robinhood do
+          # Scoped by provider and by ancestry (the emitting poller descends from this test's
+          # feed): `:telemetry` handlers are global to the VM.
+          if metadata.provider == :robinhood and test_pid in Process.get(:"$ancestors", []) do
             send(test_pid, {:telemetry_up, event, measurements, metadata})
           end
         end,

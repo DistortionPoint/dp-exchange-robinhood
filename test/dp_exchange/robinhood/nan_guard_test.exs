@@ -70,9 +70,11 @@ defmodule DpExchange.Robinhood.NaNGuardTest do
     end
 
     test "an absurd exponent is refused before any compare can allocate for it" do
-      # Finite to `Decimal`, parsed instantly, and a billion-digit integer on the first
-      # `Decimal.compare/2`. Bounded to +-1000 like the other venues' copies.
-      for value <- ["1E+999999999", "1E-999999999"] do
+      # Finite to `Decimal` and a huge integer on the first `Decimal.compare/2`. Bounded to
+      # +-1000 like the other venues' copies. `Decimal.parse/1` itself refuses an exponent past
+      # 6144 (the first pair), so only the second pair, which it DOES parse, exercises this
+      # package's own bound.
+      for value <- ["1E+999999999", "1E-999999999", "1E+2000", "1E-2000", "1E+1001"] do
         assert {:error, {:invalid_decimal, :bid, ^value}} =
                  Rest.get_top_of_book("BTC-USD", @credentials,
                    plug: responding(book(value)),

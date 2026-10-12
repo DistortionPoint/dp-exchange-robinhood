@@ -908,6 +908,9 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert {:error, {:invalid_symbol, " "}} = place(%{market | symbol: " "}, opts)
       assert {:error, {:invalid_side, :hold}} = place(%{market | side: :hold}, opts)
       assert {:error, {:invalid_side, "short"}} = place(%{market | side: "short"}, opts)
+      # An absent side is a missing field (DV2), however it is absent.
+      assert {:error, {:missing_field, :side}} = place(Map.delete(market, :side), opts)
+      assert {:error, {:missing_field, :side}} = place(%{market | side: nil}, opts)
       assert {:error, {:invalid_quantity, 0.5}} = place(%{market | quantity: 0.5}, opts)
       assert {:error, {:invalid_quantity, "0"}} = place(%{market | quantity: "0"}, opts)
     end

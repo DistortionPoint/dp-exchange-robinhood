@@ -125,7 +125,9 @@ defmodule DpExchange.Robinhood.AuthTest do
       assert {:ok, headers} = Auth.headers("GET", "/p", "", @credentials)
 
       timestamp = headers |> header("x-timestamp") |> String.to_integer()
-      assert abs(timestamp - System.system_time(:second)) <= 1
+      # Seconds versus milliseconds differ by a factor of a thousand, so the margin can be
+      # wide: a descheduled test process must not fail this on a loaded machine.
+      assert abs(timestamp - System.system_time(:second)) <= 30
     end
 
     test "the private key never appears in a header value" do

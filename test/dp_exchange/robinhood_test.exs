@@ -19,6 +19,11 @@ defmodule DpExchange.RobinhoodTest do
     end
 
     test "an endpoint declared :unsupported actually returns the atom" do
+      # A sweep over nothing would pass whatever the code did.
+      assert Enum.any?(Robinhood.capabilities().endpoints, fn {_key, level} ->
+               level == :unsupported
+             end)
+
       for {{name, arity}, :unsupported} <- Robinhood.capabilities().endpoints do
         assert apply(Robinhood, name, unsupported_args(name, arity)) == {:error, :not_supported},
                "#{name}/#{arity} is declared :unsupported but did not say so"
@@ -136,6 +141,8 @@ defmodule DpExchange.RobinhoodTest do
     end
 
     test "everything named there is genuinely unsupported" do
+      refute Robinhood.venue_does_not_serve() == []
+
       for endpoint <- Robinhood.venue_does_not_serve() do
         assert Robinhood.capabilities().endpoints[endpoint] == :unsupported
       end
