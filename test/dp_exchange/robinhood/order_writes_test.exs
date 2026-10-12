@@ -314,7 +314,7 @@ defmodule DpExchange.Robinhood.OrderWritesTest do
       end
     end
 
-    test "a 429 or a 4xx answering a RETRY is unconfirmed" do
+    test "a 4xx answering a RETRY is unconfirmed" do
       for status <- [405, 422] do
         calls = :counters.new(1, [])
         me = self()
@@ -422,19 +422,7 @@ defmodule DpExchange.Robinhood.OrderWritesTest do
   end
 
   describe "the facade" do
-    test "every order call and get_order_book take opts \\\\ []" do
-      Code.ensure_loaded!(Robinhood)
-
-      for {name, arity} <- [
-            place_order: 2,
-            cancel_order: 2,
-            get_order: 2,
-            get_orders: 1,
-            get_order_book: 1
-          ] do
-        assert function_exported?(Robinhood, name, arity), "#{name}/#{arity} is missing"
-      end
-
+    test "the order calls answer without an opts argument, and refuse as Rest does" do
       assert Robinhood.get_order_book("BTC-USD") == {:error, :not_supported}
       assert {:error, {:missing_option, :account_number}} = Robinhood.get_orders(@credentials)
       assert {:error, {:invalid_order_id, nil}} = Robinhood.get_order(@credentials, nil)

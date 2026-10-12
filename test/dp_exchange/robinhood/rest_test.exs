@@ -925,16 +925,22 @@ defmodule DpExchange.Robinhood.RestTest do
       assert Process.get(:rate_limiter_call) == :acquire
     end
 
-    test "rate_limit_blocking: false (or omitted) reaches Core.HttpClient as acquire/3 with no wait" do
+    test "rate_limit_blocking: false, nil or omitted reaches Core.HttpClient as acquire/3 with no wait" do
       Config.put_override(:rate_limit_module, RecordingLimiter)
 
-      assert {:ok, _top} =
-               Rest.get_top_of_book("BTC-USD", @credentials,
-                 plug: responding(quote_body()),
-                 retry_attempts: 0
-               )
+      for extra <- [[], [rate_limit_blocking: false], [rate_limit_blocking: nil]] do
+        Process.delete(:rate_limiter_call)
 
-      assert Process.get(:rate_limiter_call) == :acquire_without_waiting
+        assert {:ok, _top} =
+                 Rest.get_top_of_book(
+                   "BTC-USD",
+                   @credentials,
+                   [plug: responding(quote_body()), retry_attempts: 0] ++ extra
+                 )
+
+        assert Process.get(:rate_limiter_call) == :acquire_without_waiting,
+               "with #{inspect(extra)}"
+      end
     end
   end
 

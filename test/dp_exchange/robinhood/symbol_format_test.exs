@@ -25,7 +25,7 @@ defmodule DpExchange.Robinhood.SymbolFormatTest do
       assert "BTC-USD" == SymbolFormat.to_canonical_symbol("btc-usd")
     end
 
-    test "a separatorless form is NOT split, and the moduledoc now says so" do
+    test "a separatorless form is NOT split" do
       # `sep: "-"` means `CanonicalPair` never consults the quote list — it falls back to
       # quote-suffix matching only for `sep: ""`. So `"BTCUSD"` comes back uppercased and
       # unsplit rather than as `"BTC-USD"`.

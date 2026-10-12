@@ -269,6 +269,11 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       # The account's cash follows the holdings — dp-exchange-core issue #35.
       assert Enum.map(balances, & &1.currency) == ["BTC", "ETH", "USD"]
+
+      # Page two was asked for by the cursor the venue named, after page one.
+      assert_receive {:page, "account_number=RH-1"}
+      assert_receive {:page, second_page}
+      assert second_page =~ "cursor=2"
     end
 
     test "an unbounded holdings cursor fails closed rather than returning a truncated list" do
@@ -596,7 +601,8 @@ defmodule DpExchange.Robinhood.TradingTest do
                  )
       end
 
-      assert attempts() == []
+      # Every attempt is sent before `place_order/3` returns, so absence here is exact.
+      refute_received {:attempt, _client_order_id}
     end
 
     test "two separate orders get two different generated keys" do
@@ -644,7 +650,9 @@ defmodule DpExchange.Robinhood.TradingTest do
       refute Map.has_key?(body, "limit_order_config")
     end
 
-    test "a limit order carries its price in its own config" do
+    test "a limit order carries its price and time_in_force in its own config" do
+      # `AddOrderV2.limit_order_config` carries `time_in_force` — a real field, not one
+      # invented here.
       me = self()
 
       assert {:ok, _order} =
@@ -715,36 +723,6 @@ defmodule DpExchange.Robinhood.TradingTest do
                  },
                  account_number: "RH-1"
                )
-    end
-
-    test "a limit order's time_in_force rides in its own config, as the vendor's schema takes it" do
-      # `AddOrderV2.limit_order_config` carries `time_in_force` — a real field, not one
-      # invented here.
-      me = self()
-
-      assert {:ok, _order} =
-               Rest.place_order(
-                 @credentials,
-                 %{
-                   symbol: "BTC-USD",
-                   side: :sell,
-                   order_type: :limit,
-                   quantity: Decimal.new("0.5"),
-                   price: Decimal.new("60000"),
-                   time_in_force: :gtc
-                 },
-                 account_number: "RH-1",
-                 plug: capturing(%{"id" => "o-3"}, me),
-                 retry_attempts: 0
-               )
-
-      assert_receive {:request, "POST", _path, _query, raw}
-
-      assert Jason.decode!(raw)["limit_order_config"] == %{
-               "asset_quantity" => "0.5",
-               "limit_price" => "60000",
-               "time_in_force" => "gtc"
-             }
     end
 
     test "the venue's :day is sent as gfd — that is its own name for it" do
@@ -961,24 +939,6 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert_receive {:request, "POST", _path, _query, raw2}
       assert Jason.decode!(raw2)["client_order_id"] == generated
-    end
-
-    test "two generated ids differ" do
-      me = self()
-      order = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: Decimal.new("1")}
-
-      for _attempt <- 1..2 do
-        assert {:ok, _order} =
-                 Rest.place_order(@credentials, order,
-                   account_number: "RH-1",
-                   plug: capturing(%{"id" => "o"}, me),
-                   retry_attempts: 0
-                 )
-      end
-
-      assert_receive {:request, "POST", _p1, _q1, first}
-      assert_receive {:request, "POST", _p2, _q2, second}
-      assert Jason.decode!(first)["client_order_id"] != Jason.decode!(second)["client_order_id"]
     end
   end
 
@@ -1609,14 +1569,13 @@ defmodule DpExchange.Robinhood.TradingTest do
       # A path is the one thing in an HTTP call that cannot be verified by reading the
       # response: a v1 path still works, and would leave this package on a surface the
       # coverage plan says it has migrated off.
-      source =
-        File.read!(
-          Path.join([__DIR__, "..", "..", "..", "lib"])
-          |> Path.expand()
-          |> Path.join("dp_exchange/robinhood/rest.ex")
-        )
+      # Every source file, not only `rest.ex`: the fake and the facade build paths too.
+      files = Path.wildcard(Path.expand("../../../lib/**/*.ex", __DIR__))
+      assert files != [], "the lib/ tree was not found, so nothing was checked"
 
-      refute source =~ "/api/v1/"
+      for file <- files do
+        refute File.read!(file) =~ "/api/v1/", "#{file} still names a v1 path"
+      end
     end
   end
 

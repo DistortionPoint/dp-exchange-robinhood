@@ -95,13 +95,5 @@ defmodule DpExchange.Robinhood.NaNGuardTest do
       assert is_binary(shown)
       assert byte_size(shown) < 200
     end
-
-    test "what a NaN would have done downstream, stated rather than assumed" do
-      {nan, ""} = Decimal.parse("NaN")
-
-      assert Decimal.nan?(nan)
-      assert nan |> Decimal.add(Decimal.new(1)) |> Decimal.nan?()
-      assert_raise Decimal.Error, fn -> Decimal.compare(nan, Decimal.new(1)) end
-    end
   end
 end

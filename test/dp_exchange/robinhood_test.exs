@@ -189,7 +189,10 @@ defmodule DpExchange.RobinhoodTest do
 
       # No symbols and a long start delay: this asserts routing, not fetching, and a fetch
       # would reach the venue.
-      {:ok, feed} = Feed.start_link(name: name, symbols: [], start_delay_ms: 60_000)
+      #
+      # Supervised by the test, not linked to it: `Feed` traps exits, so a linked feed would
+      # outlive the test that started it.
+      feed = start_supervised!({Feed, name: name, symbols: [], start_delay_ms: 60_000})
 
       {:ok, feed: feed, name: name}
     end
@@ -213,7 +216,11 @@ defmodule DpExchange.RobinhoodTest do
 
     test "subscribe([]) schedules and sends no request (DV9)", %{name: name, feed: feed} do
       plug = fn _conn -> raise "subscribe([]) reached the venue" end
-      {:ok, probe} = Feed.start_link(name: :"#{name}_probe", symbols: [], plug: plug)
+
+      probe =
+        start_supervised!(
+          {Feed, name: :"#{name}_probe", symbols: [], credentials: @credentials, plug: plug}
+        )
 
       assert :ok = Robinhood.subscribe([], feed: :"#{name}_probe")
 
@@ -274,8 +281,12 @@ defmodule DpExchange.RobinhoodTest do
       assert Robinhood.wanted(feed: name) == ["BTC-USD"]
     end
 
-    test "subscribe_notices registers against a running feed", %{name: name} do
+    test "subscribe_notices registers the caller with a feed", %{name: name, feed: feed} do
+      refute MapSet.member?(:sys.get_state(feed).notice_subscribers, self())
+
       assert Robinhood.subscribe_notices(feed: name) == :ok
+
+      assert MapSet.member?(:sys.get_state(feed).notice_subscribers, self())
     end
 
     test "a malformed symbol list is refused and does not crash the feed", %{
@@ -405,21 +416,23 @@ defmodule DpExchange.RobinhoodTest do
       inert_subscriber = spawn(fn -> Process.sleep(:infinity) end)
       on_exit(fn -> Process.exit(inert_subscriber, :kill) end)
 
-      {:ok, _feed} =
-        Feed.start_link(
-          name: name,
-          subscriber: inert_subscriber,
-          credentials: @credentials,
-          symbols: ["BTC-USD"],
-          # A start delay, not 0: the outage notice fires once, on the first failed cycle,
-          # and a feed that polled at once could raise it before the registration below
-          # reached it, which would then never be sent again.
-          start_delay_ms: 300,
-          interval_ms: 40,
-          retry_attempts: 0,
-          limiter: permissive_notice_limiter(),
-          plug: responding_error()
-        )
+      # Supervised by the test: `Feed` traps exits, so a linked feed would keep polling this
+      # failing plug every 40ms for the life of the VM.
+      start_supervised!({
+        Feed,
+        # A start delay, not 0: the outage notice fires once, on the first failed cycle,
+        # and a feed that polled at once could raise it before the registration below
+        # reached it, which would then never be sent again.
+        name: name,
+        subscriber: inert_subscriber,
+        credentials: @credentials,
+        symbols: ["BTC-USD"],
+        start_delay_ms: 300,
+        interval_ms: 40,
+        retry_attempts: 0,
+        limiter: permissive_notice_limiter(),
+        plug: responding_error()
+      })
 
       assert Robinhood.subscribe_notices(to: self(), feed: name) == :ok
 
@@ -460,6 +473,9 @@ defmodule DpExchange.RobinhoodTest do
       on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :shutdown) end)
 
       assert length(Elixir.Supervisor.which_children(pid)) == 2
+      # Each child is registered under the name the options gave it.
+      assert is_pid(Process.whereis(opts[:feed]))
+      assert is_pid(Process.whereis(opts[:limiter]))
     end
 
     test "names default and are overridable" do

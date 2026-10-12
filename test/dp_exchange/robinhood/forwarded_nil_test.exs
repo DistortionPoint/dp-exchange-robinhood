@@ -41,7 +41,14 @@ defmodule DpExchange.Robinhood.ForwardedNilTest do
 
   test "an explicit recipient is still honoured" do
     probe = probe()
-    other = spawn(fn -> Process.sleep(:infinity) end)
+
+    other =
+      spawn_link(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
     Feed.subscribe_notices(probe, to: other)
 
     assert_receive {:probed, {:subscribe_notices, ^other}}, 5_000

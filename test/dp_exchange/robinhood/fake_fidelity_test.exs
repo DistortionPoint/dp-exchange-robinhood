@@ -260,7 +260,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
       assert ids.(updated_at_start: DateTime.to_iso8601(future)) == []
     end
 
-    test "a cancel moves updated_at but not created_at" do
+    test "a cancel keeps created_at and never moves updated_at backwards" do
       assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
       assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
 

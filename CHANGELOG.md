@@ -19,6 +19,12 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Test suite (tick V, every test file read line by line):** feed tests run under
+  `start_supervised!` so no polling feed outlives its test; the linked-poller and
+  credentials-nil tests no longer rest on timing windows; duplicate order tests removed; a test of
+  Decimal's own NaN behaviour and an exports check removed; `rate_limit_blocking` covers `false`
+  and `nil`; holdings pagination asserts its cursor; the v1-path guard scans all of `lib/`.
+
 ## [0.3.89] - 2026-10-12
 
 ### Fixed -- tick U (test-suite quality)

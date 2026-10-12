@@ -905,6 +905,12 @@ defmodule DpExchange.Robinhood.FeedTest do
       feed = start_feed(credentials: nil, interval_ms: 60, plug: plug)
       assert Process.alive?(feed)
 
+      # The poll ran and failed: the outage notice proves cycles happened at all, so the
+      # absences below are about a poll that was refused, not about a poll that never ran.
+      assert_receive {:dp_exchange, :robinhood,
+                      %Notice{kind: :coverage_change, severity: :warning}},
+                     5_000
+
       # Several cycles pass, and none of them reaches the venue or delivers a book: the
       # fetch is refused before anything is signed.
       refute_receive {:request, _symbols}, 500
@@ -1200,9 +1206,15 @@ defmodule DpExchange.Robinhood.FeedTest do
       # `crash_pid`, not the real `poller`, is what gets killed: killing the real one
       # would also be a fine proof, but this isolates the claim under test (does `Feed`
       # survive ANY linked EXIT) from `PollingFeed`'s own shutdown behaviour.
+      crash_ref = Process.monitor(crash_pid)
       ref = Process.monitor(feed)
       Process.exit(crash_pid, :kill)
-      refute_receive {:DOWN, ^ref, :process, ^feed, _reason}, 500
+      assert_receive {:DOWN, ^crash_ref, :process, ^crash_pid, :killed}, 5_000
+
+      # The feed has handled the link's EXIT before this call is answered, so its survival is
+      # observed rather than waited for.
+      _settled = :sys.get_state(feed)
+      refute_received {:DOWN, ^ref, :process, ^feed, _reason}
       assert Process.alive?(feed)
       # The real poller, never touched, is still the one `Feed` is using.
       assert :sys.get_state(feed).poller == poller
@@ -1323,6 +1335,11 @@ defmodule DpExchange.Robinhood.FeedTest do
       dead = spawn(fn -> :ok end)
       ref = Process.monitor(dead)
       assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 5_000
+
+      # The swap orphans the real poller: `terminate/2` only stops the pid in state, and a
+      # linked process ignores a `:normal` exit. Stopped here so it does not outlive the test.
+      orphaned = :sys.get_state(feed).poller
+      on_exit(fn -> Process.exit(orphaned, :kill) end)
 
       :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
 
@@ -1473,7 +1490,7 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
-  describe "found 2026-10-10" do
+  describe "deliveries to nobody wanted" do
     test "a book or refusal for a symbol no longer wanted is dropped, not delivered" do
       # A poll in flight when `update_symbols/2` removed the symbol still answered, and its
       # book reached the subscriber after the removal returned.
@@ -1492,13 +1509,7 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
 
     test "a feed started without :subscriber delivers to nobody, never to itself" do
-      {:ok, feed} =
-        Feed.start_link(
-          name: :"feed_#{System.unique_integer([:positive])}",
-          credentials: @credentials,
-          symbols: ["BTC-USD"],
-          start_delay_ms: 60_000
-        )
+      feed = start_feed(subscriber: nil, symbols: ["BTC-USD"], start_delay_ms: 60_000)
 
       :ok = :sys.statistics(feed, true)
       send(feed, {:dp_exchange, :robinhood, book_for("BTC-USD")})
@@ -1511,8 +1522,6 @@ defmodule DpExchange.Robinhood.FeedTest do
       _settled = :sys.get_state(feed)
       assert {:ok, statistics} = :sys.statistics(feed, :get)
       assert statistics[:messages_in] == 1
-
-      GenServer.stop(feed)
     end
   end
 
