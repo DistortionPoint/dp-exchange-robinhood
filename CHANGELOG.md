@@ -19,6 +19,11 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Docs (`usage-rules.md` checked line by line against the code):** documents the poller
+  crash-loop bound (`{:poller_crash_loop, reason}` after more than 5 crashes in 60s), the
+  `:link_down` notice for an unanswered coverage read, every notice `subscribe_notices/1` receives,
+  and that a fetch task killed from outside no longer kills the poll; README pin updated.
+
 ## [0.3.92] - 2026-10-12
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._

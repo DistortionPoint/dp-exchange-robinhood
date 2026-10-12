@@ -100,8 +100,10 @@ that is not a pid or a registered name (`true` and `false` are not names) answer
 ```
 
 `subscribe_notices/1` registers `opts[:to]` (default: the caller) for this feed's own
-`Core.Notice.t()` traffic — currently the coverage-outage pair fired when this poll starts
-or stops delivering anything at all — and that registration is additive, not exclusive.
+`Core.Notice.t()` traffic — the coverage-outage pair fired when this poll starts or stops
+delivering anything at all, the `:degraded` budget notices described above, and the
+`:link_down` notices below for a poller that crashed or did not answer a coverage read — and
+that registration is additive, not exclusive.
 A monitoring process that never wants a book can register here without displacing whoever
 already gets the quotes:
 
@@ -126,7 +128,12 @@ independently. `Feed` traps exits, so the poller dying abnormally does not take 
 down with it: `coverage/1` and `coverage_by_kind/1` clear (the fresh poller starts with
 nothing delivered yet), you get a `:link_down` `Core.Notice`, and this package restarts
 the poll with the symbols this feed actually had — including any added afterward via
-`update_symbols/2` — without you calling anything again.
+`update_symbols/2` — without you calling anything again. The restart is bounded: more than five poller crashes
+within a minute stop `Feed` with `{:poller_crash_loop, reason}`, handing the loop to the
+supervisor (which restarts it from the static `opts`, as below). A poller that is alive but
+did not answer a `coverage/1` read gives that one read `%{}` and a `:link_down` notice
+(`severity: :warning`); the feed keeps running. A fetch task killed from outside does not
+kill the poll either.
 
 **What still costs you your whole symbol set: `Feed` itself crashing** — a bug outside
 the poller-crash path, or anything that kills the `Feed` pid directly.
@@ -172,7 +179,8 @@ never signed with. This matters because the usual way a credential goes missing 
 hands that back as `""`. Signing with it produced a well-formed request the venue refused
 for a reason naming signatures, which points at the signing code rather than at the
 credential.
- `DpExchange.Robinhood.Fake` — the in-process double
+
+`DpExchange.Robinhood.Fake` — the in-process double
 your own tier-1 tests run against — answers the identical shape for the identical reason,
 on every function that reaches a real endpoint, not only the market-data ones. If your test
 suite pinned the fake's older answer here (`{:refused, :missing_credentials}`, or an
