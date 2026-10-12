@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.90] - 2026-10-12
+
 - **Test suite (tick V, every test file read line by line):** feed tests run under
   `start_supervised!` so no polling feed outlives its test; the linked-poller and
   credentials-nil tests no longer rest on timing windows; duplicate order tests removed; a test of
