@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.95] - 2026-10-13
+
 - **The `Fake`'s order `:state` filter accepted `"failed"` but not `:failed`**, which the real
   filter accepts; both now read as rejected.
 - **`Feed` no longer forwards a malformed `{:dp_exchange, :robinhood, payload}` message** to its
