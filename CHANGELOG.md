@@ -19,6 +19,13 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **The `Fake`'s order `:state` filter accepted `"failed"` but not `:failed`**, which the real
+  filter accepts; both now read as rejected.
+- **`Feed` no longer forwards a malformed `{:dp_exchange, :robinhood, payload}` message** to its
+  subscribers; nothing in the package sends one, and a stray one is ignored.
+- **Tests:** every line the suite never executed was read and either tested, proven dead and
+  removed, or kept as a commented defensive clause.
+
 ## [0.3.94] - 2026-10-12
 
 - **Security: signed requests are https only.** A `:base_url` that is not https with a host

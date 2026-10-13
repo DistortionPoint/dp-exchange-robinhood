@@ -1437,6 +1437,9 @@ defmodule DpExchange.Robinhood.Rest do
   defp throttled?({:exchange_error, _provider, "Rate limited by the venue" <> _rest}),
     do: true
 
+  # Deliberate defence, not a path today: `Core.HttpClient` never hands a 429 back (it is
+  # always "Rate limited by the venue" above), but if it ever did, `post_to/6` would turn it
+  # into this text, and a throttled first send must stay a plain error, not an unconfirmed one.
   defp throttled?({:exchange_error, _provider, "HTTP 429" <> _rest}), do: true
   defp throttled?(_reason), do: false
 
@@ -2085,6 +2088,9 @@ defmodule DpExchange.Robinhood.Rest do
       {:ok, %{status: status, body: response}} when status in 400..499 and status != 429 ->
         {:refused, refusal(status, response)}
 
+      # Deliberate defence, not a path today: `Core.HttpClient` hands back only a 2xx or (with
+      # `raw_status`) a 4xx, and turns a 5xx, a 3xx and a 429 into `{:error, _}` itself. A status
+      # it ever did hand back is a plain error here, never a success and never a refusal.
       {:ok, %{status: status, body: response}} ->
         status_error(status, response)
 
@@ -2311,7 +2317,9 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp decimal(nil), do: nil
   defp decimal(""), do: nil
-  defp decimal(%Decimal{} = value), do: finite(value)
+  # No `%Decimal{}` clause: every caller passes a value out of the venue's JSON (Req's default
+  # decode, which yields integers, floats and strings, never a `Decimal`) or, from
+  # `input_decimal/1`, only a number or a binary. A caller's own `Decimal` is handled there.
   defp decimal(value) when is_integer(value), do: Decimal.new(value)
   defp decimal(value) when is_float(value), do: Decimal.from_float(value)
 

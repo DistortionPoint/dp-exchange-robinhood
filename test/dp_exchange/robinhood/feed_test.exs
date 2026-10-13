@@ -1785,4 +1785,174 @@ defmodule DpExchange.Robinhood.FeedTest do
       end
     end
   end
+
+  describe "a refusal that carries no detail, and the plumbing around it" do
+    # The venue's refusal body is where its reason lives; a 401 or 403 whose body names none is
+    # `{:venue_error, status}` with no third element. It is the same rejected key all the
+    # same, and must end the cycle's requests exactly as one with a detail does.
+    for status <- [401, 403] do
+      test "a bodyless #{status} is not split: one request a cycle, and no symbol is blamed" do
+        test_pid = self()
+
+        plug = fn conn ->
+          send(test_pid, {:request, query_symbols(conn.query_string)})
+
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(unquote(status), Jason.encode!(%{}))
+        end
+
+        start_feed(
+          symbols: ["BTC-USD", "ETH-USD", "LTC-USD"],
+          interval_ms: 60_000,
+          retry_attempts: 0,
+          plug: plug
+        )
+
+        assert_receive {:request, first}, 5_000
+        assert length(first) == 3
+        refute_receive {:request, _split}, 300
+        refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
+      end
+    end
+
+    test "a bodyless 401 on the remembered symbols is not retried per symbol either" do
+      test_pid = self()
+      refuse? = :atomics.new(1, [])
+
+      # Cycle one: the venue names LTC-USD as the bad symbol, so it is remembered. After that
+      # the key is "rotated" and every request is a bodyless 401.
+      plug = fn conn ->
+        symbols = query_symbols(conn.query_string)
+        send(test_pid, {:request, symbols})
+        conn = Plug.Conn.put_resp_content_type(conn, "application/json")
+
+        cond do
+          :atomics.get(refuse?, 1) == 1 ->
+            Plug.Conn.resp(conn, 401, Jason.encode!(%{}))
+
+          "LTC-USD" in symbols and length(symbols) > 1 ->
+            Plug.Conn.resp(conn, 400, Jason.encode!(%{"detail" => "Invalid symbol"}))
+
+          "LTC-USD" in symbols ->
+            :atomics.put(refuse?, 1, 1)
+            Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
+
+          true ->
+            rows = for s <- symbols, do: %{"symbol" => s, "bid" => "1", "ask" => "2"}
+            Plug.Conn.resp(conn, 200, Jason.encode!(%{"results" => rows}))
+        end
+      end
+
+      start_feed(
+        symbols: ["BTC-USD", "ETH-USD", "LTC-USD"],
+        interval_ms: 300,
+        retry_attempts: 0,
+        plug: plug
+      )
+
+      assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 5_000
+
+      # The request that found it out is spent, so a later one for it alone would be new.
+      assert_receive {:request, ["LTC-USD"]}, 5_000
+
+      # From now on every request is a 401. A cycle asks for the two live symbols, is told so,
+      # and does not go on to ask for the remembered one on its own.
+      assert_receive {:request, ["BTC-USD", "ETH-USD"]}, 5_000
+      refute_receive {:request, ["LTC-USD"]}, 600
+    end
+
+    test "a call the feed does not define is answered, not crashed on" do
+      feed = start_feed(start_delay_ms: 60_000)
+
+      assert GenServer.call(feed, :not_a_call) == {:error, :unknown_call}
+      assert Process.alive?(feed)
+    end
+
+    test "a message of the right tag but an unknown payload is ignored, not forwarded" do
+      feed = start_feed(start_delay_ms: 60_000)
+
+      send(feed, {:dp_exchange, :robinhood, :stray})
+
+      # Ordered behind the message above, so the feed has handled it before this returns.
+      _state = :sys.get_state(feed)
+
+      refute_received {:dp_exchange, :robinhood, :stray}
+      assert Process.alive?(feed)
+    end
+
+    test "an :interval_ms the poller refuses stops the feed with the poller's reason" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {:invalid_option, :interval_ms, 0}} =
+               Feed.start_link(
+                 name: :"feed_#{System.unique_integer([:positive])}",
+                 credentials: @credentials,
+                 symbols: ["BTC-USD"],
+                 interval_ms: 0,
+                 start_delay_ms: 60_000
+               )
+    end
+
+    test "an empty first chunk that spent the budget is a failed cycle, and says what was left" do
+      # 250 symbols is three chunks. The first answers 200 with an empty `results` (silence,
+      # not a refusal) and takes longer than the whole `bisect_budget_ms`, so the other two are
+      # never requested. With no event and no error among the outcomes, the only thing the
+      # cycle can say is that it ran out of budget; the skipped symbols are reported.
+      test_pid = self()
+      symbols = for n <- 1..250, do: "S#{n}-USD"
+
+      plug = fn conn ->
+        send(test_pid, {:request, query_symbols(conn.query_string)})
+        Process.sleep(150)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{"results" => []}))
+      end
+
+      start_feed(
+        symbols: symbols,
+        interval_ms: 60_000,
+        retry_attempts: 0,
+        bisect_budget_ms: 100,
+        plug: plug
+      )
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %Notice{kind: :degraded, severity: :warning, details: %{skipped: skipped}}},
+                     5_000
+
+      assert skipped == 150
+      assert_receive {:request, first}, 5_000
+      assert length(first) == Rest.max_bulk_symbols()
+      refute_receive {:request, _skipped_chunk}, 300
+    end
+
+    # The remaining time of the cycle's budget caps a request's own `:timeout`: the smaller of
+    # the two wins, and a caller who set none gets the remainder.
+    for {label, timeout} <- [{"a set", 20_000}, {"no", nil}] do
+      test "a bisected request is capped to the budget left with #{label} :timeout" do
+        start_feed(
+          symbols: ["BTC-USD", "ETH-USD", "LTC-USD", "XRP-USD"],
+          interval_ms: 60_000,
+          retry_attempts: 0,
+          timeout: unquote(timeout),
+          plug: refusing("LTC-USD")
+        )
+
+        assert_receive {:dp_exchange, :robinhood, {:refused, "LTC-USD", _reason}}, 5_000
+
+        arrived =
+          for _n <- 1..3 do
+            assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{} = book},
+                           5_000
+
+            book.symbol
+          end
+
+        assert Enum.sort(arrived) == ["BTC-USD", "ETH-USD", "XRP-USD"]
+      end
+    end
+  end
 end

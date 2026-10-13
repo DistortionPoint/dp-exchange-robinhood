@@ -640,10 +640,9 @@ defmodule DpExchange.Robinhood.Feed do
     end)
   end
 
-  defp no_events([]), do: {:ok, []}
-
   # Every outcome can be `{:events, []}`: a 200 with an empty `results`, which is silence,
-  # not a refusal. That reached `elem(nil, 1)` and crashed the poll.
+  # not a refusal. That reached `elem(nil, 1)` and crashed the poll. No outcomes at all (no
+  # symbols asked for) lands on `{nil, nil, false}` below and is `{:ok, []}`.
   defp no_events(outcomes) do
     error = Enum.find(outcomes, &match?({:error, _reason}, &1))
     refused = Enum.find(outcomes, &match?({:refused, _reason}, &1))
@@ -948,9 +947,11 @@ defmodule DpExchange.Robinhood.Feed do
       else: {:noreply, state}
   end
 
-  def handle_info({:dp_exchange, :robinhood, _payload} = message, state) do
-    {:noreply, deliver(state, message)}
-  end
+  # There is no clause for "any other payload". The three producers (the poller's sink, which
+  # only ever hands over a `TopOfBook`; `on_refusal`; `on_notice`) are all matched above, so a
+  # forwarding clause here was reachable only by a foreign process sending a malformed
+  # message, and would have handed that to every subscriber. It falls to the catch-all below
+  # and is ignored.
 
   # The other half of `init/1`'s `Process.flag(:trap_exit, true)` — see the moduledoc's
   # "A crashed poller used to be Feed's crash too" section. Matching on `state.poller` is
@@ -986,7 +987,9 @@ defmodule DpExchange.Robinhood.Feed do
     :ok
   end
 
-  def terminate(_reason, _state), do: :ok
+  # No fallback clause: `terminate/2` only runs for a feed whose `init/1` succeeded, and that
+  # always left `state.poller` a pid (`init_feed/2` stops before returning a state otherwise;
+  # a failed restart stops with the previous, still-pid, state).
 
   defp restart_poller(state, crashes) do
     case start_poller(state) do

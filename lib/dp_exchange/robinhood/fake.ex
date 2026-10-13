@@ -604,7 +604,9 @@ defmodule DpExchange.Robinhood.Fake do
   # The venue's spelling of a state, as `Rest.order_state_param/1` sends it, back to the
   # contract's status name.
   defp state_name(state) when state in ["canceled", :canceled, :cancelled], do: "cancelled"
-  defp state_name(state) when state in ["failed", :rejected], do: "rejected"
+  # `Rest.filter_state/1` takes `:failed` as well as `:rejected` and `"failed"` for the same
+  # venue state, so all three name the contract's `rejected` here.
+  defp state_name(state) when state in ["failed", :failed, :rejected], do: "rejected"
   defp state_name(state), do: to_string(state)
 
   # An order this process placed. Anything else is an id the fake never issued, which the
