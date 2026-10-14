@@ -19,6 +19,9 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Docs:** `{:error, :feed_timeout}` is documented as "no answer", not "not applied": the request
+  is still applied when the feed reaches it, and the streaming calls are idempotent.
+
 ## [0.3.95] - 2026-10-13
 
 - **The `Fake`'s order `:state` filter accepted `"failed"` but not `:failed`**, which the real

@@ -1001,6 +1001,12 @@ defmodule DpExchange.Robinhood do
   # still raced a `Feed` that died between it and the call, and did nothing for a busy
   # one, so the exit is caught at the call itself. A reply that arrives after a timeout is
   # dropped by OTP's call aliases, so it cannot reach the caller's mailbox later.
+  #
+  # **`{:error, :feed_timeout}` means "no answer", not "not applied".** The request is still
+  # in the feed's mailbox and is applied when the feed reaches it. That is safe here because
+  # every call that comes through this function is idempotent (add, remove and replace of a
+  # symbol set, applied in mailbox order), so a caller who retries after a timeout converges
+  # on the same final set; read `wanted/1` to see what the feed actually holds.
   defp feed_call(call, not_running) do
     call.()
   catch

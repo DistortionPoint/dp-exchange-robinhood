@@ -679,6 +679,11 @@ given as a pid on another node is treated as not running by those three reads. T
 `:feed_timeout` as transient and retry. Treat the other two as a feed your supervision tree
 has to bring back.
 
+**`:feed_timeout` means "no answer", not "not applied".** The request is already in the
+feed's mailbox and is applied when the feed reaches it. Retrying is safe because each of
+these calls is idempotent (add, remove or replace a symbol set, applied in order), and
+`wanted/1` reads back what the feed holds once it answers.
+
 **A symbol list must be a proper list of non-blank strings.** Anything else (a bare string,
 `nil`, an atom, a blank or whitespace-only element) answers `{:error, {:invalid_symbols,
 value}}` from `subscribe/2`, `unsubscribe/2` and `update_symbols/2`, and the feed is left as
