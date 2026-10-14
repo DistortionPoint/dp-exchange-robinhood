@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.98] - 2026-10-14
+
 - **Facade consistency (tick AD part 2)**. Items marked BREAKING change a returned reason:
   - BREAKING: `get_top_of_book`, `quantization` and `get_estimated_price` answer the venue's
     400 `"Invalid symbol: X"` as `{:refused, :not_listed}` (was
