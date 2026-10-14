@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.96] - 2026-10-14
+
 - **Docs:** `{:error, :feed_timeout}` is documented as "no answer", not "not applied": the request
   is still applied when the feed reaches it, and the streaming calls are idempotent.
 
