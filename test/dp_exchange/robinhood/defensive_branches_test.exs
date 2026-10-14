@@ -127,11 +127,38 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
 
       assert byte_size(detail) == 1_024
 
-      assert {:refused, {:venue_error, 400, "Invalid symbol: ALGO-USD"}} =
+      assert {:refused, :not_listed} =
                Rest.get_top_of_book("BTC-USD", @credentials,
                  plug: responding(%{"detail" => "Invalid symbol: ALGO-USD"}, 400),
                  retry_attempts: 0
                )
+    end
+
+    test "the unlisted-symbol 400 is :not_listed on every single-symbol read, and only that" do
+      invalid = responding(%{"detail" => "Invalid symbol: ALGO-USD"}, 400)
+      opts = [retry_attempts: 0]
+
+      assert {:refused, :not_listed} =
+               Rest.quantization("ALGO-USD", @credentials, [plug: invalid] ++ opts)
+
+      assert {:refused, :not_listed} =
+               Rest.get_estimated_price(
+                 "ALGO-USD",
+                 :ask,
+                 "1",
+                 @credentials,
+                 [plug: invalid] ++ opts
+               )
+
+      # Any other refusal keeps the venue's own words.
+      other = responding(%{"detail" => "Something else"}, 400)
+
+      assert {:refused, {:venue_error, 400, "Something else"}} =
+               Rest.get_top_of_book("BTC-USD", @credentials, [plug: other] ++ opts)
+
+      # The poll's bulk path is unchanged: the venue's reason as it came.
+      assert {:refused, {:venue_error, 400, "Invalid symbol: ALGO-USD"}} =
+               Rest.get_top_of_book_bulk(["ALGO-USD"], @credentials, [plug: invalid] ++ opts)
     end
 
     test "a refusal with no readable detail still carries the status" do

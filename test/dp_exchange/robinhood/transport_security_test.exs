@@ -44,7 +44,7 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
 
   describe "an authenticated call never goes out over cleartext HTTP" do
     test "a read with an http:// base_url is refused before anything is signed or sent" do
-      assert {:error, {:insecure_base_url, "http"}} =
+      assert {:error, {:insecure_url, :robinhood}} =
                Rest.get_symbols(@credentials,
                  base_url: "http://trading.example.test",
                  plug: hitting(@pairs, self()),
@@ -54,8 +54,8 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
       refute_received {:hit, _scheme, _path}
     end
 
-    test "a base_url with no scheme is refused, naming the scheme and never the URL" do
-      assert {:error, {:insecure_base_url, nil}} =
+    test "a base_url with no scheme is refused, naming the venue and never the URL" do
+      assert {:error, {:insecure_url, :robinhood}} =
                Rest.get_symbols(@credentials,
                  base_url: "//trading.example.test",
                  plug: hitting(@pairs, self()),
@@ -77,7 +77,7 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
     test "a write to an http:// base_url is a plain refusal, not an unconfirmed order" do
       request = %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "0.5"}
 
-      assert {:error, {:insecure_base_url, "http"}} =
+      assert {:error, {:insecure_url, :robinhood}} =
                Rest.place_order(@credentials, request,
                  account_number: "RH-1",
                  base_url: "http://trading.example.test",
@@ -89,7 +89,7 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
     end
 
     test "a cancel to an http:// base_url is refused before anything is sent" do
-      assert {:error, {:insecure_base_url, "http"}} =
+      assert {:error, {:insecure_url, :robinhood}} =
                Rest.cancel_order(@credentials, "o-1",
                  base_url: "http://trading.example.test",
                  plug: hitting(%{"id" => "o-1"}, self()),

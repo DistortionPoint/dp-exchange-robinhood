@@ -214,14 +214,16 @@ defmodule DpExchange.Robinhood.AuthTest do
 
       for key <- keys do
         credentials = %{api_key: key, private_key: @good_seed}
-        expected = {:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}}
+        expected = {:error, {:invalid_credentials, :robinhood}}
 
         assert Auth.headers("GET", "/p", "", credentials) == expected
         assert Auth.validate_credentials(credentials) == expected
       end
 
       embedded = %{api_key: "ab\ncd", private_key: @good_seed}
-      assert {:error, {:invalid_api_key, _reason}} = Auth.headers("GET", "/p", "", embedded)
+
+      assert {:error, {:invalid_credentials, :robinhood}} =
+               Auth.headers("GET", "/p", "", embedded)
     end
 
     test "a private_key with a trailing newline or surrounding whitespace" do
@@ -229,7 +231,7 @@ defmodule DpExchange.Robinhood.AuthTest do
 
       for seed <- seeds do
         credentials = %{api_key: "k", private_key: seed}
-        expected = {:error, {:invalid_private_key, :surrounding_whitespace_or_control_characters}}
+        expected = {:error, {:invalid_credentials, :robinhood}}
 
         assert Auth.headers("GET", "/p", "", credentials) == expected
         assert Auth.validate_credentials(credentials) == expected

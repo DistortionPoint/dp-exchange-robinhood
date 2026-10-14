@@ -135,6 +135,16 @@ did not answer a `coverage/1` read gives that one read `%{}` and a `:link_down` 
 (`severity: :warning`); the feed keeps running. A fetch task killed from outside does not
 kill the poll either.
 
+**A `:link_down` is closed by a `:link_up`.** The first poll cycle that delivers a book after
+a `:link_down` (a crashed poller or an unanswered coverage read) emits one
+`%Core.Notice{kind: :link_up}` with `details.reason` and `details.symbols` (the wanted set,
+sorted), latched: not once per cycle, and none without a prior `:link_down`.
+
+**A 401 or 403 on the poll is a `:credentials_rejected` notice.** One
+`%Core.Notice{kind: :credentials_rejected}` when a cycle is refused for credentials, latched per
+feed (not one per cycle) and cleared by the next cycle that delivers a book. Coverage is
+unchanged: the symbols simply stop being covered, as before.
+
 **What still costs you your whole symbol set: `Feed` itself crashing** — a bug outside
 the poller-crash path, or anything that kills the `Feed` pid directly.
 `DpExchange.Robinhood.Supervisor` restarts `Feed` under `:one_for_one`, but from the
@@ -204,9 +214,14 @@ Passing the wrong one is refused here with `{:error, {:invalid_private_key, reas
 string nor `nil`; `nil` is a missing key) — rather than producing a
 signature the venue rejects with nothing to explain it. A key or private key with
 surrounding whitespace or a control character, typically a trailing newline from a `.env`
-file, is `{:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}}` (or
-`{:invalid_private_key, ...}` with the same reason). The error names the field, never the
-value.
+file, is `{:error, {:invalid_credentials, :robinhood}}` (it used to be
+`{:invalid_api_key | :invalid_private_key, :surrounding_whitespace_or_control_characters}`).
+The error names the venue, never the field or the value.
+
+A `:base_url` that is not `https` with a host (a loopback host may use `http` for a local
+stub) is refused before anything is signed as `{:error, {:insecure_url, :robinhood}}` (it
+used to be `{:insecure_base_url, scheme}`); a non-string is `{:invalid_base_url,
+:not_a_string}`.
 
 You hold the credentials. A direct call signs one request with them and keeps nothing. The
 supervised poll is the exception: it signs every cycle, so it keeps the credentials you
@@ -490,7 +505,8 @@ no total cash figure, only what is available, so `balance` is never a copy of
 appears only if that list names the account's currency. Each entry must be a non-blank
 string, otherwise `{:error, {:invalid_field, :asset_codes}}` before anything is signed.
 
-This second read can refuse on its own: `{:error, {:account_not_found, account}}` when no
+This second read can refuse on its own: `{:refused, {:account_not_found, account}}` (it was
+`{:error, ...}`, which reads as retryable; the credential does not hold that account) when no
 row from the accounts call matches `opts[:account_number]`, `{:error,
 :unexpected_response_shape}` when the matched row has no readable currency, or `{:error,
 {:missing_required_field, :buying_power}}` when it has no readable amount. A holdings list
@@ -697,3 +713,11 @@ and the estimate call answer `{:error, {:invalid_symbol, value}}` for a symbol t
 string or is blank after trimming, before anything is signed (it used to be
 `{:invalid_field, :symbol}`). The bulk read answers `{:invalid_symbols, value}` for a
 non-list.
+
+**A symbol the venue does not list is `{:refused, :not_listed}`** on the single-symbol reads
+(`get_top_of_book/2`, `quantization/2`, the estimate call), the Fake too. The venue says so as
+a 400 `"Invalid symbol: X"`, which used to come through as
+`{:refused, {:venue_error, 400, "Invalid symbol: X"}}`; every other refusal keeps its
+`{:venue_error, status, detail}`. An empty `results` array is still not a statement and is an
+error. The poll's per-symbol `{:refused, symbol, reason}` message to `subscriber:` still carries
+the venue's own reason.

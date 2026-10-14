@@ -51,10 +51,10 @@ defmodule DpExchange.Robinhood.Auth do
   Returns `{:error, {:missing_credentials, :robinhood}}` rather than signing with a partial
   credential, and `{:error, {:invalid_private_key, reason}}` when the key is not the
   base64 32-byte seed the venue issues — both of which are clearer than the 401 they would
-  otherwise become. A key with surrounding whitespace or a control character (typically a
-  trailing newline from a `.env` file) is `{:error, {:invalid_api_key, reason}}` or
-  `{:error, {:invalid_private_key, reason}}` with `reason` being
-  `:surrounding_whitespace_or_control_characters`. The error names the field, never the value.
+  otherwise become. An api key or private key with surrounding whitespace or a control
+  character (typically a trailing newline from a `.env` file) is
+  `{:error, {:invalid_credentials, :robinhood}}`. The error names the venue, never the field
+  or the value.
 
   Builds the signed string through `payload/5` rather than concatenating a second time
   here — see that function's moduledoc for why a second, hand-kept copy of the same
@@ -122,7 +122,7 @@ defmodule DpExchange.Robinhood.Auth do
 
   defp credential_seed(api_key, private_key) do
     with {:ok, _present} <- present(api_key),
-         :ok <- clean(api_key, :invalid_api_key) do
+         :ok <- clean(api_key) do
       decode_seed(private_key)
     end
   end
@@ -131,12 +131,13 @@ defmodule DpExchange.Robinhood.Auth do
   # newline (or a stray space or tab). `x-api-key` carries the api key verbatim and the
   # signed payload starts with it, so a trailing `\n` is a header value that Req/Mint refuse
   # or a payload the venue does not recompute; the private key would fail as `:not_base64`
-  # with a reason that points at the encoding, not at the whitespace. Refused up front, by
-  # field name. The error carries the field and the reason only, never the value: it is
-  # logged, stored and printed, and this is the secret.
-  defp clean(value, tag) do
+  # with a reason that points at the encoding, not at the whitespace. Refused up front as
+  # the family's one spelling, `{:invalid_credentials, :robinhood}`. The error carries the
+  # venue only, never the value or even which field: it is logged, stored and printed, and
+  # this is the secret.
+  defp clean(value) do
     if String.trim(value) != value or String.match?(value, ~r/[\x00-\x1f\x7f]/),
-      do: {:error, {tag, :surrounding_whitespace_or_control_characters}},
+      do: {:error, {:invalid_credentials, :robinhood}},
       else: :ok
   end
 
@@ -192,7 +193,7 @@ defmodule DpExchange.Robinhood.Auth do
 
   defp decode_seed(private_key) do
     with {:ok, private_key} <- present(private_key),
-         :ok <- clean(private_key, :invalid_private_key) do
+         :ok <- clean(private_key) do
       case Base.decode64(private_key) do
         {:ok, <<seed::binary-size(32)>>} ->
           {:ok, seed}

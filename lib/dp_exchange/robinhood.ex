@@ -828,14 +828,16 @@ defmodule DpExchange.Robinhood do
   `wanted/1` offers. An empty list when the feed is not running.
   """
   @spec wanted(keyword()) :: [Venue.symbol()]
+  @impl true
   def wanted(opts \\ []) do
     feed = feed(opts)
     if alive?(feed), do: feed_read(fn -> Feed.wanted(feed) end, []), else: []
   end
 
   @doc """
-  `coverage/1`, split by kind — required family-wide so consumer tooling can call the
-  same function on every venue, even though this one has nothing to split.
+  `coverage/1`, split by kind — an optional callback in Core, implemented here so consumer
+  tooling can call the same function on every venue that offers it, even though this one
+  has nothing to split.
 
   ## Why this exists even where it cannot find anything
 

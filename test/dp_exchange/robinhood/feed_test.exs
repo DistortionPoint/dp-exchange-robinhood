@@ -1366,6 +1366,91 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  describe "a :link_down is closed by one latched :link_up" do
+    test "a crashed poller's first good poll after the restart emits :link_up" do
+      feed = start_feed()
+      :ok = Feed.subscribe_notices(feed, to: self())
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+
+      # Nothing is down yet: the ordinary first good poll is not a recovery.
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 300
+
+      Process.exit(:sys.get_state(feed).poller, :kill)
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up} = up}, 5_000
+      assert up.details.symbols == ["BTC-USD"]
+      assert Map.has_key?(up.details, :reason)
+
+      # Latched: a further good poll does not repeat it.
+      send(feed, {:poll_result, :ok})
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 300
+    end
+
+    test "an unanswered coverage read is closed by the next good poll" do
+      feed = start_feed()
+      :ok = Feed.subscribe_notices(feed, to: self())
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+
+      orphaned = :sys.get_state(feed).poller
+      on_exit(fn -> Process.exit(orphaned, :kill) end)
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 5_000
+      :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
+
+      assert Feed.coverage(feed) == %{}
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+      assert :sys.get_state(feed).link_down
+
+      send(feed, {:poll_result, :ok})
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 5_000
+      refute :sys.get_state(feed).link_down
+    end
+  end
+
+  describe "a 401/403 poll emits one latched :credentials_rejected" do
+    test "one notice per rejection streak, cleared by a good poll, coverage unchanged" do
+      plug = fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(401, Jason.encode!(%{"detail" => "bad key"}))
+      end
+
+      feed = start_feed(plug: plug)
+      :ok = Feed.subscribe_notices(feed, to: self())
+
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :credentials_rejected} = notice},
+                     5_000
+
+      assert notice.provider == :robinhood
+      assert Feed.coverage(feed) == %{}
+
+      # Latched: a further rejected cycle says nothing new.
+      send(feed, {:poll_result, :credentials_rejected})
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :credentials_rejected}}, 300
+
+      # A good poll clears it, so the next rejection is reported again.
+      send(feed, {:poll_result, :ok})
+      send(feed, {:poll_result, :credentials_rejected})
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :credentials_rejected}}, 5_000
+    end
+
+    test "a 403 is reported the same way" do
+      plug = fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(403, Jason.encode!(%{"detail" => "forbidden"}))
+      end
+
+      feed = start_feed(plug: plug)
+      :ok = Feed.subscribe_notices(feed, to: self())
+
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :credentials_rejected}}, 5_000
+    end
+  end
+
   describe "the link reports itself on the metrics channel too" do
     # This venue holds no socket — its link is the poller — and `Core.PollingFeed` 0.2.8
     # emits `[:dp_exchange, :link, …]` for it. Without that, a fleet dashboard reading those

@@ -372,7 +372,7 @@ defmodule DpExchange.Robinhood.TradingTest do
     test "refuses with account_not_found when no account matches account_number" do
       other_account = fake_account_row(%{"account_number" => "RH-OTHER"})
 
-      assert {:error, {:account_not_found, "RH-1"}} =
+      assert {:refused, {:account_not_found, "RH-1"}} =
                Rest.get_balances(@credentials,
                  account_number: "RH-1",
                  plug: responding_holdings(%{"results" => []}, other_account),

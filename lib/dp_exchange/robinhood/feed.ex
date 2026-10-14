@@ -480,6 +480,10 @@ defmodule DpExchange.Robinhood.Feed do
       # `:degraded` notice per crossing). See `report_budget/2`.
       cycle: 0,
       budget_exhausted: false,
+      # Latches: a `:link_down` is open until the next good poll closes it with a `:link_up`;
+      # `:credentials_rejected` is open until the next good poll. See `{:poll_result, _}`.
+      link_down: false,
+      credentials_rejected: false,
       # Monitor references for pid entries in `notice_subscribers`, so a dead one is dropped
       # rather than walked on every notice for the life of this feed — see the `:DOWN`
       # clause below and `Core.Fanout.watch/2`.
@@ -626,10 +630,27 @@ defmodule DpExchange.Robinhood.Feed do
 
     report_budget(parent, outcomes)
 
-    case for({:events, events} <- outcomes, do: events) |> List.flatten() do
+    events = for({:events, events} <- outcomes, do: events) |> List.flatten()
+    report_result(parent, outcomes, events)
+
+    case events do
       [] -> no_events(outcomes)
       events -> {:ok, events}
     end
+  end
+
+  # Tells the feed whether the cycle was a good one, for the `:link_up` and
+  # `:credentials_rejected` latches. A cycle that was refused for credentials is not good
+  # even when another chunk delivered.
+  defp report_result(parent, outcomes, events) do
+    result =
+      cond do
+        auth_failure?(outcomes) -> :credentials_rejected
+        events != [] -> :ok
+        true -> :silent
+      end
+
+    send(parent, {:poll_result, result})
   end
 
   defp auth_failure?(outcomes) do
@@ -787,7 +808,8 @@ defmodule DpExchange.Robinhood.Feed do
     do: {:reply, {state.refused, state.cycle}, %{state | cycle: state.cycle + 1}}
 
   def handle_call(:coverage, _from, state) do
-    {:reply, poller_coverage(state), state}
+    {coverage, state} = poller_coverage(state)
+    {:reply, coverage, state}
   end
 
   def handle_call({:update_symbols, symbols}, _from, state),
@@ -926,6 +948,42 @@ defmodule DpExchange.Robinhood.Feed do
 
   def handle_info({:poll_budget, _skipped}, state), do: {:noreply, state}
 
+  # One poll cycle's outcome, from `fetch_all/6`.
+  #
+  # `:ok` is a cycle that delivered at least one book and was not refused for credentials:
+  # it closes an open `:link_down` with ONE `:link_up` (latched; `Core.Notice` describes the
+  # two as a pair, and a consumer waiting for recovery otherwise waits forever) and clears
+  # the `:credentials_rejected` latch. `:credentials_rejected` is a 401/403 on the poll: one
+  # notice per rejection streak, not one per cycle. Coverage is unaffected either way.
+  def handle_info({:poll_result, :ok}, state) do
+    if state.link_down do
+      notice =
+        Notice.new(:link_up, :robinhood,
+          severity: :info,
+          message: "poll is answering again",
+          details: %{reason: :poll_recovered, symbols: Enum.sort(state.symbols)}
+        )
+
+      fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+    end
+
+    {:noreply, %{state | link_down: false, credentials_rejected: false}}
+  end
+
+  def handle_info({:poll_result, :credentials_rejected}, state)
+      when state.credentials_rejected == false do
+    notice =
+      Notice.new(:credentials_rejected, :robinhood,
+        message: "the venue rejected this feed's credentials (HTTP 401/403) on a poll",
+        details: %{reason: :poll_rejected, symbols: Enum.sort(state.symbols)}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+    {:noreply, %{state | credentials_rejected: true}}
+  end
+
+  def handle_info({:poll_result, _other}, state), do: {:noreply, state}
+
   def handle_info({:dp_exchange, :robinhood, %Notice{}} = message, state) do
     fan_out(state.notice_subscribers, message)
     {:noreply, state}
@@ -960,6 +1018,7 @@ defmodule DpExchange.Robinhood.Feed do
   # catch-all below and is correctly ignored.
   def handle_info({:EXIT, pid, reason}, %{poller: pid} = state) do
     notify_poller_crashed(state, reason)
+    state = %{state | link_down: true}
     now = System.monotonic_time(:millisecond)
     crashes = [now | Enum.filter(state.poller_crashes, &(&1 > now - @poller_crash_window_ms))]
 
@@ -1031,12 +1090,15 @@ defmodule DpExchange.Robinhood.Feed do
   # failure this family keeps paying for. The notice carries what `%{}` cannot: **"we could
   # not ask" is not "nothing arrived"**, and only the notice tells a consumer which one it
   # is looking at.
+  #
+  # Returns `{coverage, state}`: the state carries the `:link_down` latch that the next good
+  # poll closes with a `:link_up` (see `handle_info({:poll_result, _}, _)`).
   defp poller_coverage(state) do
-    PollingFeed.coverage(state.poller)
+    {PollingFeed.coverage(state.poller), state}
   catch
     :exit, reason ->
       notify_poller_unresponsive(state, reason)
-      %{}
+      {%{}, %{state | link_down: true}}
   end
 
   # The counterpart to `notify_poller_crashed/2`: that one reports a poller that died, this
@@ -1049,7 +1111,7 @@ defmodule DpExchange.Robinhood.Feed do
         message:
           "poll did not answer a coverage read (#{inspect(reason)}) — reporting no " <>
             "coverage for this read only; the feed is still running",
-        details: %{reason: inspect(reason)}
+        details: %{reason: :poll_unresponsive}
       )
 
     fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
@@ -1064,7 +1126,7 @@ defmodule DpExchange.Robinhood.Feed do
       Notice.new(:link_down, :robinhood,
         severity: :warning,
         message: "poll crashed (#{inspect(reason)}) — restarting now",
-        details: %{reason: inspect(reason)}
+        details: %{reason: :poll_crashed}
       )
 
     fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})

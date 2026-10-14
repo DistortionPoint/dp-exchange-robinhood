@@ -538,7 +538,7 @@ defmodule DpExchange.RobinhoodTest do
       # An account the fake does not hold is refused as `Rest.get_balances/2` refuses one
       # `get_accounts/2` does not list — not answered with someone's portfolio.
       assert Fake.get_balances(@credentials, account_number: "RH-2") ==
-               {:error, {:account_not_found, "RH-2"}}
+               {:refused, {:account_not_found, "RH-2"}}
 
       assert {:ok, _accounts} = Fake.get_accounts(@credentials, [])
       assert {:ok, placed} = Fake.place_order(@credentials, @order, account)
@@ -714,10 +714,12 @@ defmodule DpExchange.RobinhoodTest do
 
     test "an unlisted symbol is refused, and subscribing to one pushes only that refusal" do
       assert Fake.get_top_of_book("NOPE-USD", credentials: @credentials) ==
-               {:refused, {:venue_error, 400, "Invalid symbol: NOPE-USD"}}
+               {:refused, :not_listed}
 
       :ok = Fake.subscribe(["NOPE-USD"])
       assert Fake.coverage() == %{}
+      # `wanted/1` includes the refused symbol; `coverage/1` never does.
+      assert Fake.wanted() == ["NOPE-USD"]
       # `Fake.subscribe/2` sends synchronously from this process, so anything it was going to
       # push is already in the mailbox; a timed wait would only add a clock to the check.
       # The real feed reports the venue's refusal; the fake does the same, and nothing else.

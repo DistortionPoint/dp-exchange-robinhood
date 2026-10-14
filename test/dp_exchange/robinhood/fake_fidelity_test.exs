@@ -196,10 +196,9 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     end
 
     test "quantization refuses an unlisted symbol instead of inventing increments" do
-      # The real venue's measured answer for an unlisted symbol, not an invented
-      # `:not_listed` the real package never returns.
+      # The real package maps the venue's 400 "Invalid symbol: X" to `:not_listed`.
       assert Fake.quantization("NOPE-USD", credentials: @credentials) ==
-               {:refused, {:venue_error, 400, "Invalid symbol: NOPE-USD"}}
+               {:refused, :not_listed}
 
       assert {:ok, _quantum} = Fake.quantization("btc-usd", credentials: @credentials)
     end
@@ -391,10 +390,10 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
       assert {:ok, nil} = Rest.supplied_client_order_id(@order, client_order_id: "")
     end
 
-    test "credentials with a trailing newline are refused by field name" do
+    test "credentials with a trailing newline are refused as invalid_credentials" do
       bad = %{@credentials | api_key: "k\n"}
 
-      assert {:error, {:invalid_api_key, :surrounding_whitespace_or_control_characters}} =
+      assert {:error, {:invalid_credentials, :robinhood}} =
                Fake.place_order(bad, @order, @account)
     end
   end

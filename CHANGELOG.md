@@ -19,6 +19,25 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Facade consistency (tick AD part 2)**. Items marked BREAKING change a returned reason:
+  - BREAKING: `get_top_of_book`, `quantization` and `get_estimated_price` answer the venue's
+    400 `"Invalid symbol: X"` as `{:refused, :not_listed}` (was
+    `{:refused, {:venue_error, 400, "Invalid symbol: X"}}`); the Fake answers the same. The
+    poll's per-symbol refusal message keeps the venue's reason.
+  - BREAKING: `get_balances` for an account the credential does not hold is
+    `{:refused, {:account_not_found, account}}` (was `{:error, ...}`, retryable by contract);
+    the Fake too.
+  - BREAKING: a credential with surrounding whitespace or control characters is
+    `{:error, {:invalid_credentials, :robinhood}}` (was
+    `{:invalid_api_key | :invalid_private_key, :surrounding_whitespace_or_control_characters}`).
+  - BREAKING: a plaintext `:base_url` is `{:error, {:insecure_url, :robinhood}}` (was
+    `{:insecure_base_url, scheme}`).
+  - `Feed` emits one latched `:link_up` on the first good poll after a `:link_down` (crashed
+    poller or unanswered coverage read), and one latched `:credentials_rejected` notice on a
+    401/403 poll, cleared by the next good poll. Coverage is unchanged.
+  - `Fake.wanted/1` mirrors the facade's. `coverage_by_kind/1`'s doc no longer calls it
+    "required family-wide" (Core lists it optional).
+
 ## [0.3.97] - 2026-10-14
 
 - **Decoders refuse hostile and malformed venue payloads (tick AC)**, each with a test in

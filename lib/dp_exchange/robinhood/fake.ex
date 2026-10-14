@@ -78,7 +78,7 @@ defmodule DpExchange.Robinhood.Fake do
 
   # The one account the fake holds. `get_balances/2` answers only for it, as
   # `Rest.get_balances/2` answers only for an account `get_accounts/2` lists and otherwise
-  # returns `{:account_not_found, account}`. Accepting any number let a consumer that
+  # refuses `{:refused, {:account_not_found, account}}`. Accepting any number let a consumer that
   # passed the wrong account see a portfolio here and a refusal against the venue.
   @account_number "RH-1"
 
@@ -188,13 +188,16 @@ defmodule DpExchange.Robinhood.Fake do
     end
   end
 
-  # The venue's own answer for a symbol it does not list, as `Rest` delivers it: a 400 whose
-  # detail names the symbol, measured live (DpCryptoManagement issue #25:
-  # `{:venue_error, 400, "Invalid symbol: ALGO-USD"}`). This fake answered
-  # `{:refused, :not_listed}`, a shape the real package never returns — see `Rest`'s
-  # `result_for/2` comment — so a consumer matching on it passed here and never matched there.
-  defp unlisted(canonical),
-    do: {:refused, {:venue_error, 400, "Invalid symbol: " <> canonical}}
+  # The answer for a symbol the venue does not list, as `Rest`'s single-symbol reads deliver
+  # it: the venue's 400 `"Invalid symbol: X"` (measured live, DpCryptoManagement issue #25)
+  # is `{:refused, :not_listed}`, the family's one spelling. The per-symbol refusal a
+  # `subscribe/2` stream delivers keeps the venue's own words — see `stream_refusal/2`.
+  defp unlisted(_canonical), do: {:refused, :not_listed}
+
+  # What the real feed's refusal channel carries for an unlisted symbol: the venue's 400
+  # detail, unmapped (`Feed` reports the venue's reason as it came).
+  defp stream_refusal({:refused, :not_listed}, symbol),
+    do: {:venue_error, 400, "Invalid symbol: " <> SymbolFormat.to_canonical_symbol(symbol)}
 
   @doc """
   The fake's three symbols, sorted. Requires `opts[:credentials]`.
@@ -280,8 +283,8 @@ defmodule DpExchange.Robinhood.Fake do
   @doc """
   One BTC holding plus the account's USD cash, for the single account `RH-1`.
 
-  `opts[:account_number]` is required and any other account is `{:account_not_found, account}`,
-  as on the real venue. `opts[:asset_codes]` narrows the result.
+  `opts[:account_number]` is required and any other account is
+  `{:refused, {:account_not_found, account}}`, as on the real venue. `opts[:asset_codes]` narrows the result.
   See `c:DpExchange.Core.Venue.get_balances/2`.
   """
   @impl true
@@ -672,7 +675,7 @@ defmodule DpExchange.Robinhood.Fake do
   # After credentials, as in `Rest.get_balances/2`: the lookup needs the signed
   # `get_accounts/2` reply before it can say an account is not there.
   defp held_account(@account_number), do: :ok
-  defp held_account(account), do: {:error, {:account_not_found, account}}
+  defp held_account(account), do: {:refused, {:account_not_found, account}}
 
   # v2 takes the account number where v1 took none. A fake that answered without it would
   # let a v1 habit pass here and fail against the venue.
@@ -887,7 +890,7 @@ defmodule DpExchange.Robinhood.Fake do
     # symbols. Neither has any purpose if `subscribe/2` already replaces — you would
     # just subscribe the new list. Two callbacks the contract distinguishes,
     # implemented as one function, is the tell.
-    Process.put(@wanted_key, MapSet.union(wanted(), MapSet.new(symbols)))
+    Process.put(@wanted_key, MapSet.union(wanted_set(), MapSet.new(symbols)))
 
     :ok
   end
@@ -899,7 +902,7 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def unsubscribe(symbols, _opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
-      Process.put(@wanted_key, MapSet.difference(wanted(), MapSet.new(symbols)))
+      Process.put(@wanted_key, MapSet.difference(wanted_set(), MapSet.new(symbols)))
       Process.put(@delivered_key, MapSet.difference(delivered(), MapSet.new(symbols)))
       :ok
     end
@@ -916,7 +919,7 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def update_symbols(symbols, _opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols) do
-      added = Enum.reject(symbols, &MapSet.member?(wanted(), &1))
+      added = Enum.reject(symbols, &MapSet.member?(wanted_set(), &1))
       Process.put(@wanted_key, MapSet.new(symbols))
       Process.put(@delivered_key, MapSet.intersection(delivered(), MapSet.new(symbols)))
       deliver(added)
@@ -939,13 +942,23 @@ defmodule DpExchange.Robinhood.Fake do
   `coverage/1`, split by kind. Same single-key shape as the real venue, and for the
   same reason: `get_top_of_book/2` above is this fake's only source of subscription
   data and it produces exclusively `Types.TopOfBook`, so `:top_of_book` is the only
-  kind there is to report — see `DpExchange.Robinhood.coverage_by_kind/1` for why the
-  family requires this callback even where a venue has nothing to split.
+  kind there is to report — see `DpExchange.Robinhood.coverage_by_kind/1` for why this
+  venue offers the callback even where it has nothing to split.
   """
   @impl true
   @spec coverage_by_kind(keyword()) ::
           %{Capabilities.data_kind() => %{Venue.symbol() => Venue.route()}}
   def coverage_by_kind(opts \\ []), do: %{top_of_book: coverage(opts)}
+
+  @doc """
+  What has been asked for, which is not what `coverage/1` reports: the symbols
+  `subscribe/2`, `unsubscribe/2` and `update_symbols/2` left in the wanted set, sorted. The
+  same as the real facade's `wanted/1`; it includes a symbol this fake refuses, which
+  `coverage/1` never does.
+  """
+  @spec wanted(keyword()) :: [Venue.symbol()]
+  @impl true
+  def wanted(_opts \\ []), do: Enum.sort(wanted_set())
 
   @doc """
   Answers `:ok` for a registration of `opts[:to]` against this venue's own notices. The real
@@ -971,7 +984,7 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
-  defp wanted, do: Process.get(@wanted_key, MapSet.new())
+  defp wanted_set, do: Process.get(@wanted_key, MapSet.new())
   defp delivered, do: Process.get(@delivered_key, MapSet.new())
   defp subscribers, do: Process.get(@subscribers_key, MapSet.new())
 
@@ -991,7 +1004,8 @@ defmodule DpExchange.Robinhood.Fake do
             Enum.each(recipients, &send(&1, {:dp_exchange, :robinhood, book}))
             Process.put(@delivered_key, MapSet.put(delivered(), symbol))
 
-          {:refused, reason} ->
+          {:refused, _reason} = refused ->
+            reason = stream_refusal(refused, symbol)
             refusal = {:dp_exchange, :robinhood, {:refused, symbol, reason}}
             Enum.each(recipients, &send(&1, refusal))
         end

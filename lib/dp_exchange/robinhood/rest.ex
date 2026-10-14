@@ -84,7 +84,8 @@ defmodule DpExchange.Robinhood.Rest do
   @doc """
   Base URL, overridable for tests. Every request is signed, so it must be `https` with a
   host (a loopback host may use `http` for a local stub); anything else is refused before
-  anything is signed, as `{:error, {:insecure_base_url, scheme}}` or `{:error,
+  anything is signed, as `{:error, {:insecure_url, :robinhood}}` (the scheme is not
+  echoed: the URL may carry userinfo) or `{:error,
   {:invalid_base_url, :not_a_string}}`.
   """
   @spec base_url(keyword()) :: term()
@@ -114,8 +115,8 @@ defmodule DpExchange.Robinhood.Rest do
   defp check_base_uri(%URI{scheme: "http", host: host}, url) when host in @loopback_hosts,
     do: {:ok, String.trim_trailing(url, "/")}
 
-  defp check_base_uri(%URI{scheme: scheme}, _url),
-    do: {:error, {:insecure_base_url, scheme}}
+  defp check_base_uri(%URI{}, _url),
+    do: {:error, {:insecure_url, :robinhood}}
 
   @doc """
   Best bid and ask for `symbol` — the top of the book, not a traded price.
@@ -148,12 +149,24 @@ defmodule DpExchange.Robinhood.Rest do
       # symbol like `"BTC-USD&symbol=ETH-USD"` smuggled a second parameter into a SIGNED path.
       path = "/api/v2/crypto/marketdata/best_bid_ask/" <> query_string([{"symbol", native}])
 
-      with {:ok, body} <- get(path, credentials, opts),
+      with {:ok, body} <- unlisted_symbol(get(path, credentials, opts)),
            {:ok, row} <- result_for(body, native) do
         to_top_of_book(SymbolFormat.to_canonical_symbol(native), row)
       end
     end
   end
+
+  # **The venue's 400 `"Invalid symbol: X"` on a single-symbol read is
+  # `{:refused, :not_listed}`**, the family's one spelling of "this venue does not list that
+  # symbol". Only that exact
+  # statement: every other refusal keeps the venue's own `{:venue_error, status, detail}`.
+  # (An empty `results` array is not a statement and stays an error -- see `result_for/2`.)
+  # Applies to the single-symbol reads only; the bulk poll's per-symbol refusal channel
+  # reports the venue's reason as it came.
+  defp unlisted_symbol({:refused, {:venue_error, 400, "Invalid symbol" <> _rest}}),
+    do: {:refused, :not_listed}
+
+  defp unlisted_symbol(other), do: other
 
   @doc """
   Best bid and ask for every symbol in `symbols` — **one signed request**, not one per
@@ -519,7 +532,7 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, native} <- native_symbol(symbol) do
       path = @trading_pairs_path <> query_string([{"symbol", native}])
 
-      with {:ok, body} <- get(path, credentials, opts),
+      with {:ok, body} <- unlisted_symbol(get(path, credentials, opts)),
            {:ok, row} <- result_for(body, native) do
         to_quantization(row)
       end
@@ -845,8 +858,8 @@ defmodule DpExchange.Robinhood.Rest do
   row is included only if that list names the account's currency.
 
   This second call can refuse on its own, on top of every way the holdings call can:
-  `{:error, {:account_not_found, account}}` when no row in `get_accounts/2`'s reply matches
-  `account_number`, or `{:error, :unexpected_response_shape}` / `{:error,
+  `{:refused, {:account_not_found, account}}` when no row in `get_accounts/2`'s reply matches
+  `account_number` (a refusal, not a retryable error: the credential does not hold it), or `{:error, :unexpected_response_shape}` / `{:error,
   {:missing_required_field, :buying_power}}` when the matched row has no readable currency
   or amount. Answering without the cash row would be the zero-dollar answer this exists to
   stop, so a holdings list that decoded cleanly still refuses if the account's cash cannot
@@ -927,7 +940,7 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp account_row(rows, account) do
     case Enum.find(rows, &match?(%{"account_number" => ^account}, &1)) do
-      nil -> {:error, {:account_not_found, account}}
+      nil -> {:refused, {:account_not_found, account}}
       row -> {:ok, row}
     end
   end
@@ -1039,7 +1052,7 @@ defmodule DpExchange.Robinhood.Rest do
          {:ok, side} <- estimate_side(side),
          {:ok, quantity} <- quantity_param(quantity),
          path = estimate_path(native, side, quantity),
-         {:ok, body} <- get(path, credentials, opts) do
+         {:ok, body} <- unlisted_symbol(get(path, credentials, opts)) do
       estimate_body(body)
     end
   end
@@ -2301,8 +2314,8 @@ defmodule DpExchange.Robinhood.Rest do
   # a body, handled by `refusal/2` below on the HTTP status rather than on the shape of a
   # 200, and carried as `{:refused, {:venue_error, status, detail}}`. Those genuine
   # statements (e.g. `{:venue_error, 400, "Invalid symbol: ALGO-USD"}`) were the other 27
-  # of the 83 and are unaffected by this. (`DpExchange.Robinhood.Fake` answers an unlisted
-  # symbol with that same `{:venue_error, 400, "Invalid symbol: ..."}` shape.)
+  # of the 83. On the single-symbol reads that 400 is now `{:refused, :not_listed}` (see
+  # `unlisted_symbol/1`); `DpExchange.Robinhood.Fake` answers an unlisted symbol the same way.
   #
   # The row is the one naming the symbol asked for, not merely the first. Both callers
   # label the answer with the REQUESTED symbol, so a reordered or unfiltered `results`
