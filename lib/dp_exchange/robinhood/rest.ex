@@ -430,28 +430,43 @@ defmodule DpExchange.Robinhood.Rest do
   # `:tradable`. The field being ABSENT (not `false`) is unmeasured, not a negative: this
   # venue did not say, and the row is kept exactly as it was before this field existed to
   # this package.
+  #
+  # **A blank symbol is no symbol.** `"symbol": ""` (or whitespace) used to be published as a
+  # catalogue entry, `""`, which no call can ask about and every consumer then keys on.
   defp row_symbol(%{"symbol" => symbol, "is_api_tradable" => false}) when is_binary(symbol),
     do: []
 
-  defp row_symbol(%{"symbol" => symbol}) when is_binary(symbol), do: [symbol]
+  defp row_symbol(%{"symbol" => symbol}) when is_binary(symbol),
+    do: if(String.trim(symbol) == "", do: [], else: [symbol])
+
   defp row_symbol(_row), do: []
 
   # `list_instruments/2`'s own row filter — deliberately NOT `row_symbol/1`, which also
   # excludes an `is_api_tradable: false` row for `get_symbols/2`'s purpose. This callback
   # keeps that row (see `row_symbol/1`'s comment) and only needs to know a usable symbol is
   # present at all.
-  defp has_symbol?(%{"symbol" => symbol}) when is_binary(symbol), do: true
+  defp has_symbol?(%{"symbol" => symbol}) when is_binary(symbol),
+    do: String.trim(symbol) != ""
+
   defp has_symbol?(_row), do: false
 
   defp to_instrument(row) do
     Instrument.new(
       symbol: SymbolFormat.to_canonical_symbol(row["symbol"]),
-      base: row["asset_code"],
-      quote: row["quote_code"],
+      base: code_or_nil(row["asset_code"]),
+      quote: code_or_nil(row["quote_code"]),
       instrument: :spot,
       status: instrument_status(row)
     )
   end
+
+  # `Core.Instrument`'s `base` and `quote` are `String.t() | nil`. A code that is a number, a
+  # map or a blank string is not one, and used to ride into the struct as sent.
+  defp code_or_nil(code) when is_binary(code) do
+    if String.trim(code) == "", do: nil, else: code
+  end
+
+  defp code_or_nil(_not_a_code), do: nil
 
   # `is_api_tradable` is what actually gates whether this package's own v2 endpoints
   # (`best_bid_ask`, `estimated_price`, `orders`) will accept the symbol at all —
@@ -518,8 +533,8 @@ defmodule DpExchange.Robinhood.Rest do
   # as `nil` (the other is real); both unreadable means the parser has stopped understanding
   # the row, and is refused.
   defp to_quantization(row) do
-    price_increment = decimal(row["quote_increment"])
-    quantity_increment = decimal(row["asset_increment"])
+    price_increment = positive_decimal(row["quote_increment"])
+    quantity_increment = positive_decimal(row["asset_increment"])
 
     if is_nil(price_increment) and is_nil(quantity_increment) do
       {:error, {:missing_required_field, :increments}}
@@ -530,10 +545,30 @@ defmodule DpExchange.Robinhood.Rest do
          quantity_increment: quantity_increment,
          # The schema names no unit minimum — see the moduledoc above.
          min_quantity: nil,
-         max_quantity: decimal(row["max_order_size"]),
-         min_quote_size: decimal(row["min_order_amount"]),
-         status: row["status"]
+         max_quantity: positive_decimal(row["max_order_size"]),
+         min_quote_size: non_negative_decimal(row["min_order_amount"]),
+         status: if(is_binary(row["status"]), do: row["status"])
        }}
+    end
+  end
+
+  # **A rounding rule or a size bound is a positive number, or it is not stated.** An
+  # increment of `0` is a division by zero for the first caller that rounds to it, a negative
+  # one rounds the wrong way, and a `max_order_size` of `-5` or `0` is a bound nothing can
+  # satisfy. All of them decoded as the number the venue sent; each is `nil` ("unreadable")
+  # here, the same as `NaN` or an empty string.
+  defp positive_decimal(raw) do
+    case decimal(raw) do
+      %Decimal{} = value -> if Decimal.positive?(value), do: value
+      nil -> nil
+    end
+  end
+
+  # A cash minimum may honestly be zero ("no minimum"); it may not be negative.
+  defp non_negative_decimal(raw) do
+    case decimal(raw) do
+      %Decimal{} = value -> if Decimal.negative?(value), do: nil, else: value
+      nil -> nil
     end
   end
 
@@ -639,7 +674,8 @@ defmodule DpExchange.Robinhood.Rest do
   # which is what the venue's cursors actually name when a test or proxy overrides the base).
   defp next_path(%{"next" => next}, opts) when is_binary(next) and next != "" do
     with {:ok, %URI{path: path, query: query}} <- cursor_uri(URI.parse(next), opts),
-         :ok <- cursor_path(path) do
+         :ok <- cursor_path(path),
+         :ok <- cursor_query(query) do
       {:ok, if(query, do: path <> "?" <> query, else: path)}
     end
   end
@@ -647,6 +683,20 @@ defmodule DpExchange.Robinhood.Rest do
   defp next_path(%{"next" => next}, _opts) when next in [nil, ""], do: {:ok, nil}
   defp next_path(%{"next" => _unreadable}, _opts), do: {:error, :unexpected_response_shape}
   defp next_path(_no_next_key, _opts), do: {:ok, nil}
+
+  # The query is the cursor, and it goes into a SIGNED request line. It is printable ASCII
+  # with no whitespace, within 2 KB, or it is not one this package will put on the wire: a
+  # space, a control character or a megabyte of text is the venue's bug (or a hostile reply),
+  # not a page to follow.
+  @max_cursor_query 2_048
+
+  defp cursor_query(nil), do: :ok
+
+  defp cursor_query(query) do
+    if byte_size(query) <= @max_cursor_query and String.match?(query, ~r/\A[\x21-\x7E]*\z/),
+      do: :ok,
+      else: {:error, :unexpected_response_shape}
+  end
 
   # **A cursor continues THE SAME endpoint.** A `next` naming `/api/` somewhere else (holdings
   # from an orders walk, say) used to be followed, and its rows were decoded as the wrong
@@ -706,9 +756,22 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, body} <- get(@accounts_path, credentials, opts),
          {:ok, rows} <- account_rows(body),
          {:ok, more} <- remaining_account_rows(body, credentials, opts) do
-      {:ok, rows ++ more}
+      all_accounts(rows ++ more)
     end
   end
+
+  # `[map()]` is the contract, and an account is a row that NAMES one (as the bare-object
+  # clause of `account_rows/1` already requires). A number, a string or an object with no
+  # account number is not an account, and was handed to the caller inside `{:ok, accounts}`
+  # for it to raise on, or to pass an absent number on to every account-scoped call.
+  defp all_accounts(rows) do
+    if Enum.all?(rows, &named_account?/1),
+      do: {:ok, rows},
+      else: {:error, :unexpected_response_shape}
+  end
+
+  defp named_account?(%{"account_number" => number}), do: is_binary(number) and number != ""
+  defp named_account?(_row), do: false
 
   defp remaining_account_rows(body, credentials, opts) do
     case next_page(body, @accounts_path, opts) do
@@ -1024,22 +1087,53 @@ defmodule DpExchange.Robinhood.Rest do
 
   @estimate_numbers ~w(quantity bid ask fee_ratio est_fee est_total_cost est_total_credit)
 
-  defp estimate_body(%{"results" => rows} = body) when is_list(rows),
-    do: {:ok, %{body | "results" => Enum.map(rows, &estimate_row/1)}}
+  # `V2EstimatedPriceResponse` is `{"results": [...]}`. A body with no `results` list (`{}`, an
+  # error-shaped `{"detail": ...}` answered with a 200, `"results": "x"`) used to be handed back
+  # as the estimate, a success that estimates nothing. `null` is an empty page, as elsewhere.
+  defp estimate_body(%{"results" => rows} = body) when is_list(rows) do
+    with {:ok, decoded} <- estimate_rows(rows), do: {:ok, %{body | "results" => decoded}}
+  end
 
-  defp estimate_body(%{} = body), do: {:ok, body}
+  defp estimate_body(%{"results" => nil} = body), do: {:ok, body}
   defp estimate_body(_other), do: {:error, :unexpected_response_shape}
 
+  defp estimate_rows(rows) do
+    rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+      case estimate_row(row) do
+        {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  # A numeric field that is present must be a number. A JSON number becomes a `Decimal`; a
+  # string that parses as a finite number is carried as sent; anything else (`"abc"`, `"NaN"`,
+  # `true`, a list) is `{:error, {:invalid_decimal, key, value}}` rather than a price a caller
+  # reads. `null` and an absent key are left as they are: nothing was said.
   defp estimate_row(row) when is_map(row) do
-    Enum.reduce(@estimate_numbers, row, fn key, acc ->
-      case acc do
-        %{^key => value} when is_number(value) -> Map.put(acc, key, decimal(value))
-        _other -> acc
+    Enum.reduce_while(@estimate_numbers, {:ok, row}, fn key, {:ok, acc} ->
+      case estimate_number(Map.get(acc, key)) do
+        :absent -> {:cont, {:ok, acc}}
+        {:ok, value} -> {:cont, {:ok, Map.put(acc, key, value)}}
+        :error -> {:halt, {:error, {:invalid_decimal, key, bounded_raw(Map.get(acc, key))}}}
       end
     end)
   end
 
-  defp estimate_row(other), do: other
+  defp estimate_row(other), do: {:ok, other}
+
+  defp estimate_number(nil), do: :absent
+  defp estimate_number(value) when is_number(value), do: {:ok, decimal(value)}
+
+  defp estimate_number(value) when is_binary(value),
+    do: if(decimal(value) == nil, do: :error, else: {:ok, value})
+
+  defp estimate_number(_other), do: :error
 
   # A quantity or price this package is about to put on the wire: a positive, finite number
   # in full notation, never scientific -- `1.0e-4` is not a quantity this venue reads, and a
@@ -1107,10 +1201,9 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, [Order.t()]} | {:error, term()} | {:refused, term()}
   def get_orders(credentials, opts) do
     with {:ok, account} <- required_account(opts),
-         {:ok, filters} <- order_filters(opts) do
-      query =
-        ([{"account_number", account}] ++ filters)
-        |> put_query("cursor", Keyword.get(opts, :cursor))
+         {:ok, filters} <- order_filters(opts),
+         {:ok, cursor} <- cursor_param(Keyword.get(opts, :cursor)) do
+      query = ([{"account_number", account}] ++ filters) |> put_query("cursor", cursor)
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
 
@@ -1125,6 +1218,17 @@ defmodule DpExchange.Robinhood.Rest do
       end
     end
   end
+
+  # A cursor is the venue's own opaque text, so the only thing a caller can hand back is a
+  # non-blank string. It went through `to_string/1`, which raises on a map or a tuple inside
+  # the caller's process and turned a number into text the venue never issued.
+  defp cursor_param(nil), do: {:ok, nil}
+
+  defp cursor_param(cursor) when is_binary(cursor) do
+    if String.trim(cursor) == "", do: {:error, {:invalid_field, :cursor}}, else: {:ok, cursor}
+  end
+
+  defp cursor_param(_other), do: {:error, {:invalid_field, :cursor}}
 
   defp get_orders_one_page(path, credentials, opts) do
     with {:ok, body} <- get(path, credentials, opts),
@@ -2266,9 +2370,16 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp refusal(status, body) do
     case refusal_body(body) do
-      %{"detail" => detail} when is_binary(detail) -> {:venue_error, status, cap(detail)}
-      %{"errors" => [%{"detail" => detail} | _rest]} -> {:venue_error, status, cap(detail)}
-      _other -> {:venue_error, status}
+      %{"detail" => detail} when is_binary(detail) ->
+        {:venue_error, status, cap(detail)}
+
+      # A detail that is not text (a list, an object) is not a reason: it used to ride into
+      # the error tuple whole, however large, and into every log that printed it.
+      %{"errors" => [%{"detail" => detail} | _rest]} when is_binary(detail) ->
+        {:venue_error, status, cap(detail)}
+
+      _other ->
+        {:venue_error, status}
     end
   end
 

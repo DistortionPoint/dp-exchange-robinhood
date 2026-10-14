@@ -19,6 +19,31 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Decoders refuse hostile and malformed venue payloads (tick AC)**, each with a test in
+  `decoder_robustness_test.exs`:
+  - `get_symbols/2` and `list_instruments/2` drop a row whose `symbol` is blank; an empty
+    string was published as a catalogue entry. `list_instruments/2` carries `asset_code` and
+    `quote_code` only when they are non-blank text, else `nil` (a number or object was carried
+    into `Core.Instrument` as sent).
+  - `quantization/3`: a zero or negative `quote_increment`, `asset_increment` or
+    `max_order_size`, and a negative `min_order_amount`, is `nil` (unreadable) rather than the
+    number sent; both increments unusable is `{:missing_required_field, :increments}`. A
+    `status` that is not text is `nil`.
+  - Error bodies: an `errors[0].detail` that is not text is no longer carried into
+    `{:venue_error, status, detail}` (it was, however large); the answer is
+    `{:venue_error, status}`.
+  - `get_accounts/2` refuses a row that is not an object or names no `account_number`
+    (`{:error, :unexpected_response_shape}`); they were returned inside `{:ok, accounts}`.
+  - `get_orders/2`: a `:cursor` that is not a non-blank string is
+    `{:error, {:invalid_field, :cursor}}`; a map or tuple raised in `to_string/1` in the
+    caller's process. The `Fake` already refused every cursor with the same answer.
+  - A `next` cursor whose query holds whitespace, a control character or more than 2 KB is
+    refused (`:unexpected_response_shape`) instead of being put on a signed request line.
+  - `get_estimated_price/5`: a body with no `results` list (`{}`, an error-shaped 200,
+    `"results": "x"`) is `:unexpected_response_shape` rather than an estimate; a numeric field
+    that is present and not a number (`"abc"`, `"NaN"`, `true`, a list) is
+    `{:invalid_decimal, key, value}`.
+
 ## [0.3.96] - 2026-10-14
 
 - **Docs:** `{:error, :feed_timeout}` is documented as "no answer", not "not applied": the request

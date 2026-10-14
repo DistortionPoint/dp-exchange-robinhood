@@ -459,7 +459,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                  "both",
                  [Decimal.new("0.1"), Decimal.new("1"), Decimal.new("10")],
                  @credentials,
-                 plug: capturing(%{}, me),
+                 plug: capturing(%{"results" => []}, me),
                  retry_attempts: 0
                )
 
@@ -476,7 +476,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                  "ask",
                  Decimal.new("0.00000001"),
                  @credentials,
-                 plug: capturing(%{}, me),
+                 plug: capturing(%{"results" => []}, me),
                  retry_attempts: 0
                )
 
@@ -1524,7 +1524,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                  "ask",
                  "0.1",
                  @credentials,
-                 base ++ [plug: responding(%{})]
+                 base ++ [plug: responding(%{"results" => []})]
                )
     end
   end
