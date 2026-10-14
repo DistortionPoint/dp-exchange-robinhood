@@ -8,6 +8,13 @@ defmodule DpExchange.RobinhoodContractTest do
     fake: DpExchange.Robinhood.Fake,
     symbol_format: DpExchange.Robinhood.SymbolFormat,
     sample_pairs: ~w(BTC-USD ETH-USD DOGE-USD),
+    # Conformance group 41 (family reasons, 2026-10-14): a well-formed symbol the fake does
+    # not list, and a credentials map whose first value carries a trailing newline.
+    unlisted_symbol: "NOPE-USD",
+    padded_credentials: %{
+      api_key: "test-key\n",
+      private_key: Base.encode64(:binary.copy(<<1>>, 32))
+    },
     credentials: %{api_key: "test-key", private_key: Base.encode64(:binary.copy(<<1>>, 32))},
     # The options this venue's own endpoints require before its fake will answer at all.
     #
