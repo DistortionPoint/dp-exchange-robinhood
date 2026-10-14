@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.99] - 2026-10-14
+
 ### Added
 
 - The conformance suite runs Core's group 41 (family reasons) with `unlisted_symbol:` and
