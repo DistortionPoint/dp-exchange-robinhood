@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.97] - 2026-10-14
+
 - **Decoders refuse hostile and malformed venue payloads (tick AC)**, each with a test in
   `decoder_robustness_test.exs`:
   - `get_symbols/2` and `list_instruments/2` drop a row whose `symbol` is blank; an empty
