@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.101] - 2026-10-15
+
 - **Fake/real parity, input-validation parity and decoder edge cases (tick AF).**
   - `Fake.get_estimated_price/5` added. The facade's one public function outside the
     behaviour had no fake, so a consumer swapping the fake in got an undefined function. It
