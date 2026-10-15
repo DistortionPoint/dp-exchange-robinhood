@@ -19,6 +19,38 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Fake/real parity, input-validation parity and decoder edge cases (tick AF).**
+  - `Fake.get_estimated_price/5` added. The facade's one public function outside the
+    behaviour had no fake, so a consumer swapping the fake in got an undefined function. It
+    refuses what `Rest.get_estimated_price/5` refuses, in the same order (symbol, side,
+    quantity, credentials; an unlisted symbol is `{:refused, :not_listed}`) through the new
+    `Rest.estimate_request/3`, and answers only fields it can state (no fees).
+  - `get_orders/2` validated `:limit` nowhere: `0`, `-1`, `1.5` and `"ten"` all meant "one
+    page". It must now be a positive integer (or absent or `nil`), otherwise
+    `{:error, {:invalid_field, :limit}}` before anything is signed, in `Rest` and in
+    `Fake.get_orders/2` (`Rest.validate_limit/1`).
+  - **Behaviour change: reads refuse a plausible-but-wrong decode.**
+    `get_order/3`, `get_orders/2` and `cancel_order/3` answer
+    `{:error, {:invalid_decimal, field, value}}` for a present amount that is unreadable or on
+    the wrong side of zero (size, `price`, `stop_price` not positive; filled size, average
+    price, fee negative). They used to decode it as `nil` or as a negative `Decimal`. The
+    answer to `place_order/3` is unchanged (the order exists).
+  - **Behaviour change: duplicates are refused.** A history listing an order id twice is
+    `{:error, {:duplicate_order_id, id}}`; two holdings for one asset
+    `{:error, {:duplicate_asset, code}}`; two accounts with one number
+    `{:error, {:duplicate_account, number}}`; a pair listed twice with different meanings
+    `{:error, {:duplicate_symbol, symbol}}` from `list_instruments/2` (an identical repeat is
+    one entry). `get_symbols/2` lists each pair once.
+  - **Behaviour change:** a top of book with the bid above the ask is
+    `{:error, {:crossed_book, bid, ask}}` (the poll drops that symbol for the cycle). An
+    estimate row carrying a negative number is `{:invalid_decimal, key, value}`, and a row
+    that is not an object refuses the whole answer as `{:error, :unexpected_response_shape}`
+    (it was carried as sent). An improper quantity list (`[1 | 2]`) is
+    `{:invalid_field, :quantity}`; it raised.
+  - No `Process.send_after` exists in this package (the poll's timers live in
+    `Core.PollingFeed`), so there is no stale-timer finding here.
+  - Tests: `test/dp_exchange/robinhood/parity_edge_cases_test.exs`.
+
 ## [0.3.100] - 2026-10-15
 
 - **`dp_exchange_core` floor raised to `~> 0.3.95` (tick AE).** The old floor predated `wanted/1`

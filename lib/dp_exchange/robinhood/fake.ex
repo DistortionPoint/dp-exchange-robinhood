@@ -21,6 +21,9 @@ defmodule DpExchange.Robinhood.Fake do
   - **Coverage is `:internal_poll`, not `:stream`** — the one place a consumer can see that
     this venue has no socket, and it shows up as *what is arriving*, never as *how*.
   - **No candles, no order book, no volume.** The venue serves none, so neither does this.
+  - **`get_estimated_price/5`, the facade's one function outside the behaviour, is here
+    too**, so a consumer calling it through a configured fake is not left with an undefined
+    function. It refuses what the real path refuses and answers fewer fields, see its doc.
   - **`subscribe/2` honours `:to`** (default the calling process), as the real facade does:
     the pid is registered and receives the books. A `:to` that is not a pid or a registered
     name is `{:error, {:invalid_subscriber, to}}`, checked after the symbol list
@@ -198,6 +201,51 @@ defmodule DpExchange.Robinhood.Fake do
   # detail, unmapped (`Feed` reports the venue's reason as it came).
   defp stream_refusal({:refused, :not_listed}, symbol),
     do: {:venue_error, 400, "Invalid symbol: " <> SymbolFormat.to_canonical_symbol(symbol)}
+
+  @doc """
+  A fixed execution estimate for a listed symbol, from memory: one row per quantity, each
+  carrying `symbol`, the requested `side`, `quantity`, the fixed book's `bid` and `ask` and
+  its `timestamp`, the numbers as `Decimal`.
+
+  Refused as `DpExchange.Robinhood.get_estimated_price/5` refuses, in its order: a symbol
+  that is not a non-blank string `{:error, {:invalid_symbol, value}}`, a side outside
+  `bid`/`ask`/`both` `{:error, {:unsupported_side, value}}`, a quantity that is not a
+  positive finite number `{:error, {:invalid_field, :quantity}}`, then missing credentials;
+  a symbol outside the fake's three is `{:refused, :not_listed}`.
+
+  **Less capable than the venue, on purpose.** It states no `fee_ratio`, `est_fee`,
+  `est_total_cost` or `est_total_credit`: the fake has no fee schedule, and a figure it made
+  up would be one the venue never stated. It does not model what the venue answers for
+  `side: "both"` (unmeasured); the row's `side` is the one asked for.
+  """
+  @spec get_estimated_price(
+          String.t(),
+          atom() | String.t(),
+          Decimal.t() | number() | String.t() | [Decimal.t() | number() | String.t()],
+          map(),
+          keyword()
+        ) :: {:ok, map()} | {:error, term()} | {:refused, term()}
+  def get_estimated_price(symbol, side, quantity, credentials, _opts \\ []) do
+    with_injection(symbol, fn ->
+      with {:ok, request} <- Rest.estimate_request(symbol, side, quantity),
+           :ok <- authenticated_credentials(credentials),
+           {:ok, book} <- listed_book(symbol) do
+        rows = Enum.map(request.quantities, &estimate_row(book, request.side, &1))
+        {:ok, %{"results" => rows}}
+      end
+    end)
+  end
+
+  defp estimate_row(book, side, quantity) do
+    %{
+      "symbol" => book.symbol,
+      "side" => side,
+      "quantity" => Decimal.new(quantity),
+      "timestamp" => DateTime.to_iso8601(@at),
+      "bid" => book.bid,
+      "ask" => book.ask
+    }
+  end
 
   @doc """
   The fake's three symbols, sorted. Requires `opts[:credentials]`.
@@ -551,6 +599,7 @@ defmodule DpExchange.Robinhood.Fake do
       with {:ok, _account} <- fake_account(opts),
            :ok <- Rest.validate_order_filters(opts),
            :ok <- fake_cursor(Keyword.get(opts, :cursor)),
+           :ok <- Rest.validate_limit(opts),
            :ok <- authenticated_credentials(credentials) do
         placed = @orders_key |> Process.get(%{}) |> Map.values() |> Enum.sort_by(& &1.id)
         {:ok, Enum.filter(placed, &order_matches?(&1, opts))}

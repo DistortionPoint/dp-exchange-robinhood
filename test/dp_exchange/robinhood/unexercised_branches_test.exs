@@ -153,10 +153,10 @@ defmodule DpExchange.Robinhood.UnexercisedBranchesTest do
   end
 
   describe "Rest.get_estimated_price/5: rows that are not objects" do
-    test "are carried as sent, beside the rows that are decoded" do
+    test "refuse the whole answer, rather than riding beside the rows that decode" do
       body = %{"results" => [7, %{"symbol" => "BTC-USD", "ask" => 1.5}]}
 
-      assert {:ok, %{"results" => [7, row]}} =
+      assert {:error, :unexpected_response_shape} =
                Rest.get_estimated_price(
                  "BTC-USD",
                  :ask,
@@ -164,8 +164,6 @@ defmodule DpExchange.Robinhood.UnexercisedBranchesTest do
                  @credentials,
                  rest_opts(plug: responding(body))
                )
-
-      assert Decimal.equal?(row["ask"], Decimal.from_float(1.5))
     end
   end
 

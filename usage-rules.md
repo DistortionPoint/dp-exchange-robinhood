@@ -343,7 +343,22 @@ back a truncated list as complete.
 of walking. This venue's `GET orders` endpoint takes no `limit` query parameter at all, so
 `opts[:limit]` is not sent to the venue and does not cap how many rows come back — it only
 decides whether this package walks `next` or stops after the page it already has. Pair it
-with `opts[:cursor]` to choose which page.
+with `opts[:cursor]` to choose which page. It must be a positive integer (or absent or `nil`):
+anything else is `{:error, {:invalid_field, :limit}}` before anything is signed, from the
+real path and the Fake alike (it used to mean "one page" whatever it held).
+
+**A read refuses what it cannot read rather than returning a plausible value.** An order id
+listed twice in one history is `{:error, {:duplicate_order_id, id}}`; a holding listed twice
+is `{:error, {:duplicate_asset, code}}` and an account number listed twice
+`{:error, {:duplicate_account, number}}` (a consumer summing them would count one twice). A
+pair listed twice with different meanings in `list_instruments/1` is
+`{:error, {:duplicate_symbol, symbol}}` (an identical repeat is one entry, and
+`get_symbols/1` lists each pair once). A present order amount that is unreadable, or on the
+wrong side of zero (size and prices not positive; filled size, average price or fee
+negative), is `{:error, {:invalid_decimal, field, value}}` on `get_order/3`, `get_orders/2`
+and `cancel_order/3` (the answer to `place_order/3` describes an order that exists and is
+not refused for it). A top of book whose bid is above its ask is
+`{:error, {:crossed_book, bid, ask}}`; the poll drops that symbol for the cycle.
 
 The filters it sends are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
 `:updated_at_end`, `:symbol`, `:side`, `:type` and `:state`. `:state` takes the venue's own
@@ -365,7 +380,12 @@ measured.
 ## Two prices, and the one that accounts for size
 
 - `get_top_of_book/2` — the top of the book, as the venue publishes it
-- `get_estimated_price/4` — what a **given quantity** would execute at now
+- `get_estimated_price/5` (`symbol, side, quantity, credentials, opts`) — what a **given
+  quantity** would execute at now. `DpExchange.Robinhood.Fake` has it too and refuses what
+  the real path refuses (symbol, side, quantity, then credentials), answering only the
+  fields it can honestly state (no fees). A negative number in the venue's reply is refused
+  as `{:invalid_decimal, key, value}`, and so is a result row that is not an object
+  (`{:error, :unexpected_response_shape}`)
 
 There is no third. `get_price/2` is `:unsupported` — see above.
 

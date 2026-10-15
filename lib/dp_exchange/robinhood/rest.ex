@@ -133,7 +133,8 @@ defmodule DpExchange.Robinhood.Rest do
   **`nil` on a side means the venue says there is no order there.** A `bid` or `ask` of `0`
   is that, and so is an absent or `null` side. A side that is present but unreadable (empty
   string, NaN, non-number, negative) is `{:error, {:invalid_decimal, :bid | :ask, value}}`;
-  neither key at all is `{:error, {:missing_required_field, :bid_ask}}`.
+  neither key at all is `{:error, {:missing_required_field, :bid_ask}}`. A bid above the ask
+  is `{:error, {:crossed_book, bid, ask}}`.
 
   One symbol, one signed request. See `get_top_of_book_bulk/3` for the repeatable-`symbol`
   form this endpoint also serves, which `Feed` uses for every poll. `Feed` never falls back to
@@ -331,7 +332,8 @@ defmodule DpExchange.Robinhood.Rest do
   defp to_top_of_book(symbol, row) do
     with {:ok, bid} <- book_side(row["bid"], :bid),
          {:ok, ask} <- book_side(row["ask"], :ask),
-         :ok <- stated_book(row) do
+         :ok <- stated_book(row),
+         :ok <- uncrossed_book(bid, ask) do
       {:ok,
        %TopOfBook{
          symbol: symbol,
@@ -366,6 +368,17 @@ defmodule DpExchange.Robinhood.Rest do
   defp bounded_raw(raw) when is_binary(raw) and byte_size(raw) <= 64, do: raw
   defp bounded_raw(raw) when is_number(raw), do: raw
   defp bounded_raw(raw), do: inspect(raw, limit: 10, printable_limit: 64)
+
+  # A bid above the ask is two prices that cannot both be the top of one book (a swapped pair
+  # of fields, a stale side). Delivered, it reads as an arbitrage no venue offers; refused,
+  # the symbol is simply uncovered this cycle. Equal sides (a locked book) are left alone.
+  defp uncrossed_book(%Decimal{} = bid, %Decimal{} = ask) do
+    if Decimal.gt?(bid, ask),
+      do: {:error, {:crossed_book, bounded_raw(to_string(bid)), bounded_raw(to_string(ask))}},
+      else: :ok
+  end
+
+  defp uncrossed_book(_bid, _ask), do: :ok
 
   defp stated_book(row) do
     if is_nil(row["bid"]) and is_nil(row["ask"]),
@@ -402,10 +415,13 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, [String.t()]} | {:error, term()} | {:refused, term()}
   def get_symbols(credentials, opts) do
     with {:ok, rows} <- walk_trading_pairs(credentials, opts) do
+      # `Enum.uniq/1` after canonicalising: a pair the venue lists twice (or spells in two
+      # cases) is one catalogue entry, not two for a consumer to key on.
       {:ok,
        rows
        |> Enum.flat_map(&row_symbol/1)
        |> Enum.map(&SymbolFormat.to_canonical_symbol/1)
+       |> Enum.uniq()
        |> Enum.sort()}
     end
   end
@@ -423,10 +439,22 @@ defmodule DpExchange.Robinhood.Rest do
           {:ok, [Instrument.t()]} | {:error, term()} | {:refused, term()}
   def list_instruments(credentials, opts) do
     with {:ok, rows} <- walk_trading_pairs(credentials, opts) do
-      {:ok,
-       rows
-       |> Enum.filter(&has_symbol?/1)
-       |> Enum.map(&to_instrument/1)}
+      rows
+      |> Enum.filter(&has_symbol?/1)
+      |> Enum.map(&to_instrument/1)
+      |> distinct_instruments()
+    end
+  end
+
+  # A pair listed twice with the same meaning is one instrument. Listed twice with DIFFERENT
+  # meanings (two statuses, two bases) it is a catalogue this package cannot read, and is
+  # refused rather than resolved by picking whichever row came first.
+  defp distinct_instruments(instruments) do
+    unique = Enum.uniq(instruments)
+
+    case unique -- Enum.uniq_by(unique, & &1.symbol) do
+      [] -> {:ok, unique}
+      [%{symbol: symbol} | _rest] -> {:error, {:duplicate_symbol, symbol}}
     end
   end
 
@@ -783,8 +811,23 @@ defmodule DpExchange.Robinhood.Rest do
   # for it to raise on, or to pass an absent number on to every account-scoped call.
   defp all_accounts(rows) do
     if Enum.all?(rows, &named_account?/1),
-      do: {:ok, rows},
+      do: distinct_accounts(rows),
       else: {:error, :unexpected_response_shape}
+  end
+
+  # An account number names one account. Listed twice, `account_row/2` would pick whichever
+  # came first and the caller could not tell which figures it was handed.
+  defp distinct_accounts(rows) do
+    duplicate =
+      rows
+      |> Enum.map(& &1["account_number"])
+      |> Enum.frequencies()
+      |> Enum.find_value(fn {number, count} -> if count > 1, do: number end)
+
+    case duplicate do
+      nil -> {:ok, rows}
+      number -> {:error, {:duplicate_account, number}}
+    end
   end
 
   defp named_account?(%{"account_number" => number}), do: is_binary(number) and number != ""
@@ -1007,8 +1050,20 @@ defmodule DpExchange.Robinhood.Rest do
       end
     end)
     |> case do
-      {:ok, balances} -> {:ok, Enum.reverse(balances)}
+      {:ok, balances} -> distinct_assets(Enum.reverse(balances))
       error -> error
+    end
+  end
+
+  # One row per asset. A holding listed twice (an overlap between pages, a venue bug) would be
+  # summed by a consumer into a position the account does not hold: refused, not deduplicated,
+  # because which of two disagreeing rows is right is not this package's to say.
+  defp distinct_assets(balances) do
+    currencies = Enum.map(balances, & &1.currency)
+
+    case currencies -- Enum.uniq(currencies) do
+      [] -> {:ok, balances}
+      [code | _rest] -> {:error, {:duplicate_asset, code}}
     end
   end
 
@@ -1052,17 +1107,33 @@ defmodule DpExchange.Robinhood.Rest do
         ) ::
           {:ok, map()} | {:error, term()} | {:refused, term()}
   def get_estimated_price(symbol, side, quantity, credentials, opts) do
-    with {:ok, native} <- native_symbol(symbol),
-         {:ok, side} <- estimate_side(side),
-         {:ok, quantity} <- quantity_param(quantity),
-         path = estimate_path(native, side, quantity),
+    with {:ok, request} <- estimate_request(symbol, side, quantity),
+         path = estimate_path(request.symbol, request.side, request.quantities),
          {:ok, body} <- unlisted_symbol(get(path, credentials, opts)) do
       estimate_body(body)
     end
   end
 
-  defp estimate_path(native, side, quantity) do
-    query = [{"symbol", native}, {"side", side}, {"quantity", quantity}]
+  @doc """
+  The estimate request `get_estimated_price/5` would send, validated and normalised, without
+  sending anything: `{:ok, %{symbol: native, side: "bid" | "ask" | "both", quantities:
+  [wire_string]}}`, or the refusal `get_estimated_price/5` gives, in its order
+  (`{:invalid_symbol, v}`, `{:unsupported_side, v}`, `{:invalid_field, :quantity}`). Exposed so
+  `DpExchange.Robinhood.Fake` refuses exactly what the real path refuses.
+  """
+  @spec estimate_request(term(), term(), term()) ::
+          {:ok, %{symbol: String.t(), side: String.t(), quantities: [String.t()]}}
+          | {:error, term()}
+  def estimate_request(symbol, side, quantity) do
+    with {:ok, native} <- native_symbol(symbol),
+         {:ok, side} <- estimate_side(side),
+         {:ok, quantities} <- quantity_strings(quantity) do
+      {:ok, %{symbol: native, side: side, quantities: quantities}}
+    end
+  end
+
+  defp estimate_path(native, side, quantities) do
+    query = [{"symbol", native}, {"side", side}, {"quantity", Enum.join(quantities, ",")}]
     "/api/v2/crypto/trading/estimated_price/" <> query_string(query)
   end
 
@@ -1080,7 +1151,21 @@ defmodule DpExchange.Robinhood.Rest do
   defp estimate_side(side) when side in ["bid", "ask", "both"], do: {:ok, side}
   defp estimate_side(side), do: {:error, {:unsupported_side, side}}
 
-  defp quantity_param([_first | _rest] = list) do
+  defp quantity_strings([_first | _rest] = list) do
+    # An improper list (`[1 | 2]`) is a list to the pattern and raises in `Enum`.
+    if proper_list?(list), do: quantity_list(list), else: {:error, {:invalid_field, :quantity}}
+  end
+
+  defp quantity_strings(value) when is_list(value), do: {:error, {:invalid_field, :quantity}}
+
+  defp quantity_strings(value) do
+    case positive_string(value) do
+      {:ok, string} -> {:ok, [string]}
+      :error -> {:error, {:invalid_field, :quantity}}
+    end
+  end
+
+  defp quantity_list(list) do
     list
     |> Enum.map(&positive_string/1)
     |> Enum.reduce_while({:ok, []}, fn
@@ -1088,17 +1173,8 @@ defmodule DpExchange.Robinhood.Rest do
       :error, _acc -> {:halt, {:error, {:invalid_field, :quantity}}}
     end)
     |> case do
-      {:ok, strings} -> {:ok, strings |> Enum.reverse() |> Enum.join(",")}
+      {:ok, strings} -> {:ok, Enum.reverse(strings)}
       error -> error
-    end
-  end
-
-  defp quantity_param(value) when is_list(value), do: {:error, {:invalid_field, :quantity}}
-
-  defp quantity_param(value) do
-    case positive_string(value) do
-      {:ok, string} -> {:ok, string}
-      :error -> {:error, {:invalid_field, :quantity}}
     end
   end
 
@@ -1142,13 +1218,25 @@ defmodule DpExchange.Robinhood.Rest do
     end)
   end
 
-  defp estimate_row(other), do: {:ok, other}
+  # A row that is not an object is not an estimate. It used to be carried as sent, beside the
+  # rows that decoded, for a caller to raise on; the whole answer is refused instead.
+  defp estimate_row(_not_an_object), do: {:error, :unexpected_response_shape}
 
   defp estimate_number(nil), do: :absent
-  defp estimate_number(value) when is_number(value), do: {:ok, decimal(value)}
 
-  defp estimate_number(value) when is_binary(value),
-    do: if(decimal(value) == nil, do: :error, else: {:ok, value})
+  # A quantity, a price, a fee ratio or a cost is never below zero: a negative one is a
+  # value no execution can have, and is refused like an unreadable one rather than carried.
+  defp estimate_number(value) when is_number(value) or is_binary(value) do
+    case decimal(value) do
+      %Decimal{} = parsed ->
+        if Decimal.negative?(parsed),
+          do: :error,
+          else: {:ok, if(is_binary(value), do: value, else: parsed)}
+
+      nil ->
+        :error
+    end
+  end
 
   defp estimate_number(_other), do: :error
 
@@ -1213,13 +1301,20 @@ defmodule DpExchange.Robinhood.Rest do
   (`{:error, :history_truncated}`, the family's one spelling for a history that could not be
   read to its end; it was `:too_many_order_pages`) rather than returning a truncated history
   as complete.
+
+  `:limit` must be a positive integer (or absent or `nil`), otherwise
+  `{:error, {:invalid_field, :limit}}` before anything is signed. An order id listed twice in
+  the answer is `{:error, {:duplicate_order_id, id}}`. A read refuses a present amount it
+  cannot read or that is on the wrong side of zero (size and prices not positive; filled
+  size, average price and fee negative) as `{:error, {:invalid_decimal, field, value}}`.
   """
   @spec get_orders(map(), keyword()) ::
           {:ok, [Order.t()]} | {:error, term()} | {:refused, term()}
   def get_orders(credentials, opts) do
     with {:ok, account} <- required_account(opts),
          {:ok, filters} <- order_filters(opts),
-         {:ok, cursor} <- cursor_param(Keyword.get(opts, :cursor)) do
+         {:ok, cursor} <- cursor_param(Keyword.get(opts, :cursor)),
+         :ok <- validate_limit(opts) do
       query = ([{"account_number", account}] ++ filters) |> put_query("cursor", cursor)
 
       path = "/api/v2/crypto/trading/orders/" <> query_string(query)
@@ -1233,6 +1328,22 @@ defmodule DpExchange.Robinhood.Rest do
           to_orders(rows)
         end
       end
+    end
+  end
+
+  @doc """
+  Whether `opts[:limit]` is one `get_orders/2` accepts: absent (or `nil`), or a positive
+  integer. Anything else (`0`, a negative, a float, a string) is
+  `{:error, {:invalid_field, :limit}}`, answered without sending anything. It used to mean
+  "one page" whatever it held, so `limit: "ten"` and `limit: 0` silently fetched a page.
+  Exposed so `DpExchange.Robinhood.Fake` refuses the same.
+  """
+  @spec validate_limit(keyword()) :: :ok | {:error, {:invalid_field, :limit}}
+  def validate_limit(opts) do
+    case Config.opt(opts, :limit, nil) do
+      nil -> :ok
+      limit when is_integer(limit) and limit > 0 -> :ok
+      _other -> {:error, {:invalid_field, :limit}}
     end
   end
 
@@ -1948,12 +2059,51 @@ defmodule DpExchange.Robinhood.Rest do
   defp to_order(%{"id" => id} = row, mode) when is_binary(id) and id != "" do
     case mode do
       :lenient -> {:ok, order_struct(row)}
-      :strict -> with :ok <- known_enums(row), do: {:ok, order_struct(row)}
+      :strict -> with :ok <- known_enums(row), :ok <- known_amounts(row), do: strict_order(row)
     end
   end
 
   defp to_order(row, _mode) when is_map(row), do: {:error, {:missing_required_field, :id}}
   defp to_order(_row, _mode), do: {:error, :unexpected_response_shape}
+
+  defp strict_order(row), do: {:ok, order_struct(row)}
+
+  # **A PRESENT amount that cannot be read, or is on the wrong side of zero, refuses a read.**
+  # `order_struct/1` turns an unreadable amount into `nil`, which is also how an absent one
+  # reads, and carried a negative one as the number the venue sent: a size of `-0.5` or a
+  # price of `-60000` is a plausible `Decimal` with no meaning. Size and prices must be
+  # positive; what has filled, the average it filled at and the fee charged may be zero (an
+  # order that has not traded) but not negative. `null`, an empty string and an absent key
+  # state nothing and stay `nil`. Only a READ is strict: the answer to a placement describes
+  # an order that exists, see `to_order/2`.
+  defp known_amounts(row) do
+    [
+      {:quantity, configured_quantity(row), :positive},
+      {:price, configured_price(row), :positive},
+      {:stop_price, configured_stop_price(row), :positive},
+      {:filled_quantity, row["filled_asset_quantity"], :non_negative},
+      {:average_price, row["average_price"], :non_negative},
+      {:fee, row["fee_charged"], :non_negative}
+    ]
+    |> Enum.find_value(:ok, &amount_refusal/1)
+  end
+
+  defp amount_refusal({_field, raw, _rule}) when raw in [nil, ""], do: nil
+
+  defp amount_refusal({field, raw, rule}) do
+    case decimal(raw) do
+      %Decimal{} = value ->
+        if amount_sign?(value, rule), do: nil, else: invalid_amount(field, raw)
+
+      nil ->
+        invalid_amount(field, raw)
+    end
+  end
+
+  defp amount_sign?(value, :positive), do: Decimal.positive?(value)
+  defp amount_sign?(value, :non_negative), do: not Decimal.negative?(value)
+
+  defp invalid_amount(field, raw), do: {:error, {:invalid_decimal, field, bounded_raw(raw)}}
 
   # A PRESENT value outside `OrderResponse`'s enums (`side`, `type`, `state`, and
   # `time_in_force` in the type-named config; `pending` is added to `state` as the venue's
@@ -2004,8 +2154,20 @@ defmodule DpExchange.Robinhood.Rest do
       end
     end)
     |> case do
-      {:ok, orders} -> {:ok, Enum.reverse(orders)}
+      {:ok, orders} -> distinct_orders(Enum.reverse(orders))
       error -> error
+    end
+  end
+
+  # An order is listed once. The same id twice (a page overlap, a venue bug) would be counted
+  # twice by a caller summing fills or open size, and which copy is current is not this
+  # package's to guess: the whole history is refused.
+  defp distinct_orders(orders) do
+    ids = Enum.map(orders, & &1.id)
+
+    case ids -- Enum.uniq(ids) do
+      [] -> {:ok, orders}
+      [id | _rest] -> {:error, {:duplicate_order_id, id}}
     end
   end
 
