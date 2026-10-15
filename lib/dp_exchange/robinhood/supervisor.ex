@@ -79,8 +79,11 @@ defmodule DpExchange.Robinhood.Supervisor do
     %{robinhood: to_limit(caps.public_ceiling), default: to_limit(caps.public_ceiling)}
   end
 
-  # No published burst depth on this venue, so the per-interval limit is used — the
-  # conventional GCRA choice, and labelled as ours rather than the venue's.
+  # The vendor documents a burst depth (300, against a sustained 100 a minute), and
+  # `capabilities/0` carries it as `:burst`, so that is what the limiter is given. Only a
+  # ceiling that states none falls back to the per-interval limit, the conventional GCRA
+  # choice, which is ours rather than the venue's. The figures are the vendor's documented
+  # ones, never probed (see `measured_against`).
   defp to_limit(%{limit: limit, per_ms: per_ms} = ceiling),
     do: %{limit: limit, per_ms: per_ms, burst: Map.get(ceiling, :burst, limit)}
 end

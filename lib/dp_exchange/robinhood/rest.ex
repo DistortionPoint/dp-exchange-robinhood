@@ -136,8 +136,12 @@ defmodule DpExchange.Robinhood.Rest do
   neither key at all is `{:error, {:missing_required_field, :bid_ask}}`.
 
   One symbol, one signed request. See `get_top_of_book_bulk/3` for the repeatable-`symbol`
-  form this endpoint also serves, which `Feed` uses as its normal path and falls back to
-  this function per symbol only when the bulk call is itself refused.
+  form this endpoint also serves, which `Feed` uses for every poll. `Feed` never falls back to
+  this function: a refused bulk request is split in half and asked again, down to single
+  symbols, still through `get_top_of_book_bulk/3`.
+
+  A symbol that is not a non-blank string is `{:error, {:invalid_symbol, value}}`, and the
+  venue's 400 `"Invalid symbol: X"` is `{:refused, :not_listed}`.
   """
   @spec get_top_of_book(String.t(), map(), keyword()) ::
           {:ok, TopOfBook.t()} | {:error, term()} | {:refused, term()}
@@ -1028,7 +1032,7 @@ defmodule DpExchange.Robinhood.Rest do
   caller sees the slope rather than three points taken at three times.
 
   **Refused locally, before anything is signed:** a `side` outside `bid`/`ask`/`both`
-  (atom or string), a `quantity` that is not a positive finite number (zero, negative, `NaN`,
+  (atom or string) as `{:error, {:unsupported_side, side}}`, a `quantity` that is not a positive finite number (zero, negative, `NaN`,
   `Infinity`, unparseable text, an empty list) as `{:error, {:invalid_field, :quantity}}`,
   and a `symbol` that is not a string. Each used to go on the wire as whatever `to_string/1`
   made of it.
@@ -1438,9 +1442,10 @@ defmodule DpExchange.Robinhood.Rest do
   **Refused locally, before anything is signed or sent, in this order:** a request that is
   not a map `{:invalid_order_request, request}`; a key this builder does not read
   (`post_only`, `reduce_only`, ...) `{:unsupported_order_field, key}`; a `symbol` that is
-  not a non-blank string `{:invalid_symbol, v}`; a `side` other than `buy`/`sell` (atom or
-  string, any case) `{:invalid_side, v}`; a missing field `{:missing_field, key}`
-  (`order_type` is never defaulted or inferred); an order type outside `:market`, `:limit`,
+  not a non-blank string, or absent, `{:invalid_symbol, v}` (`nil` when absent); a `side`
+  other than `buy`/`sell` (atom or string, any case) `{:invalid_side, v}`; a missing
+  `side`, `order_type`, `time_in_force`, quantity or required price
+  `{:missing_field, key}` (`order_type` is never defaulted or inferred); an order type outside `:market`, `:limit`,
   `:stop` (or the venue's `:stop_loss`) and `:stop_limit` `{:unsupported_order_type, type}`;
   a `time_in_force`: **a market order's config has no duration, so a supplied one is
   `{:unexpected_field, :time_in_force}`; the other three types require one**

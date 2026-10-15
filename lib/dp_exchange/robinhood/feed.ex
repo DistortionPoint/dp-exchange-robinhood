@@ -245,7 +245,10 @@ defmodule DpExchange.Robinhood.Feed do
 
   Refuses to start, as `{:error, {:invalid_option, key}}`, when `:symbols` is not a list of
   non-blank strings, `:subscriber` is neither a pid nor a registered name, or
-  `:bisect_budget_ms` is not a positive integer.
+  `:bisect_budget_ms` is not a positive integer. A `:max_queue_len` that is not a positive
+  integer is not an `{:error, _}` return: it raises `ArgumentError` from `init/1`
+  (`Core.Fanout.max_queue_len!/2`), so a back-pressure bound you believe you set is never
+  silently replaced by the default.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do

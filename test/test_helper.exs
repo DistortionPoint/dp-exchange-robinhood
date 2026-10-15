@@ -3,7 +3,12 @@
 # exclusion stands so the convention holds family-wide and so a tagged test can never
 # reach the venue unasked — one that sees a package polling it on a timer will rate-limit
 # or block.
-ExUnit.start(exclude: [:tier2])
+#
+# `assert_receive_timeout: 5_000`: ExUnit's default is 100 ms, which every bare
+# `assert_receive` in this suite inherited, and which flakes under a full `--cover` run on a
+# loaded machine. A passing assertion returns the moment the message arrives, so the larger
+# margin costs nothing; only a failing one waits.
+ExUnit.start(exclude: [:tier2], assert_receive_timeout: 5_000)
 
 # **Tier 1 never reaches a venue, and this makes that a fact rather than a convention.** A
 # request that brings no `:plug` of its own gets this one, which refuses it and names the

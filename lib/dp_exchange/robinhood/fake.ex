@@ -139,8 +139,8 @@ defmodule DpExchange.Robinhood.Fake do
   @doc """
   A fixed top of book for `BTC-USD`, `ETH-USD` or `DOGE-USD`, from memory.
 
-  Requires `opts[:credentials]` as the real venue does. A symbol outside the three is the
-  venue's own 400 refusal. See `DpExchange.Robinhood.get_top_of_book/2` and
+  Requires `opts[:credentials]` as the real venue does. A symbol outside the three is
+  `{:refused, :not_listed}`, as the real single-symbol read answers the venue's 400. See `DpExchange.Robinhood.get_top_of_book/2` and
   `c:DpExchange.Core.Venue.get_top_of_book/2`.
   """
   @impl true

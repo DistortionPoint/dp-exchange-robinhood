@@ -19,6 +19,27 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **`dp_exchange_core` floor raised to `~> 0.3.95` (tick AE).** The old floor predated `wanted/1`
+  (0.3.93), the conformance group 41 options this package's contract test passes (0.3.94,
+  ignored by an older Core: a silent pass) and the groups that no longer pass vacuously
+  (0.3.95).
+
+- **Documentation accuracy and test margins (tick AE).** No runtime behaviour changed.
+  - `usage-rules.md` said `get_accounts/2` reads only the first page; it walks every page
+    (bounded at 50, `{:error, :too_many_account_pages}`), as `Rest.get_accounts/2` has since
+    the account-paging fix. It also listed `{:missing_field, :symbol}` for `place_order/3`;
+    an absent symbol is `{:invalid_symbol, nil}`. `Rest.place_order/3`'s doc is corrected the
+    same way.
+  - `Rest.get_top_of_book/3`'s doc said `Feed` falls back to it per symbol when a bulk request
+    is refused; `Feed` bisects through `get_top_of_book_bulk/3` and never calls it.
+    `Rest.get_estimated_price/5` now names `{:unsupported_side, side}`; `Fake.get_top_of_book/2`
+    now says an unlisted symbol is `{:refused, :not_listed}`.
+  - `Supervisor`'s limiter comment claimed the venue publishes no burst depth; the limiter is
+    given the documented burst of 300 from `capabilities/0`. `Feed.start_link/1`'s doc now
+    states that a non-integer `:max_queue_len` raises from `init/1`.
+  - Tests: `assert_receive_timeout` is 5_000 ms suite-wide (ExUnit's 100 ms default flaked
+    every bare `assert_receive` under a full `--cover` run).
+
 ## [0.3.99] - 2026-10-14
 
 ### Added

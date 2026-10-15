@@ -326,10 +326,9 @@ without one is a v1 habit v2 will not honour. Each refuses locally with
 `place_order/3` the order id and the order request are checked first).
 
 `cancel_order/3` is the exception: it takes no account number, and it is a **POST**, not a
-DELETE. `get_accounts/2` itself reads only the first page of `V2AccountsResponse` — a
-deliberate decision, not an oversight, because one account per credential is this venue's
-common case; see `Rest.get_accounts/2`'s own doc if you are the credential that turns out to
-have more than one.
+DELETE. `get_accounts/2` walks every page of `V2AccountsResponse` when the venue offers a
+`next` (bounded at 50 pages, `{:error, :too_many_account_pages}` past it): a credential with
+more than one account gets all of them, and `get_balances/2` finds its account across pages.
 
 ## Holdings and orders page to the end, bounded — they used to read one page silently
 
@@ -385,8 +384,8 @@ wrong key is silently ignored and the order is placed with none.**
 **Everything is refused before anything is signed, in this order** (the Fake gives the same
 answer in the same order): a request that is not a map `{:invalid_order_request, request}`;
 a key the builder does not read (`post_only`, `reduce_only`, ...)
-`{:unsupported_order_field, key}`; `{:invalid_symbol, v}`; `{:invalid_side, v}` (`:buy` /
-`:sell`, or the strings in any case); `{:missing_field, key}` for `:symbol`, `:side`,
+`{:unsupported_order_field, key}`; `{:invalid_symbol, v}` (an absent symbol is `{:invalid_symbol, nil}`); `{:invalid_side, v}`
+(`:buy` / `:sell`, or the strings in any case); `{:missing_field, key}` for `:side`,
 `:order_type` (never defaulted or inferred), `:time_in_force`, `:quantity`, `:price` or
 `:stop_price`; an order type outside `:market`, `:limit`, `:stop` (the contract's atom; the
 venue's own `:stop_loss` is accepted too) and `:stop_limit`
