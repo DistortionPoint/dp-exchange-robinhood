@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.100] - 2026-10-15
+
 - **`dp_exchange_core` floor raised to `~> 0.3.95` (tick AE).** The old floor predated `wanted/1`
   (0.3.93), the conformance group 41 options this package's contract test passes (0.3.94,
   ignored by an older Core: a silent pass) and the groups that no longer pass vacuously
