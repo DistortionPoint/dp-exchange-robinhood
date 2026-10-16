@@ -19,6 +19,12 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- The contract test opts into Core conformance group 42 (`ambiguous_place_order:`): the real
+  `place_order/3` with a 503 on every attempt must answer `order_unconfirmed`. Requires
+  `dp_exchange_core ~> 0.3.98`.
+
 ## [0.3.104] - 2026-10-16
 
 ### Changed

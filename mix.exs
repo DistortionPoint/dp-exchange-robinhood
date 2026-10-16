@@ -79,7 +79,8 @@ defmodule DpExchangeRobinhood.MixProject do
       # contract test opts into group 41 (`unlisted_symbol:`, `padded_credentials:`, Core 0.3.94),
       # which an older Core ignores - a silent pass; and 0.3.95 makes groups 7, 37 and 39 fail
       # instead of passing having examined nothing. Resolved and compiled against in this change.
-      {:dp_exchange_core, "~> 0.3.95"},
+      # 0.3.98 adds conformance group 42 (`ambiguous_place_order:`), used by the contract test.
+      {:dp_exchange_core, "~> 0.3.98"},
 
       # a venue that speaks WebSocket ships what it needs to speak it.
       # No `websockex`. **This venue has no streaming API at all** — its feed is a REST

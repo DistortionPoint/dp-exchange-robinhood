@@ -3,6 +3,8 @@ defmodule DpExchange.RobinhoodContractTest do
   Core's conformance suite, run against this package.
   """
 
+  alias DpExchange.Robinhood.Test.AmbiguousWrite
+
   use DpExchange.Core.AdapterContract,
     venue: DpExchange.Robinhood,
     fake: DpExchange.Robinhood.Fake,
@@ -15,6 +17,9 @@ defmodule DpExchange.RobinhoodContractTest do
       api_key: "test-key\n",
       private_key: Base.encode64(:binary.copy(<<1>>, 32))
     },
+    # Conformance group 42 (Core 0.3.98): the real `Rest.place_order/3` with a 503 on every
+    # attempt must answer `order_unconfirmed`; a request refused before sending must not.
+    ambiguous_place_order: &AmbiguousWrite.place/1,
     credentials: %{api_key: "test-key", private_key: Base.encode64(:binary.copy(<<1>>, 32))},
     # The options this venue's own endpoints require before its fake will answer at all.
     #
