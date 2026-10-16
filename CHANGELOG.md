@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.102] - 2026-10-16
+
 - **Feed releases the symbols of a dead subscriber (tick AG).** `subscribe/2` registered a
   monitored data subscriber, but when the last one died (and the feed had no boot
   `:subscriber`) its symbols stayed in the polled set, so the poller kept requesting books
