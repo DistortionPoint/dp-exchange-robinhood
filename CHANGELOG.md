@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.104] - 2026-10-16
+
 ### Changed
 
 - `place_order/3` now states its retry count (3, re-signed per attempt, safe because
