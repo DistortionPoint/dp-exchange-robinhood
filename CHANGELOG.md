@@ -19,6 +19,10 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.103] - 2026-10-16
+
+_No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._
+
 ## [0.3.102] - 2026-10-16
 
 - **Feed releases the symbols of a dead subscriber (tick AG).** `subscribe/2` registered a
