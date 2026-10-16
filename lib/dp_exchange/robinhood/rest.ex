@@ -1599,6 +1599,13 @@ defmodule DpExchange.Robinhood.Rest do
       path = "/api/v2/crypto/trading/orders/" <> query_string([{"account_number", account}])
       calls = :atomics.new(1, signed: false)
       body = order_body(parts, client_order_id)
+      # A placement retry is safe: `client_order_id` is the venue's idempotency key and every
+      # attempt is re-signed. Explicit because Core now sends a POST once by default. A
+      # caller-supplied count still wins; a forwarded `nil` is absent.
+      opts =
+        if Keyword.get(opts, :retry_attempts) == nil,
+          do: Keyword.put(opts, :retry_attempts, 3),
+          else: opts
 
       path
       |> post(body, credentials, opts, &counting(&1, calls))
@@ -1963,7 +1970,7 @@ defmodule DpExchange.Robinhood.Rest do
   #
   # Measured against a transport answering 500: **three submissions of the same order, each
   # carrying `client_order_id: null`**, because `request_opts/1` forwards `:retry_attempts`
-  # and `Core.HttpClient`'s default of 3 applied. The key is the whole reason those retries
+  # and `place_order/3`'s explicit default of 3 applied. The key is the whole reason those retries
   # are safe — "re-sending one returns the original order instead of placing a second" —
   # and a null one is no key at all. It is the same forwarded-`nil` trap `Core.Config.opt/3`
   # exists for, which this family has recorded three times already under

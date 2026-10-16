@@ -19,6 +19,12 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- `place_order/3` now states its retry count (3, re-signed per attempt, safe because
+  `client_order_id` is the venue's idempotency key) instead of relying on Core's default,
+  which Core 0.3.98 lowers to one attempt for a POST. A caller's `:retry_attempts` still wins.
+
 ## [0.3.103] - 2026-10-16
 
 _No consumer-facing changes. Internal or packaging work only — recorded so every published version has a heading, because an absent one cannot be told apart from one the release pipeline dropped._
