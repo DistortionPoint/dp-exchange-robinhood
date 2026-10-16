@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.105] - 2026-10-16
+
 ### Changed
 
 - The contract test opts into Core conformance group 42 (`ambiguous_place_order:`): the real
