@@ -121,6 +121,11 @@ on its next notice). A `subscriber:` given
 at start must be a pid or a name too, or the feed does not start
 (`{:invalid_option, :subscriber}`).
 
+**A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the
+last registered subscriber has died and the feed was started without a `:subscriber`, the
+symbols added for them leave the polled set. Symbols given at boot or to `update_symbols/2`
+stay, as do all symbols while a boot `:subscriber` exists.
+
 ## A crashed poller costs one restart, never your whole symbol set
 
 The poll is a **linked** child of `Feed` — not a supervised sibling you can restart

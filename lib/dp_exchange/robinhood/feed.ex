@@ -478,6 +478,10 @@ defmodule DpExchange.Robinhood.Feed do
       # the boot `:subscriber`, which is not in this set. Pids are monitored (`monitors`
       # below, shared with `notice_subscribers`) and pruned on `:DOWN`.
       data_subscribers: MapSet.new(),
+      # Symbols added by `add_symbols/3` for a registered data subscriber, and still wanted.
+      # When the last such subscriber dies (and there is no boot `:subscriber`) these are
+      # released, so the poller stops requesting books that nobody can receive.
+      added: MapSet.new(),
       # Which poll cycle is next (rotates the chunk that goes first) and whether the last
       # cycle left symbols unrequested for want of budget (the latch behind the one
       # `:degraded` notice per crossing). See `report_budget/2`.
@@ -816,12 +820,15 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call({:update_symbols, symbols}, _from, state),
-    do: change_symbols(state, symbols, & &1)
+    do: change_symbols(%{state | added: MapSet.new()}, symbols, & &1)
 
   def handle_call({:add_symbols, symbols, subscriber}, _from, state) do
     with {:ok, checked} <- canonical_symbols(symbols),
-         {:ok, state} <- register_data_subscriber(state, subscriber) do
-      replace_symbols(state, Enum.uniq(state.symbols ++ checked))
+         {:ok, registered} <- register_data_subscriber(state, subscriber) do
+      replace_symbols(
+        track_added(registered, subscriber, checked),
+        Enum.uniq(state.symbols ++ checked)
+      )
     else
       {:error, _reason} = error -> {:reply, error, state}
     end
@@ -881,6 +888,30 @@ defmodule DpExchange.Robinhood.Feed do
     end
   end
 
+  # Only symbols asked for on behalf of a registered (non-boot) data subscriber are released
+  # when the last of them dies; the boot `:subscriber` is configuration and never dies out.
+  defp track_added(state, nil, _symbols), do: state
+
+  defp track_added(%{subscriber: subscriber} = state, subscriber, _symbols), do: state
+
+  defp track_added(state, _registered, symbols),
+    do: %{state | added: MapSet.union(state.added, MapSet.new(symbols))}
+
+  # The last registered data subscriber died and there is no boot subscriber: what was added
+  # for them is released, so the poller stops requesting books nobody can receive.
+  defp release_orphaned(%{subscriber: nil, data_subscribers: registered} = state) do
+    if MapSet.size(registered) == 0 and MapSet.size(state.added) > 0 do
+      released = Enum.reject(state.symbols, &MapSet.member?(state.added, &1))
+      # `released` holds none of `added`, so the intersection in `replace_symbols/2` empties it.
+      {:reply, _result, state} = replace_symbols(state, released)
+      state
+    else
+      state
+    end
+  end
+
+  defp release_orphaned(state), do: state
+
   defp replace_symbols(state, symbols) do
     symbol_set = MapSet.new(symbols)
 
@@ -888,6 +919,7 @@ defmodule DpExchange.Robinhood.Feed do
       state
       | symbols: symbols,
         symbol_set: symbol_set,
+        added: MapSet.intersection(state.added, symbol_set),
         refused: MapSet.intersection(state.refused, symbol_set)
     }
 
@@ -916,7 +948,7 @@ defmodule DpExchange.Robinhood.Feed do
         monitors: Fanout.forget(pid, state.monitors)
     }
 
-    {:noreply, state}
+    {:noreply, release_orphaned(state)}
   end
 
   # A cycle's count of symbols its budget left unrequested. The notice goes out on the

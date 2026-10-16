@@ -19,6 +19,15 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+- **Feed releases the symbols of a dead subscriber (tick AG).** `subscribe/2` registered a
+  monitored data subscriber, but when the last one died (and the feed had no boot
+  `:subscriber`) its symbols stayed in the polled set, so the poller kept requesting books
+  nobody could receive. The symbols added for registered subscribers are now tracked and
+  released when the last registered subscriber goes; boot-configured symbols and a feed
+  with a boot `:subscriber` are untouched. `update_symbols/2` makes the set configuration.
+  The Fake already refused `:cursor` as `{:invalid_field, :cursor}` (as the real path does for
+  a blank or non-string cursor); no change there.
+
 ## [0.3.101] - 2026-10-15
 
 - **Fake/real parity, input-validation parity and decoder edge cases (tick AF).**

@@ -101,6 +101,14 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
   end
 
+  defp kill_and_settle(feed, pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+    # A call is answered only after the feed's own `:DOWN` has been handled.
+    :sys.get_state(feed)
+  end
+
   defp start_feed(opts \\ []) do
     name = :"feed_#{System.unique_integer([:positive])}"
 
@@ -1731,6 +1739,46 @@ defmodule DpExchange.Robinhood.FeedTest do
       refute MapSet.member?(state.data_subscribers, other)
       refute Map.has_key?(state.monitors, other)
       assert Process.alive?(feed)
+    end
+
+    test "the last registered subscriber dying releases the symbols added for it" do
+      feed = start_feed(symbols: ["ETH-USD"], subscriber: nil, start_delay_ms: 60_000)
+      first = spawn(fn -> Process.sleep(:infinity) end)
+      second = spawn(fn -> Process.sleep(:infinity) end)
+
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD"], first)
+      assert :ok = Feed.add_symbols(feed, ["SOL-USD"], second)
+      assert Enum.sort(Feed.wanted(feed)) == ["BTC-USD", "ETH-USD", "SOL-USD"]
+
+      kill_and_settle(feed, first)
+      assert Enum.sort(Feed.wanted(feed)) == ["BTC-USD", "ETH-USD", "SOL-USD"]
+
+      kill_and_settle(feed, second)
+      assert Feed.wanted(feed) == ["ETH-USD"]
+      assert :sys.get_state(feed).added == MapSet.new()
+    end
+
+    test "a boot subscriber keeps the symbols a dead registered subscriber added" do
+      feed = start_feed(symbols: [], start_delay_ms: 60_000)
+      other = spawn(fn -> Process.sleep(:infinity) end)
+
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD"], other)
+      kill_and_settle(feed, other)
+
+      assert Feed.wanted(feed) == ["BTC-USD"]
+    end
+
+    test "update_symbols and remove_symbols keep the released set in step" do
+      feed = start_feed(symbols: [], subscriber: nil, start_delay_ms: 60_000)
+      other = spawn(fn -> Process.sleep(:infinity) end)
+
+      assert :ok = Feed.add_symbols(feed, ["BTC-USD", "ETH-USD"], other)
+      assert :ok = Feed.remove_symbols(feed, ["ETH-USD"])
+      assert :sys.get_state(feed).added == MapSet.new(["BTC-USD"])
+
+      assert :ok = Feed.update_symbols(feed, ["BTC-USD", "SOL-USD"])
+      kill_and_settle(feed, other)
+      assert Enum.sort(Feed.wanted(feed)) == ["BTC-USD", "SOL-USD"]
     end
 
     test "a registered name is kept and never monitored" do
