@@ -1547,12 +1547,14 @@ defmodule DpExchange.Robinhood.TradingTest do
     end
 
     test "the facade reaches the whole surface" do
-      base = [credentials: @credentials, account_number: "RH-1", retry_attempts: 0]
+      # `account_number` goes only to the calls that send it; the others refuse it.
+      unscoped = [credentials: @credentials, retry_attempts: 0]
+      base = [account_number: "RH-1"] ++ unscoped
 
       assert {:ok, [_account]} =
                DpExchange.Robinhood.get_accounts(
                  @credentials,
-                 base ++ [plug: responding(%{"account_number" => "RH-1"})]
+                 unscoped ++ [plug: responding(%{"account_number" => "RH-1"})]
                )
 
       # The account's cash still comes back — dp-exchange-core issue #35.
@@ -1593,7 +1595,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                DpExchange.Robinhood.cancel_order(
                  @credentials,
                  "o-1",
-                 base ++ [plug: responding(%{"id" => "o-1", "state" => "canceled"})]
+                 unscoped ++ [plug: responding(%{"id" => "o-1", "state" => "canceled"})]
                )
 
       assert {:ok, _estimate} =
@@ -1602,7 +1604,7 @@ defmodule DpExchange.Robinhood.TradingTest do
                  "ask",
                  "0.1",
                  @credentials,
-                 base ++ [plug: responding(%{"results" => []})]
+                 unscoped ++ [plug: responding(%{"results" => []})]
                )
     end
   end

@@ -423,7 +423,12 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def get_top_of_book(symbol, opts \\ []),
-    do: with_market_checked(opts, &Rest.get_top_of_book(symbol, credentials(&1), &1))
+    do:
+      with_market_checked(
+        opts,
+        :get_top_of_book,
+        &Rest.get_top_of_book(symbol, credentials(&1), &1)
+      )
 
   @doc """
   Every tradable symbol, walking all pages of the signed `trading_pairs` endpoint.
@@ -433,7 +438,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def get_symbols(opts \\ []),
-    do: with_market_checked(opts, &Rest.get_symbols(credentials(&1), &1))
+    do: with_market_checked(opts, :get_symbols, &Rest.get_symbols(credentials(&1), &1))
 
   @doc """
   Not served by this venue: answers `{:error, :not_supported}`.
@@ -487,7 +492,12 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def list_instruments(opts),
-    do: with_market_checked(opts, &Rest.list_instruments(credentials(&1), &1))
+    do:
+      with_market_checked(
+        opts,
+        :list_instruments,
+        &Rest.list_instruments(credentials(&1), &1)
+      )
 
   # --- account and trading -----------------------------------------------
 
@@ -502,7 +512,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def get_balances(credentials, opts),
-    do: with_checked(opts, &Rest.get_balances(credentials, &1))
+    do: with_checked(opts, :get_balances, &Rest.get_balances(credentials, &1))
 
   @doc """
   The crypto trading account — and the account number every other v2 call takes.
@@ -511,7 +521,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def get_accounts(credentials, opts),
-    do: with_checked(opts, &Rest.get_accounts(credentials, &1))
+    do: with_checked(opts, :get_accounts, &Rest.get_accounts(credentials, &1))
 
   @doc """
   Not served by this venue: answers `{:error, :not_supported}`.
@@ -544,7 +554,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def place_order(credentials, request, opts \\ []),
-    do: with_checked(opts, &Rest.place_order(credentials, request, &1))
+    do: with_checked(opts, :place_order, &Rest.place_order(credentials, request, &1))
 
   @doc """
   **Not supported.** Robinhood places one order per request.
@@ -574,7 +584,12 @@ defmodule DpExchange.Robinhood do
         ) ::
           {:ok, map()} | {:error, term()} | {:refused, term()}
   def get_estimated_price(symbol, side, quantity, credentials, opts \\ []),
-    do: with_checked(opts, &Rest.get_estimated_price(symbol, side, quantity, credentials, &1))
+    do:
+      with_checked(
+        opts,
+        :get_estimated_price,
+        &Rest.get_estimated_price(symbol, side, quantity, credentials, &1)
+      )
 
   @doc """
   **Not supported.** This venue publishes no order-preview endpoint.
@@ -625,7 +640,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def cancel_order(credentials, id, opts \\ []),
-    do: with_checked(opts, &Rest.cancel_order(credentials, id, &1))
+    do: with_checked(opts, :cancel_order, &Rest.cancel_order(credentials, id, &1))
 
   @doc """
   One order. `opts[:account_number]` is required by v2.
@@ -634,7 +649,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def get_order(credentials, id, opts \\ []),
-    do: with_checked(opts, &Rest.get_order(credentials, id, &1))
+    do: with_checked(opts, :get_order, &Rest.get_order(credentials, id, &1))
 
   @doc """
   Orders on one account. `opts[:account_number]` is required by v2.
@@ -645,7 +660,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def get_orders(credentials, opts \\ []),
-    do: with_checked(opts, &Rest.get_orders(credentials, &1))
+    do: with_checked(opts, :get_orders, &Rest.get_orders(credentials, &1))
 
   @doc """
   Not served by this venue: answers `{:error, :not_supported}`.
@@ -775,7 +790,7 @@ defmodule DpExchange.Robinhood do
   # {:invalid_subscriber, value}}`. `subscribe([])` registers the subscriber and polls nothing.
   def subscribe(symbols, opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
-         :ok <- Rest.validate_market_opts(opts),
+         :ok <- Rest.validate_market_opts(opts, :subscribe),
          {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
       feed_call(
         fn -> Feed.add_symbols(feed(opts), symbols, to) end,
@@ -793,7 +808,7 @@ defmodule DpExchange.Robinhood do
   @impl true
   def unsubscribe(symbols, opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
-         :ok <- Rest.validate_opts(opts) do
+         :ok <- Rest.validate_opts(opts, :unsubscribe) do
       feed_call(fn -> Feed.remove_symbols(feed(opts), symbols) end, :ok)
     end
   end
@@ -807,7 +822,7 @@ defmodule DpExchange.Robinhood do
   @impl true
   def update_symbols(symbols, opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
-         :ok <- Rest.validate_market_opts(opts) do
+         :ok <- Rest.validate_market_opts(opts, :update_symbols) do
       feed_call(
         fn -> Feed.update_symbols(feed(opts), symbols) end,
         {:error, :feed_not_started}
@@ -901,7 +916,7 @@ defmodule DpExchange.Robinhood do
   @impl true
   @spec subscribe_notices(keyword()) :: :ok | {:error, term()}
   def subscribe_notices(opts \\ []) do
-    with :ok <- Rest.validate_opts(opts),
+    with :ok <- Rest.validate_opts(opts, :subscribe_notices),
          {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
       feed = feed(opts)
       feed_call(fn -> Feed.subscribe_notices(feed, to: to) end, {:error, :feed_not_started})
@@ -981,7 +996,7 @@ defmodule DpExchange.Robinhood do
   """
   @impl true
   def quantization(symbol, opts \\ []),
-    do: with_checked(opts, &Rest.quantization(symbol, credentials(&1), &1))
+    do: with_checked(opts, :quantization, &Rest.quantization(symbol, credentials(&1), &1))
 
   @doc """
   The quote codes this package's symbol normaliser recognises.
@@ -1053,28 +1068,34 @@ defmodule DpExchange.Robinhood do
   # The reads with no error channel (`coverage/1`, `coverage_by_kind/1`, `wanted/1`) cannot
   # answer `{:error, _}`, and an empty map or list would read as "nothing covered", a plausible
   # substitute for an error. They raise instead, with the value bounded.
+  # An unknown key raises too: it would otherwise be a different question answered quietly.
   defp check_opts!(opts) do
-    case Rest.validate_opts(opts) do
+    case Rest.validate_opts(opts, :coverage) do
       :ok ->
         :ok
 
       {:error, {:invalid_options, shown}} ->
         raise ArgumentError, "options must be a keyword list, got: #{inspect(shown)}"
+
+      {:error, {:unknown_option, key}} ->
+        raise ArgumentError, "unknown option #{inspect(key)}"
     end
   end
 
-  # Options that are not a keyword list are refused before any `Keyword` function reads them
+  # Options that are not a keyword list, or carry a key this call does not read, are refused
+  # (`Rest.validate_opts/2`) before any `Keyword` function reads them or anything is signed
   # (they raised in the caller's process, on calls that move funds among them), and `fun`
-  # receives the options with this venue's limiter put in.
-  defp with_checked(opts, fun) do
-    with :ok <- Rest.validate_opts(opts), do: fun.(with_limiter(opts))
+  # receives the options with this venue's limiter put in. The limiter is added AFTER the
+  # check, so it is never mistaken for the caller's own key.
+  defp with_checked(opts, function, fun) do
+    with :ok <- Rest.validate_opts(opts, function), do: fun.(with_limiter(opts))
   end
 
-  # As `with_checked/2`, and the contract's market-data options this venue cannot honour
+  # As `with_checked/3`, and the contract's market-data options this venue cannot honour
   # (`:limit`, `:depth`, `:since`, `:include_partial`) are refused too, see
-  # `Rest.validate_market_opts/1`.
-  defp with_market_checked(opts, fun) do
-    with :ok <- Rest.validate_market_opts(opts), do: fun.(with_limiter(opts))
+  # `Rest.validate_market_opts/2`.
+  defp with_market_checked(opts, function, fun) do
+    with :ok <- Rest.validate_market_opts(opts, function), do: fun.(with_limiter(opts))
   end
 
   # --- Declared but not yet implemented -----------------------------------

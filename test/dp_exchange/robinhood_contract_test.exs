@@ -38,6 +38,10 @@ defmodule DpExchange.RobinhoodContractTest do
       {:get_balances, 2} => [account_number: "RH-1"],
       {:get_orders, 2} => [account_number: "contract-account"],
       {:place_order, 3} => [account_number: "contract-account"],
-      {:get_order, 3} => [account_number: "contract-account"]
+      {:get_order, 3} => [account_number: "contract-account"],
+      # Cancel takes no account (the endpoint is the order id alone), and since tick AJ a key
+      # a call does not read is `{:unknown_option, key}`. Without this entry group 31 would
+      # cancel with the options the order was PLACED with, account and all.
+      {:cancel_order, 3} => []
     }
 end

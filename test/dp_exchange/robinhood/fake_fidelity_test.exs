@@ -138,7 +138,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
       assert {:ok, read} = Fake.get_order(@credentials, first.id, @account)
       assert read.id == first.id
 
-      assert {:ok, cancelled} = Fake.cancel_order(@credentials, first.id, @account)
+      assert {:ok, cancelled} = Fake.cancel_order(@credentials, first.id, [])
       assert cancelled.id == first.id
       assert cancelled.status == :cancelled
     end
@@ -167,7 +167,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
       assert {:ok, [listed]} = Fake.get_orders(@credentials, @account ++ [symbol: "eth-usd"])
       assert listed.id == placed.id
 
-      assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
+      assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, [])
       assert cancelled.status == :cancelled
       assert cancelled.symbol == "ETH-USD"
 
@@ -180,7 +180,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
 
     test "an id the fake never issued is the venue's 404, on a read and on a cancel" do
       assert Fake.get_order(@credentials, "never-issued", @account) == {:refused, :not_found}
-      assert Fake.cancel_order(@credentials, "never-issued", @account) == {:refused, :not_found}
+      assert Fake.cancel_order(@credentials, "never-issued", []) == {:refused, :not_found}
     end
 
     test "a valid order is still accepted as open" do
@@ -228,7 +228,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
 
     test "a cancelled order is found under :cancelled and under :canceled" do
       assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
-      assert {:ok, _cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
+      assert {:ok, _cancelled} = Fake.cancel_order(@credentials, placed.id, [])
 
       for state <- [:cancelled, :canceled, "canceled"] do
         assert {:ok, [found]} = Fake.get_orders(@credentials, @account ++ [state: state])
@@ -261,7 +261,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
 
     test "a cancel keeps created_at and never moves updated_at backwards" do
       assert {:ok, placed} = Fake.place_order(@credentials, @order, @account)
-      assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, @account)
+      assert {:ok, cancelled} = Fake.cancel_order(@credentials, placed.id, [])
 
       assert cancelled.created_at == placed.created_at
       assert DateTime.compare(cancelled.updated_at, placed.updated_at) != :lt
@@ -349,7 +349,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
       opts = @account ++ [client_order_id: "11111111-2222-4333-a444-555555555556"]
 
       assert {:ok, first} = Fake.place_order(@credentials, @order, opts)
-      assert {:ok, _cancelled} = Fake.cancel_order(@credentials, first.id, @account)
+      assert {:ok, _cancelled} = Fake.cancel_order(@credentials, first.id, [])
       assert {:ok, again} = Fake.place_order(@credentials, @order, opts)
 
       assert again.id == first.id

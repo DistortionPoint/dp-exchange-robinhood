@@ -38,9 +38,7 @@ defmodule DpExchange.Robinhood.ResponseShapeTest do
       plug: answering(body),
       retry_attempts: 0,
       credentials: @credentials,
-      account_id: "acct",
-      account_number: "acct",
-      account_hash: "acct"
+      account_number: "acct"
     ]
   end
 

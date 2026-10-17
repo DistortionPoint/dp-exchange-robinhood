@@ -138,8 +138,8 @@ defmodule DpExchange.Robinhood.OptionRefusalTest do
     end
 
     test "an empty keyword list is still a keyword list" do
-      assert Rest.validate_opts([]) == :ok
-      assert Rest.validate_opts(credentials: @credentials, limit: 1) == :ok
+      assert Rest.validate_opts([], :get_orders) == :ok
+      assert Rest.validate_opts([credentials: @credentials, limit: 1], :get_orders) == :ok
     end
 
     test "the value rides the error bounded, so a hostile options term cannot flood a log" do
@@ -190,11 +190,11 @@ defmodule DpExchange.Robinhood.OptionRefusalTest do
       assert {:ok, symbols} = Fake.get_symbols(opts)
       assert symbols == ["BTC-USD", "DOGE-USD", "ETH-USD"]
       assert {:ok, %{symbol: "BTC-USD"}} = Fake.get_top_of_book("BTC-USD", opts)
-      assert Rest.validate_market_opts(opts) == :ok
+      assert Rest.validate_market_opts(opts, :get_symbols) == :ok
     end
 
     test "the first offending option is the one named" do
-      assert Rest.validate_market_opts(since: 1, limit: 2) ==
+      assert Rest.validate_market_opts([since: 1, limit: 2], :get_symbols) ==
                {:error, {:unsupported_option, :limit}}
     end
 

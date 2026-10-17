@@ -143,6 +143,33 @@ as "nothing covered", so they raise `ArgumentError`.
 key}}` instead of being dropped (a `nil` value is an absent option). `get_orders/2` keeps its
 own `:limit`, described below.
 
+**An option a call does not read is refused (BREAKING).** A misspelt `limt:` or `sinse:` used
+to be ignored and answer a different question than you asked; every option-taking call now
+checks its options with `DpExchange.Core.Options.check/2` before anything is signed or sent
+and answers `{:error, {:unknown_option, key}}` (the first offending key, `nil` values
+included); `coverage/1`, `coverage_by_kind/1` and `wanted/1` raise `ArgumentError`. The Fake
+refuses identically and does not consume a queued injection on a refused call. A function
+answering `{:error, :not_supported}` does so whatever its options. Every call also accepts the
+shared transport keys (`DpExchange.Core.Options.transport_options/0`: `credentials`,
+`base_url`, `plug`, `limiter`, `timeout`, `retry_attempts`, ...) and `:timestamp` where it
+signs. Beyond those, each call reads exactly (the table is
+`DpExchange.Robinhood.Rest.function_options/1`):
+
+| Call | Own options |
+| --- | --- |
+| `get_top_of_book/2`, `get_symbols/1`, `list_instruments/1` | `:limit`, `:depth`, `:since`, `:include_partial` (each answers `:unsupported_option`) |
+| `quantization/2`, `get_accounts/2`, `cancel_order/3`, `get_estimated_price/5` | none (`:account_number` is refused: these endpoints take no account) |
+| `get_balances/2` | `:account_number`, `:asset_codes` |
+| `place_order/3` | `:account_number`, `:client_order_id` |
+| `get_order/3` | `:account_number` |
+| `get_orders/2` | `:account_number`, `:cursor`, `:limit`, `:created_at_start`, `:created_at_end`, `:updated_at_start`, `:updated_at_end`, `:symbol`, `:side`, `:type`, `:state` |
+| `subscribe/2` | `:feed`, `:to`, plus the four unsupported market keys |
+| `update_symbols/2` | `:feed`, plus the four unsupported market keys |
+| `unsubscribe/2`, `coverage/1`, `coverage_by_kind/1`, `wanted/1` | `:feed` |
+| `subscribe_notices/1` | `:feed`, `:to` |
+
+Requires `dp_exchange_core ~> 0.3.101`.
+
 **A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the
 last registered subscriber has died and the feed was started without a `:subscriber`, the
 symbols added for them leave the polled set. Symbols given at boot or to `update_symbols/2`

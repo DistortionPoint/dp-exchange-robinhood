@@ -42,7 +42,7 @@ defmodule DpExchange.Robinhood.Rest do
   discovering an empty series.
   """
 
-  alias DpExchange.Core.{Config, HttpClient, Instrument}
+  alias DpExchange.Core.{Config, HttpClient, Instrument, Options}
   alias DpExchange.Core.Types.{Balance, Order, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
@@ -118,23 +118,6 @@ defmodule DpExchange.Robinhood.Rest do
   defp check_base_uri(%URI{}, _url),
     do: {:error, {:insecure_url, :robinhood}}
 
-  @doc """
-  Whether `opts` is a keyword list: `:ok`, or `{:error, {:invalid_options, value}}` (the value
-  bounded, so a hostile term cannot flood a log).
-
-  Every facade call reads its options with `Keyword` functions, which raise
-  (`FunctionClauseError`, `ArgumentError`) inside the caller's process on a map, a string or
-  an improper list, and a map of options looks plausible enough to be passed by mistake. A
-  call whose options are not a keyword list is refused before anything is read, signed or
-  sent. Exposed so `DpExchange.Robinhood.Fake` refuses exactly what the facade refuses.
-  """
-  @spec validate_opts(term()) :: :ok | {:error, {:invalid_options, term()}}
-  def validate_opts(opts) do
-    if Keyword.keyword?(opts),
-      do: :ok,
-      else: {:error, {:invalid_options, bounded_raw(opts)}}
-  end
-
   # The contract's market-data options (`DpExchange.Core.Venue`, "Limits and options a venue
   # cannot honour"). This venue serves a bid and an ask, a catalogue and a poll, and none of
   # them is windowed, depth-limited or built from candles, so each of these is a request it
@@ -142,8 +125,81 @@ defmodule DpExchange.Robinhood.Rest do
   # read returned the whole catalogue to a caller who believed it had one row.
   @unsupported_market_options [:include_partial, :limit, :depth, :since]
 
+  # **The options each facade function reads, in one place.** A function's allowed list is
+  # `Options.transport_options/0` plus its entry here; `Options.check/2` refuses any other
+  # key as `{:unknown_option, key}`. The four market-data keys are listed for the calls that
+  # refuse them as `{:unsupported_option, key}` (a more specific answer than "unknown").
+  # `:timestamp` is read by `Auth.headers/5` on every signed call; `:feed` and `:to` by the
+  # streaming calls. `get_orders` reads the venue's own filters, `:cursor` and `:limit`;
+  # `place_order` reads `:client_order_id` as well as the key on the request.
+  # `:account_number` is listed only where the call sends it (holdings, orders). On
+  # `cancel_order`, `get_accounts`, `get_estimated_price` and `quantization` it is refused: a
+  # caller who passed it would believe it scoped a call that ignores it.
+  @function_options %{
+    get_top_of_book: [:timestamp | @unsupported_market_options],
+    get_symbols: [:timestamp | @unsupported_market_options],
+    list_instruments: [:timestamp | @unsupported_market_options],
+    quantization: [:timestamp],
+    get_balances: [:timestamp, :account_number, :asset_codes],
+    get_accounts: [:timestamp],
+    place_order: [:timestamp, :account_number, :client_order_id],
+    cancel_order: [:timestamp],
+    get_order: [:timestamp, :account_number],
+    get_orders: [
+      :timestamp,
+      :account_number,
+      :cursor,
+      :limit,
+      :created_at_start,
+      :created_at_end,
+      :updated_at_start,
+      :updated_at_end,
+      :symbol,
+      :side,
+      :type,
+      :state
+    ],
+    get_estimated_price: [:timestamp],
+    subscribe: [:feed, :to | @unsupported_market_options],
+    unsubscribe: [:feed],
+    update_symbols: [:feed | @unsupported_market_options],
+    subscribe_notices: [:feed, :to],
+    coverage: [:feed]
+  }
+
   @doc """
-  `validate_opts/1`, then refuses a market-data option this venue cannot honour:
+  The options `function` reads beyond `DpExchange.Core.Options.transport_options/0`: the
+  table every facade function and its Fake check against. `function` is one of the facade's
+  option-taking functions (`:coverage` stands for `coverage/1`, `coverage_by_kind/1` and
+  `wanted/1`).
+  """
+  @spec function_options(atom()) :: [atom()]
+  def function_options(function), do: Map.fetch!(@function_options, function)
+
+  @doc """
+  Checks `opts` for `function` with `DpExchange.Core.Options.check/2`: `:ok`,
+  `{:error, {:unknown_option, key}}` for a key the function does not read, or
+  `{:error, {:invalid_options, value}}` when `opts` is not a keyword list (the value bounded,
+  so a hostile term cannot flood a log).
+
+  Every facade call reads its options with `Keyword` functions, which raise
+  (`FunctionClauseError`, `ArgumentError`) inside the caller's process on a map, a string or
+  an improper list, and a map of options looks plausible enough to be passed by mistake. A
+  misspelt key (`limt:`) is a different question from the one the caller meant to ask. Either
+  is refused before anything is read, signed or sent. Exposed so `DpExchange.Robinhood.Fake`
+  refuses exactly what the facade refuses.
+  """
+  @spec validate_opts(term(), atom()) ::
+          :ok | {:error, {:invalid_options, term()} | {:unknown_option, atom()}}
+  def validate_opts(opts, function) do
+    case Options.check(opts, Options.transport_options() ++ function_options(function)) do
+      {:error, {:invalid_options, value}} -> {:error, {:invalid_options, bounded_raw(value)}}
+      other -> other
+    end
+  end
+
+  @doc """
+  `validate_opts/2`, then refuses a market-data option this venue cannot honour:
   `{:error, {:unsupported_option, key}}` for the first of `:include_partial`, `:limit`,
   `:depth` and `:since` that is present and not `nil` (a forwarded `nil` is an absent option,
   as everywhere in this family). Used by the market-data and streaming calls
@@ -151,12 +207,13 @@ defmodule DpExchange.Robinhood.Rest do
   where none of the four means anything; `get_orders/2` keeps its own `:limit`. Exposed so
   `DpExchange.Robinhood.Fake` refuses exactly what the facade refuses.
   """
-  @spec validate_market_opts(term()) ::
+  @spec validate_market_opts(term(), atom()) ::
           :ok
           | {:error, {:invalid_options, term()}}
+          | {:error, {:unknown_option, atom()}}
           | {:error, {:unsupported_option, atom()}}
-  def validate_market_opts(opts) do
-    with :ok <- validate_opts(opts) do
+  def validate_market_opts(opts, function) do
+    with :ok <- validate_opts(opts, function) do
       case Enum.find(@unsupported_market_options, &(Config.opt(opts, &1, nil) != nil)) do
         nil -> :ok
         key -> {:error, {:unsupported_option, key}}

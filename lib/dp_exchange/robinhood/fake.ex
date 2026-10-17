@@ -163,9 +163,8 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def get_top_of_book(symbol, opts \\ []) do
-    with_injection(symbol, fn ->
-      with :ok <- Rest.validate_market_opts(opts),
-           :ok <- fake_symbol(symbol),
+    checked(Rest.validate_market_opts(opts, :get_top_of_book), symbol, fn ->
+      with :ok <- fake_symbol(symbol),
            :ok <- authenticated(opts) do
         listed_book(symbol)
       end
@@ -243,9 +242,8 @@ defmodule DpExchange.Robinhood.Fake do
           keyword()
         ) :: {:ok, map()} | {:error, term()} | {:refused, term()}
   def get_estimated_price(symbol, side, quantity, credentials, opts \\ []) do
-    with_injection(symbol, fn ->
-      with :ok <- Rest.validate_opts(opts),
-           {:ok, request} <- Rest.estimate_request(symbol, side, quantity),
+    checked(Rest.validate_opts(opts, :get_estimated_price), symbol, fn ->
+      with {:ok, request} <- Rest.estimate_request(symbol, side, quantity),
            :ok <- authenticated_credentials(credentials),
            {:ok, book} <- listed_book(symbol) do
         rows = Enum.map(request.quantities, &estimate_row(book, request.side, &1))
@@ -271,10 +269,9 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def get_symbols(opts \\ []) do
-    with_injection(fn ->
+    checked(Rest.validate_market_opts(opts, :get_symbols), fn ->
       # Sorted, as `Rest.get_symbols/2` sorts what it collects.
-      with :ok <- Rest.validate_market_opts(opts),
-           :ok <- authenticated(opts),
+      with :ok <- authenticated(opts),
            do: {:ok, Enum.sort(@symbols)}
     end)
   end
@@ -327,9 +324,8 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def list_instruments(opts) do
-    with_injection(fn ->
-      with :ok <- Rest.validate_market_opts(opts),
-           :ok <- authenticated(opts),
+    checked(Rest.validate_market_opts(opts, :list_instruments), fn ->
+      with :ok <- authenticated(opts),
            do: {:ok, Enum.map(@symbols, &fake_instrument/1)}
     end)
   end
@@ -359,9 +355,8 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def get_balances(credentials, opts) do
-    with_injection(fn ->
-      with :ok <- Rest.validate_opts(opts),
-           {:ok, account} <- fake_account(opts),
+    checked(Rest.validate_opts(opts, :get_balances), fn ->
+      with {:ok, account} <- fake_account(opts),
            {:ok, asset_codes} <- Rest.asset_codes(opts),
            :ok <- authenticated_credentials(credentials),
            :ok <- held_account(account) do
@@ -411,9 +406,8 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def get_accounts(credentials, opts) do
-    with_injection(fn ->
-      with :ok <- Rest.validate_opts(opts),
-           :ok <- authenticated_credentials(credentials) do
+    checked(Rest.validate_opts(opts, :get_accounts), fn ->
+      with :ok <- authenticated_credentials(credentials) do
         {:ok,
          [
            %{
@@ -450,13 +444,12 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def place_order(credentials, request, opts \\ []) do
-    with_injection(fn ->
+    checked(Rest.validate_opts(opts, :place_order), fn ->
       # The order `Rest.place_order/3` refuses in: the request (unknown keys, symbol, side,
       # type, duration, size, prices), its `client_order_id`, the account option, and only
       # then credentials. An empty request used to be accepted here and answered with an open
       # order of all-`nil` fields, a success the real package can never give.
-      with :ok <- Rest.validate_opts(opts),
-           {:ok, parts} <- Rest.normalize_order_request(request),
+      with {:ok, parts} <- Rest.normalize_order_request(request),
            {:ok, key} <- Rest.supplied_client_order_id(request, opts),
            {:ok, _account} <- fake_account(opts),
            :ok <- authenticated_credentials(credentials) do
@@ -573,7 +566,7 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def cancel_order(credentials, id, opts \\ []) do
-    with_injection(fn ->
+    checked(Rest.validate_opts(opts, :cancel_order), fn ->
       # `:cancelled`, matching `Rest.cancel_order/3`: the v2 endpoint this venue calls
       # returns a full `V2CryptoOrder` reflecting the venue's real state, not a bare
       # acknowledgement. A fake that answered `:open` here — the v1 behaviour, and the
@@ -588,8 +581,7 @@ defmodule DpExchange.Robinhood.Fake do
       # The order this process placed, now cancelled, in full: the symbol, side and size the
       # caller placed, not a bare `nil`-filled acknowledgement. An id this fake never issued
       # is the venue's 404, as `Rest` delivers it.
-      with :ok <- Rest.validate_opts(opts),
-           :ok <- fake_order_id(id),
+      with :ok <- fake_order_id(id),
            :ok <- authenticated_credentials(credentials),
            {:ok, order} <- find_order(id) do
         {:ok, remember_order(%{order | status: :cancelled, updated_at: DateTime.utc_now()})}
@@ -603,10 +595,9 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def get_order(credentials, id, opts \\ []) do
-    with_injection(fn ->
+    checked(Rest.validate_opts(opts, :get_order), fn ->
       # The id first, then the account option, then credentials: `Rest.get_order/3`'s order.
-      with :ok <- Rest.validate_opts(opts),
-           :ok <- fake_order_id(id),
+      with :ok <- fake_order_id(id),
            {:ok, _account} <- fake_account(opts),
            :ok <- authenticated_credentials(credentials) do
         find_order(id)
@@ -622,9 +613,8 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def get_orders(credentials, opts \\ []) do
-    with_injection(fn ->
-      with :ok <- Rest.validate_opts(opts),
-           {:ok, _account} <- fake_account(opts),
+    checked(Rest.validate_opts(opts, :get_orders), fn ->
+      with {:ok, _account} <- fake_account(opts),
            :ok <- Rest.validate_order_filters(opts),
            :ok <- fake_cursor(Keyword.get(opts, :cursor)),
            :ok <- Rest.validate_limit(opts),
@@ -892,9 +882,8 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def quantization(symbol, opts \\ []) do
-    with_injection(symbol, fn ->
-      with :ok <- Rest.validate_opts(opts),
-           :ok <- fake_symbol(symbol),
+    checked(Rest.validate_opts(opts, :quantization), symbol, fn ->
+      with :ok <- fake_symbol(symbol),
            :ok <- authenticated(opts),
            true <- listed?(symbol) || unlisted(SymbolFormat.to_canonical_symbol(symbol)) do
         {:ok,
@@ -939,7 +928,7 @@ defmodule DpExchange.Robinhood.Fake do
   def subscribe(symbols, opts \\ []) do
     # The same checks, in the same order, as the real facade: symbols, then the subscriber.
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
-         :ok <- Rest.validate_market_opts(opts),
+         :ok <- Rest.validate_market_opts(opts, :subscribe),
          {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
       do_subscribe(symbols, to)
     end
@@ -981,7 +970,7 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def unsubscribe(symbols, opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
-         :ok <- Rest.validate_opts(opts) do
+         :ok <- Rest.validate_opts(opts, :unsubscribe) do
       Process.put(@wanted_key, MapSet.difference(wanted_set(), MapSet.new(symbols)))
       Process.put(@delivered_key, MapSet.difference(delivered(), MapSet.new(symbols)))
       :ok
@@ -999,7 +988,7 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def update_symbols(symbols, opts \\ []) do
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
-         :ok <- Rest.validate_market_opts(opts) do
+         :ok <- Rest.validate_market_opts(opts, :update_symbols) do
       added = Enum.reject(symbols, &MapSet.member?(wanted_set(), &1))
       Process.put(@wanted_key, MapSet.new(symbols))
       Process.put(@delivered_key, MapSet.intersection(delivered(), MapSet.new(symbols)))
@@ -1017,7 +1006,10 @@ defmodule DpExchange.Robinhood.Fake do
   See `c:DpExchange.Core.Venue.coverage/1`.
   """
   @impl true
-  def coverage(_opts \\ []), do: Map.new(delivered(), &{&1, :internal_poll})
+  def coverage(opts \\ []) do
+    check_opts!(opts)
+    Map.new(delivered(), &{&1, :internal_poll})
+  end
 
   @doc """
   `coverage/1`, split by kind. Same single-key shape as the real venue, and for the
@@ -1039,7 +1031,22 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @spec wanted(keyword()) :: [Venue.symbol()]
   @impl true
-  def wanted(_opts \\ []), do: Enum.sort(wanted_set())
+  def wanted(opts \\ []) do
+    check_opts!(opts)
+    Enum.sort(wanted_set())
+  end
+
+  # The reads with no error channel raise on a non-keyword list or an unknown key, as the real
+  # facade's do: an empty answer would read as "nothing covered".
+  defp check_opts!(opts) do
+    case Rest.validate_opts(opts, :coverage) do
+      :ok -> :ok
+      {:error, {:invalid_options, shown}} -> raise ArgumentError, invalid_message(shown)
+      {:error, {:unknown_option, key}} -> raise ArgumentError, "unknown option #{inspect(key)}"
+    end
+  end
+
+  defp invalid_message(shown), do: "options must be a keyword list, got: #{inspect(shown)}"
 
   @doc """
   Answers `:ok` for a registration of `opts[:to]` against this venue's own notices. The real
@@ -1059,10 +1066,9 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def subscribe_notices(opts \\ []) do
-    with_injection(fn ->
+    checked(Rest.validate_opts(opts, :subscribe_notices), fn ->
       # Refuses what the real feed refuses (`nil` means the caller, as there).
-      with :ok <- Rest.validate_opts(opts),
-           {:ok, _to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())),
+      with {:ok, _to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())),
            do: :ok
     end)
   end
@@ -1118,6 +1124,13 @@ defmodule DpExchange.Robinhood.Fake do
       Auth.validate_credentials(credentials)
     end
   end
+
+  # The option check comes BEFORE the injection is consulted: a call refused for its options
+  # sends nothing on the real venue, so it must not consume a queued outcome meant for a
+  # later, well-formed call.
+  defp checked(check, symbol \\ nil, fun)
+  defp checked(:ok, symbol, fun), do: with_injection(symbol, fun)
+  defp checked({:error, _reason} = refused, _symbol, _fun), do: refused
 
   defp with_injection(symbol \\ nil, fun) do
     case FakeInjection.next_outcome(:robinhood, symbol) do

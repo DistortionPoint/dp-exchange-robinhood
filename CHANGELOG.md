@@ -19,6 +19,19 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** a facade option the call does not read now answers
+  `{:error, {:unknown_option, key}}` instead of being silently ignored (`limt:`, `sinse:`,
+  and stray keys copied from another venue such as `account_id:`/`account_hash:`), on every
+  option-taking call and on the Fake; `coverage/1`, `coverage_by_kind/1` and `wanted/1` raise
+  `ArgumentError`. Decided with `DpExchange.Core.Options.check/2` against
+  `Options.transport_options/0` plus the per-function table `Rest.function_options/1`, before
+  anything is signed or sent. `Rest.validate_opts/1` and `validate_market_opts/1` became
+  `/2` (they take the function name) and delegate to `Options.check/2`. The Fake checks
+  options before consulting an injection, so a refused call no longer consumes a queued
+  outcome. Requires `dp_exchange_core ~> 0.3.101`.
+
 ### Fixed
 
 - Options that are not a keyword list (a map, a string, an improper list) are refused as
