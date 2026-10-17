@@ -182,24 +182,80 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert cash.hold == nil
     end
 
-    test "the asset filter is repeated per code, as the venue takes it" do
+    test "one asset code is sent as the venue's single asset_code filter" do
       me = self()
+      body = %{"results" => [%{"asset_code" => "BTC", "total_quantity" => "1"}]}
 
-      # The cash row is excluded too: its currency, USD, is not among the asset codes asked
-      # for.
-      assert {:ok, []} =
+      assert {:ok, [%Types.Balance{currency: "BTC"}]} =
                Rest.get_balances(@credentials,
                  account_number: "RH-1",
-                 asset_codes: ["BTC", "ETH"],
-                 plug: capturing_holdings(%{"results" => []}, me),
+                 asset_codes: ["BTC"],
+                 plug: capturing_holdings(body, me),
                  retry_attempts: 0
                )
 
-      assert_receive {:request, "GET", path, query, _raw}
-      assert path == "/api/v2/crypto/trading/holdings/"
+      assert_receive {:request, "GET", "/api/v2/crypto/trading/holdings/", query, _raw}, 5_000
       assert query =~ "account_number=RH-1"
       assert query =~ "asset_code=BTC"
-      assert query =~ "asset_code=ETH"
+    end
+
+    test "several codes are not sent as a repeated parameter the vendor never documents" do
+      me = self()
+
+      # The vendor documents `asset_code` as ONE string and never says it repeats, so a venue
+      # keeping only the last value would answer ETH alone. The whole account is asked for and
+      # narrowed here: BTC and ETH stay, DOGE goes, and the cash row (USD) is excluded because
+      # the codes asked for do not name it.
+      body = %{
+        "results" => [
+          %{"asset_code" => "BTC", "total_quantity" => "1"},
+          %{"asset_code" => "DOGE", "total_quantity" => "5"},
+          %{"asset_code" => "ETH", "total_quantity" => "2"}
+        ]
+      }
+
+      assert {:ok, balances} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 asset_codes: ["BTC", "eth"],
+                 plug: capturing_holdings(body, me),
+                 retry_attempts: 0
+               )
+
+      assert Enum.map(balances, & &1.currency) == ["BTC", "ETH"]
+
+      assert_receive {:request, "GET", "/api/v2/crypto/trading/holdings/", query, _raw}, 5_000
+      assert query =~ "account_number=RH-1"
+      refute query =~ "asset_code"
+    end
+
+    test "a venue that ignores the single asset_code filter cannot widen the answer" do
+      body = %{
+        "results" => [
+          %{"asset_code" => "BTC", "total_quantity" => "1"},
+          %{"asset_code" => "ETH", "total_quantity" => "2"}
+        ]
+      }
+
+      assert {:ok, [%Types.Balance{currency: "ETH"}]} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 asset_codes: ["ETH"],
+                 plug: responding_holdings(body),
+                 retry_attempts: 0
+               )
+    end
+
+    test "narrowing never hides a row it cannot read" do
+      body = %{"results" => [%{"total_quantity" => "1"}]}
+
+      assert {:error, :unexpected_response_shape} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 asset_codes: ["BTC", "ETH"],
+                 plug: responding_holdings(body),
+                 retry_attempts: 0
+               )
     end
 
     test "results: null is an empty page, not an error" do

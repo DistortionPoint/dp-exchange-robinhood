@@ -19,6 +19,32 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Dependencies
+
+- Requires `dp_exchange_core ~> 0.3.99`: its tightened conformance groups 12 and 38 run
+  against this package's fake and pass.
+
+### Fixed
+
+- `get_balances/2` with two or more `asset_codes:` no longer sends a repeated `asset_code`
+  query parameter. The vendor documents `asset_code` as one string and never says it repeats
+  (unlike `symbol`), so a venue keeping only the last value would have answered one asset and
+  read as "no other asset held". One code is still sent as the venue's filter; several are
+  asked for as the whole account and narrowed in the package. The narrowing is also applied to
+  a single code, so a venue that ignores its filter cannot widen the answer, matches codes
+  case-insensitively (the cash row too, and `Fake.get_balances/2`), and never hides a row whose
+  `asset_code` it cannot read.
+- `get_estimated_price/5` refuses more than the vendor's stated maximum of 10 quantities per
+  request as `{:error, {:too_many_quantities, 10}}`, locally and unsent (the Fake refuses it
+  identically, after the per-quantity checks), instead of sending a request the venue 400s.
+- The poll now forwards `retry_delay:` to its requests like `retry_attempts:` and `timeout:`
+  (the facade's calls accepted it and the feed silently dropped it).
+
+### Changed
+
+- `usage-rules.md` lists every option the supervision tree reads, and documents the
+  `asset_codes:` and `get_estimated_price/5` behaviour above.
+
 ## [0.3.105] - 2026-10-16
 
 ### Changed

@@ -917,18 +917,56 @@ defmodule DpExchange.Robinhood.Rest do
   def get_balances(credentials, opts) do
     with {:ok, account} <- required_account(opts),
          {:ok, asset_codes} <- asset_codes(opts) do
-      query =
-        [{"account_number", account}] ++ Enum.map(asset_codes, &{"asset_code", &1})
+      query = [{"account_number", account}] ++ holdings_asset_filter(asset_codes)
 
       path = "/api/v2/crypto/trading/holdings/" <> query_string(query)
       asked_at = DateTime.utc_now()
 
       with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :too_many_holdings_pages),
-           {:ok, holdings} <- to_balances(rows, asked_at),
+           {:ok, holdings} <- rows |> narrow_to_assets(asset_codes) |> to_balances(asked_at),
            {:ok, cash} <- cash_balance(account, asset_codes, credentials, opts, asked_at) do
         {:ok, holdings ++ cash}
       end
     end
+  end
+
+  # **The vendor documents `asset_code` as ONE optional string** ("Filter holdings by specific
+  # asset code (e.g., \"BTC\")"), and unlike `symbol` on `best_bid_ask` and `trading_pairs` it
+  # never says the parameter repeats. Sending `asset_code=BTC&asset_code=ETH` assumed it does;
+  # a venue that kept only the last value would have answered ETH alone, and a caller told
+  # `{:ok, [eth]}` reads "no BTC held". So the venue is asked to filter only for the one case
+  # the document states, a single code. Two or more are asked for as the whole account and
+  # narrowed here (`narrow_to_assets/2`), which is right whichever way the venue reads a
+  # repeated parameter.
+  defp holdings_asset_filter([code]), do: [{"asset_code", code}]
+  defp holdings_asset_filter(_none_or_several), do: []
+
+  # Narrowed here whatever was asked of the venue: a venue that ignored the filter would
+  # otherwise hand back assets the caller did not name. Compared case-insensitively (asset
+  # codes are upper case; a caller's `"btc"` must not turn into "holds nothing"). A row whose
+  # `asset_code` cannot be read is kept, so `to_balance/2` still refuses it rather than this
+  # step hiding it.
+  defp narrow_to_assets(rows, []), do: rows
+
+  defp narrow_to_assets(rows, asset_codes),
+    do: Enum.reject(rows, &named_other_asset?(&1, asset_codes))
+
+  defp named_other_asset?(%{"asset_code" => code}, asset_codes) when is_binary(code),
+    do: not asset_named?(code, asset_codes)
+
+  defp named_other_asset?(_unreadable, _asset_codes), do: false
+
+  @doc """
+  Whether `code` is one of `asset_codes`, ignoring case. An empty `asset_codes` names every
+  asset. Exposed so `DpExchange.Robinhood.Fake` narrows holdings and cash exactly as
+  `get_balances/2` does.
+  """
+  @spec asset_named?(String.t(), [String.t()]) :: boolean()
+  def asset_named?(_code, []), do: true
+
+  def asset_named?(code, asset_codes) do
+    upper = String.upcase(code)
+    Enum.any?(asset_codes, &(String.upcase(&1) == upper))
   end
 
   @doc """
@@ -967,7 +1005,7 @@ defmodule DpExchange.Robinhood.Rest do
          {:ok, row} <- account_row(rows, account),
          {:ok, currency} <- required_currency(row["buying_power_currency"]),
          {:ok, amount} <- required_amount(row["buying_power"]) do
-      if asset_codes == [] or currency in asset_codes do
+      if asset_named?(currency, asset_codes) do
         {:ok,
          [
            %Balance{
@@ -1089,6 +1127,8 @@ defmodule DpExchange.Robinhood.Rest do
   **Refused locally, before anything is signed:** a `side` outside `bid`/`ask`/`both`
   (atom or string) as `{:error, {:unsupported_side, side}}`, a `quantity` that is not a positive finite number (zero, negative, `NaN`,
   `Infinity`, unparseable text, an empty list) as `{:error, {:invalid_field, :quantity}}`,
+  more than the vendor's maximum of 10 quantities in one request as
+  `{:error, {:too_many_quantities, 10}}` (after each quantity has been checked),
   and a `symbol` that is not a string. Each used to go on the wire as whatever `to_string/1`
   made of it.
 
@@ -1118,7 +1158,8 @@ defmodule DpExchange.Robinhood.Rest do
   The estimate request `get_estimated_price/5` would send, validated and normalised, without
   sending anything: `{:ok, %{symbol: native, side: "bid" | "ask" | "both", quantities:
   [wire_string]}}`, or the refusal `get_estimated_price/5` gives, in its order
-  (`{:invalid_symbol, v}`, `{:unsupported_side, v}`, `{:invalid_field, :quantity}`). Exposed so
+  (`{:invalid_symbol, v}`, `{:unsupported_side, v}`, `{:invalid_field, :quantity}`,
+  `{:too_many_quantities, 10}`). Exposed so
   `DpExchange.Robinhood.Fake` refuses exactly what the real path refuses.
   """
   @spec estimate_request(term(), term(), term()) ::
@@ -1173,10 +1214,22 @@ defmodule DpExchange.Robinhood.Rest do
       :error, _acc -> {:halt, {:error, {:invalid_field, :quantity}}}
     end)
     |> case do
-      {:ok, strings} -> {:ok, Enum.reverse(strings)}
+      {:ok, strings} -> within_quantity_cap(Enum.reverse(strings))
       error -> error
     end
   end
+
+  # The vendor's `quantity` parameter: "A max of 10 quantities can be specified for each
+  # request" (`GET /api/v2/crypto/trading/estimated_price/`). More than that is refused here,
+  # before anything is signed, rather than sent for the venue to 400 (which a caller could
+  # read as a bad symbol or a bad key).
+  @max_estimate_quantities 10
+
+  defp within_quantity_cap(strings) when length(strings) <= @max_estimate_quantities,
+    do: {:ok, strings}
+
+  defp within_quantity_cap(_strings),
+    do: {:error, {:too_many_quantities, @max_estimate_quantities}}
 
   @estimate_numbers ~w(quantity bid ask fee_ratio est_fee est_total_cost est_total_credit)
 

@@ -79,6 +79,17 @@ bulk request from then on, and asked for by itself each cycle until it answers a
 drop it. A 401 or 403 is not split and blames no symbol: it is the cycle's error. A symbol the
 venue simply omits from a response is silence, retried next cycle, never a refusal.
 
+**Every option the supervision tree reads.** `credentials:` (the api key and base64 seed;
+wrapped so a crash report never prints them), `symbols:` (the boot set; upper-cased, a list of
+non-blank strings or the feed does not start), `subscriber:` (above), `name:` / `feed:` /
+`limiter:` (process names; defaults `DpExchange.Robinhood.Supervisor`, `...Feed`,
+`...RateLimiter`), `interval_ms:` (default `30_000`), `start_delay_ms:` (wait before the first
+poll; default none), `bisect_budget_ms:` (above), `max_queue_len:` (below),
+`rate_limit_blocking:` (default `true` for the poll, so it waits for capacity rather than
+skipping a symbol), and the request options forwarded to every poll: `base_url:`,
+`retry_attempts:`, `retry_delay:` (milliseconds), `timeout:` and `log_requests:`. `plug:` and
+`req_adapter:` are test seams for a fake transport and are not for production use.
+
 ## A monitoring process can subscribe to notices separately from market data
 
 **Pass `subscriber:`, because there is no default.** A feed started without one delivers
@@ -387,7 +398,9 @@ measured.
 - `get_top_of_book/2` — the top of the book, as the venue publishes it
 - `get_estimated_price/5` (`symbol, side, quantity, credentials, opts`) — what a **given
   quantity** would execute at now. `DpExchange.Robinhood.Fake` has it too and refuses what
-  the real path refuses (symbol, side, quantity, then credentials), answering only the
+  the real path refuses (symbol, side, quantity, then credentials; `quantity` may be a list of
+  at most 10, the vendor's stated maximum, beyond which `{:error, {:too_many_quantities, 10}}`
+  is answered locally and nothing is sent), answering only the
   fields it can honestly state (no fees). A negative number in the venue's reply is refused
   as `{:invalid_decimal, key, value}`, and so is a result row that is not an object
   (`{:error, :unexpected_response_shape}`)
@@ -528,6 +541,11 @@ no total cash figure, only what is available, so `balance` is never a copy of
 `available_balance` dressed up as a total. When `opts[:asset_codes]` is given, the cash row
 appears only if that list names the account's currency. Each entry must be a non-blank
 string, otherwise `{:error, {:invalid_field, :asset_codes}}` before anything is signed.
+Codes are matched case-insensitively. **One code is sent to the venue** as its `asset_code`
+filter; **two or more are not**, because the vendor documents `asset_code` as a single value and
+never says it repeats (unlike `symbol`). The whole account is read and narrowed in this package,
+and the same narrowing is applied to a single code, so a venue that ignores its filter cannot
+widen the answer.
 
 This second read can refuse on its own: `{:refused, {:account_not_found, account}}` (it was
 `{:error, ...}`, which reads as retryable; the credential does not hold that account) when no

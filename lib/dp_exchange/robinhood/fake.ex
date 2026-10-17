@@ -210,7 +210,8 @@ defmodule DpExchange.Robinhood.Fake do
   Refused as `DpExchange.Robinhood.get_estimated_price/5` refuses, in its order: a symbol
   that is not a non-blank string `{:error, {:invalid_symbol, value}}`, a side outside
   `bid`/`ask`/`both` `{:error, {:unsupported_side, value}}`, a quantity that is not a
-  positive finite number `{:error, {:invalid_field, :quantity}}`, then missing credentials;
+  positive finite number `{:error, {:invalid_field, :quantity}}`, more than 10 quantities
+  `{:error, {:too_many_quantities, 10}}`, then missing credentials;
   a symbol outside the fake's three is `{:refused, :not_listed}`.
 
   **Less capable than the venue, on purpose.** It states no `fee_ratio`, `est_fee`,
@@ -369,7 +370,7 @@ defmodule DpExchange.Robinhood.Fake do
     end)
   end
 
-  defp narrowed_to?(asset_codes, currency), do: asset_codes == [] or currency in asset_codes
+  defp narrowed_to?(asset_codes, currency), do: Rest.asset_named?(currency, asset_codes)
 
   defp fake_cash_balance do
     %Types.Balance{

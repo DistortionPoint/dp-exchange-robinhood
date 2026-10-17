@@ -400,6 +400,32 @@ defmodule DpExchange.Robinhood.ParityEdgeCasesTest do
       assert Rest.estimate_request("BTC-USD", :ask, [1 | 2]) ==
                {:error, {:invalid_field, :quantity}}
     end
+
+    test "more than the vendor's 10 quantities is refused locally, unsent, by real and fake" do
+      ten = Enum.map(1..10, &Integer.to_string/1)
+      eleven = ten ++ ["11"]
+      plug = counting(self(), %{"results" => []})
+
+      assert {:ok, %{quantities: ^ten}} = Rest.estimate_request("BTC-USD", :ask, ten)
+
+      assert Rest.estimate_request("BTC-USD", :ask, eleven) ==
+               {:error, {:too_many_quantities, 10}}
+
+      assert Rest.get_estimated_price("BTC-USD", :ask, eleven, @credentials, opts(plug: plug)) ==
+               {:error, {:too_many_quantities, 10}}
+
+      assert Fake.get_estimated_price("BTC-USD", :ask, eleven, @credentials) ==
+               {:error, {:too_many_quantities, 10}}
+
+      refute_receive {:request, _path, _query}, 500
+    end
+
+    test "an unreadable quantity is still reported ahead of the count" do
+      many_bad = Enum.map(1..11, fn _n -> "0" end)
+
+      assert Rest.estimate_request("BTC-USD", :ask, many_bad) ==
+               {:error, {:invalid_field, :quantity}}
+    end
   end
 
   describe "Fake.get_estimated_price/5 answers what Rest.get_estimated_price/5 answers" do

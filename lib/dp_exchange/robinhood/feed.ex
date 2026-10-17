@@ -536,6 +536,7 @@ defmodule DpExchange.Robinhood.Feed do
           :req_adapter,
           :base_url,
           :retry_attempts,
+          :retry_delay,
           :timeout,
           :log_requests
         ])
