@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.106] - 2026-10-17
+
 ### Dependencies
 
 - Requires `dp_exchange_core ~> 0.3.99`: its tightened conformance groups 12 and 38 run
