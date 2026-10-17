@@ -90,16 +90,60 @@ defmodule DpExchange.Robinhood.BalanceAttributionTest do
 
   test "an unstated quantity is NOT refused — an unknown total is still a balance" do
     # The other half of the rule, and the reason this is not simply "guard every enforced
-    # key". `decimal/1` returns `nil` for an absent, empty, unparseable or NaN/Infinity
-    # value, and `Core.Types.Balance` permits that in `:balance`. What it does not permit is
-    # not knowing which asset the row is about.
-    body = %{"results" => [%{"asset_code" => "BTC", "total_quantity" => "NaN"}]}
+    # key". An absent, null or empty quantity states nothing, and `Core.Types.Balance`
+    # permits that in `:balance`. What it does not permit is not knowing which asset the row
+    # is about. (A quantity that WAS sent and cannot be read is a different matter, below.)
+    for stated_nothing <- [nil, ""] do
+      body = %{
+        "results" => [
+          %{
+            "asset_code" => "BTC",
+            "total_quantity" => stated_nothing,
+            "quantity_available_for_trading" => stated_nothing
+          },
+          %{"asset_code" => "ETH"}
+        ]
+      }
 
-    # Plus the account's cash (dp-exchange-core issue #35), appended after the holdings.
-    assert {:ok, [balance, cash]} = Rest.get_balances(@credentials, opts(body))
-    assert balance.currency == "BTC"
-    assert balance.balance == nil
-    assert cash.currency == "USD"
+      # Plus the account's cash (dp-exchange-core issue #35), appended after the holdings.
+      assert {:ok, [btc, eth, cash]} = Rest.get_balances(@credentials, opts(body))
+      assert btc.currency == "BTC"
+      assert btc.balance == nil
+      assert btc.available_balance == nil
+      assert eth.balance == nil
+      assert cash.currency == "USD"
+    end
+  end
+
+  test "a quantity that was sent and cannot be read refuses the reply, it is not 'unknown'" do
+    # `decimal/1` answers `nil` for NaN, Infinity, text and a boolean, and this used to carry
+    # that `nil` into `Balance.balance`: "unknown" said about a value the venue did state. A
+    # negative holding is no position any account has, and rode out as the number sent.
+    for {key, field} <- [
+          {"total_quantity", :balance},
+          {"quantity_available_for_trading", :available_balance}
+        ],
+        bad <- ["NaN", "-Infinity", "abc", "-0.5", true, %{"v" => 1}, -3] do
+      body = %{"results" => [%{"asset_code" => "BTC", key => bad}]}
+
+      assert {:error, {:invalid_decimal, ^field, shown}} =
+               Rest.get_balances(@credentials, opts(body))
+
+      # The venue's own value, as sent (or inspected when it is not text or a number).
+      assert shown == bad or shown == inspect(bad)
+    end
+  end
+
+  test "a zero quantity is a real, empty holding, not a refusal" do
+    body = %{
+      "results" => [
+        %{"asset_code" => "BTC", "total_quantity" => "0", "quantity_available_for_trading" => 0}
+      ]
+    }
+
+    assert {:ok, [btc, _cash]} = Rest.get_balances(@credentials, opts(body))
+    assert Decimal.equal?(btc.balance, Decimal.new(0))
+    assert Decimal.equal?(btc.available_balance, Decimal.new(0))
   end
 
   test "an ordinary holdings row still decodes" do

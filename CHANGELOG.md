@@ -19,6 +19,28 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- Options that are not a keyword list (a map, a string, an improper list) are refused as
+  `{:error, {:invalid_options, value}}` by every facade call that reads them, on the Fake as
+  well. They raised `FunctionClauseError`/`ArgumentError` in the caller's process,
+  `place_order/3` and `cancel_order/3` among them. `coverage/1`, `coverage_by_kind/1` and
+  `wanted/1` have no error channel and raise `ArgumentError` (bounded value) instead of
+  answering an empty "nothing covered".
+- The contract's market-data options `:limit`, `:depth`, `:since` and `:include_partial` are
+  `{:error, {:unsupported_option, key}}` on `get_top_of_book/2`, `get_symbols/1`,
+  `list_instruments/1`, `subscribe/2` and `update_symbols/2` (and the Fake's). They were
+  accepted and dropped, so `get_symbols(limit: 1)` returned the whole catalogue to a caller
+  who believed it had asked for one row. `get_orders/2` keeps its `:limit` (one page).
+- `get_balances/2` refuses a holding quantity the venue sent and this package cannot read
+  (`NaN`, `Infinity`, text, a boolean) or that is negative, as `{:error, {:invalid_decimal,
+  :balance | :available_balance, value}}`. It carried `nil` ("unknown") for a value the venue
+  did state, and a negative holding as the number sent. A null, empty or absent quantity is
+  still `nil`.
+- `get_balances/2` refuses a negative account `buying_power` as `{:error, {:invalid_decimal,
+  :buying_power, value}}` instead of returning it as the cash balance. Zero is kept.
+- Negative `refute_receive` windows in the feed tests raised to 500 ms (were 200 and 300).
+
 ## [0.3.107] - 2026-10-17
 
 ### Fixed

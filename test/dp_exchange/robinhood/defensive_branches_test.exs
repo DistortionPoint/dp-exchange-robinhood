@@ -274,7 +274,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Notice{kind: :coverage_change}},
                      5_000
 
-      refute_receive {:dp_exchange, :robinhood, {:refused, "NOPE-USD", _reason}}, 200
+      refute_receive {:dp_exchange, :robinhood, {:refused, "NOPE-USD", _reason}}, 500
     end
 
     test "update_symbols reaches the poller" do

@@ -119,6 +119,52 @@ defmodule DpExchange.Robinhood.Rest do
     do: {:error, {:insecure_url, :robinhood}}
 
   @doc """
+  Whether `opts` is a keyword list: `:ok`, or `{:error, {:invalid_options, value}}` (the value
+  bounded, so a hostile term cannot flood a log).
+
+  Every facade call reads its options with `Keyword` functions, which raise
+  (`FunctionClauseError`, `ArgumentError`) inside the caller's process on a map, a string or
+  an improper list, and a map of options looks plausible enough to be passed by mistake. A
+  call whose options are not a keyword list is refused before anything is read, signed or
+  sent. Exposed so `DpExchange.Robinhood.Fake` refuses exactly what the facade refuses.
+  """
+  @spec validate_opts(term()) :: :ok | {:error, {:invalid_options, term()}}
+  def validate_opts(opts) do
+    if Keyword.keyword?(opts),
+      do: :ok,
+      else: {:error, {:invalid_options, bounded_raw(opts)}}
+  end
+
+  # The contract's market-data options (`DpExchange.Core.Venue`, "Limits and options a venue
+  # cannot honour"). This venue serves a bid and an ask, a catalogue and a poll, and none of
+  # them is windowed, depth-limited or built from candles, so each of these is a request it
+  # cannot honour and must be refused, never accepted and ignored: `limit: 1` on a catalogue
+  # read returned the whole catalogue to a caller who believed it had one row.
+  @unsupported_market_options [:include_partial, :limit, :depth, :since]
+
+  @doc """
+  `validate_opts/1`, then refuses a market-data option this venue cannot honour:
+  `{:error, {:unsupported_option, key}}` for the first of `:include_partial`, `:limit`,
+  `:depth` and `:since` that is present and not `nil` (a forwarded `nil` is an absent option,
+  as everywhere in this family). Used by the market-data and streaming calls
+  (`get_top_of_book`, `get_symbols`, `list_instruments`, `subscribe`, `update_symbols`),
+  where none of the four means anything; `get_orders/2` keeps its own `:limit`. Exposed so
+  `DpExchange.Robinhood.Fake` refuses exactly what the facade refuses.
+  """
+  @spec validate_market_opts(term()) ::
+          :ok
+          | {:error, {:invalid_options, term()}}
+          | {:error, {:unsupported_option, atom()}}
+  def validate_market_opts(opts) do
+    with :ok <- validate_opts(opts) do
+      case Enum.find(@unsupported_market_options, &(Config.opt(opts, &1, nil) != nil)) do
+        nil -> :ok
+        key -> {:error, {:unsupported_option, key}}
+      end
+    end
+  end
+
+  @doc """
   Best bid and ask for `symbol` — the top of the book, not a traded price.
 
   Reads v2's `best_bid_ask`, the only quote-adjacent endpoint this venue serves. **v2's
@@ -885,6 +931,12 @@ defmodule DpExchange.Robinhood.Rest do
   `opts[:asset_codes]` narrows to particular assets; without it the venue returns all of
   them.
 
+  **A quantity the venue sent and this package cannot read refuses the reply:** `NaN`,
+  `Infinity`, text, a boolean or a negative `total_quantity` /
+  `quantity_available_for_trading` is `{:error, {:invalid_decimal, :balance |
+  :available_balance, value}}`. Only a null, empty or absent quantity is `nil` (the venue
+  stated nothing); zero is a real, empty holding.
+
   **Walks every page.** `V2HoldingsResponse` is `{"next", "previous", "results"}` — the same
   cursor shape `trading_pairs` uses — confirmed against the vendor's OpenAPI document,
   2026-09-29. This used to read only the first page: a holding on page two was simply
@@ -1030,10 +1082,17 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
+  # Zero is a funded-nowhere account's real buying power; a NEGATIVE one is not cash any
+  # account has (crypto trading here is not margined), and was handed on as the number sent.
   defp required_amount(value) do
     case decimal(value) do
-      %Decimal{} = amount -> {:ok, amount}
-      _unreadable -> {:error, {:missing_required_field, :buying_power}}
+      %Decimal{} = amount ->
+        if Decimal.negative?(amount),
+          do: {:error, {:invalid_decimal, :buying_power, bounded_raw(value)}},
+          else: {:ok, amount}
+
+      _unreadable ->
+        {:error, {:missing_required_field, :buying_power}}
     end
   end
 
@@ -1053,16 +1112,20 @@ defmodule DpExchange.Robinhood.Rest do
   # that `:balance` may honestly be `nil` while `:currency` may not, and the two are not the
   # same kind of required: an unknown quantity is still a balance, an unattributable one is
   # not. `dp_exchange_gemini` made and recorded the same call for its own amount field. This
-  # matters more here since the NaN guard landed — `decimal/1` now maps `"NaN"` and `"Inf"`
-  # to `nil` rather than to a poisonous `Decimal`, which is right, and which makes a `nil`
-  # total reachable from a value that was present all along.
+  # matters more here since the NaN guard landed — `decimal/1` maps `"NaN"` and `"Inf"` to
+  # `nil` rather than to a poisonous `Decimal`, which would have made a `nil` total reachable
+  # from a value that was present all along. So a PRESENT amount that cannot be read is
+  # refused (`holding_amount/2`), and `nil` here only ever means the venue stated nothing.
   defp to_balance(%{} = row, asked_at) do
-    with {:ok, currency} <- required_currency(row["asset_code"]) do
+    with {:ok, currency} <- required_currency(row["asset_code"]),
+         {:ok, total} <- holding_amount(row["total_quantity"], :balance),
+         {:ok, available} <-
+           holding_amount(row["quantity_available_for_trading"], :available_balance) do
       {:ok,
        %Balance{
          currency: currency,
-         balance: decimal(row["total_quantity"]),
-         available_balance: decimal(row["quantity_available_for_trading"]),
+         balance: total,
+         available_balance: available,
          # The venue publishes no hold figure. Subtracting would produce a number it never
          # stated, and one that is wrong the moment either side is missing.
          hold: nil,
@@ -1078,6 +1141,25 @@ defmodule DpExchange.Robinhood.Rest do
   # A holdings row that is not an object is unreadable, and refused like one with no
   # currency. It used to raise in `Access`, inside the caller's process.
   defp to_balance(_unreadable_row, _asked_at), do: {:error, :unexpected_response_shape}
+
+  # **An amount the venue did not state is `nil`; one it stated and this package cannot read is
+  # a refusal.** `nil`, `""` and an absent key state nothing (an unknown total is still a
+  # balance, see above). But `"NaN"`, `"abc"`, a boolean or a negative quantity is a value that
+  # WAS sent, and answering `nil` for it said "unknown" about something the venue did say,
+  # while a negative holding rode out as the number sent: a position no account has. Zero is a
+  # real (empty) holding. Orders already refuse a present unreadable amount the same way.
+  # `field` is the `Balance` field the amount would have filled, named in the refusal.
+  defp holding_amount(raw, _field) when raw in [nil, ""], do: {:ok, nil}
+
+  defp holding_amount(raw, field) do
+    case decimal(raw) do
+      %Decimal{} = amount ->
+        if Decimal.negative?(amount), do: invalid_amount(field, raw), else: {:ok, amount}
+
+      nil ->
+        invalid_amount(field, raw)
+    end
+  end
 
   defp to_balances(rows, asked_at) do
     rows

@@ -132,6 +132,17 @@ on its next notice). A `subscriber:` given
 at start must be a pid or a name too, or the feed does not start
 (`{:invalid_option, :subscriber}`).
 
+**Options are checked, not ignored.** Options that are not a keyword list answer
+`{:error, {:invalid_options, value}}` from every facade call that reads them (it used to
+raise in your process, `place_order/3` and `cancel_order/3` included); `coverage/1`,
+`coverage_by_kind/1` and `wanted/1` have no room for an error, and an empty answer would read
+as "nothing covered", so they raise `ArgumentError`.
+`get_top_of_book/2`, `get_symbols/1`, `list_instruments/1`, `subscribe/2` and
+`update_symbols/2` serve nothing windowed, depth-limited or candle-based, so `:limit`,
+`:depth`, `:since` and `:include_partial` on them answer `{:error, {:unsupported_option,
+key}}` instead of being dropped (a `nil` value is an absent option). `get_orders/2` keeps its
+own `:limit`, described below.
+
 **A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the
 last registered subscriber has died and the feed was started without a `:subscriber`, the
 symbols added for them leave the polled set. Symbols given at boot or to `update_symbols/2`
@@ -534,7 +545,10 @@ none of that asset" — a different and more dangerous claim than "this response
 read".
 
 `balance` itself may be `nil`, and that is not the same thing: it means the venue did name
-the asset and did not state a quantity for it. Read that as unknown, never as zero.
+the asset and did not state a quantity for it (null, empty or absent). Read that as unknown,
+never as zero. A quantity the venue **did** send and that cannot be read, or is negative, is
+not unknown: the whole reply is `{:error, {:invalid_decimal, :balance | :available_balance,
+value}}`.
 
 ## Holdings include the account's cash (dp-exchange-core issue #35)
 

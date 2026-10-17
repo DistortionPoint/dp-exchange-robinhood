@@ -458,6 +458,28 @@ defmodule DpExchange.Robinhood.TradingTest do
                )
     end
 
+    test "refuses a negative buying_power, and keeps a zero one" do
+      negative = Map.put(fake_account_row(), "buying_power", "-5.00")
+
+      assert {:error, {:invalid_decimal, :buying_power, "-5.00"}} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding_holdings(%{"results" => []}, negative),
+                 retry_attempts: 0
+               )
+
+      zero = Map.put(fake_account_row(), "buying_power", "0")
+
+      assert {:ok, [cash]} =
+               Rest.get_balances(@credentials,
+                 account_number: "RH-1",
+                 plug: responding_holdings(%{"results" => []}, zero),
+                 retry_attempts: 0
+               )
+
+      assert Decimal.equal?(cash.available_balance, Decimal.new(0))
+    end
+
     test "the holdings page is requested before the accounts call" do
       test_pid = self()
 

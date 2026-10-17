@@ -428,7 +428,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # `interval_ms` defaults to 60s in `start_feed/1` — a second request inside this
       # window would mean this venue fell back to per-symbol calls with nothing wrong.
-      refute_receive {:request, _second_request}, 200
+      refute_receive {:request, _second_request}, 500
     end
 
     test "a symbol absent from every bulk response is uncovered and retried, never refused" do
@@ -454,7 +454,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # Several more ticks pass at 50ms — long enough to prove ETH-USD's absence never
       # becomes a refusal, not just that it wasn't one on the very first attempt.
-      refute_receive {:dp_exchange, :robinhood, {:refused, "ETH-USD", _reason}}, 300
+      refute_receive {:dp_exchange, :robinhood, {:refused, "ETH-USD", _reason}}, 500
 
       # Polled, not sampled once. `coverage/1` reports what arrived within
       # `interval_ms * @coverage_grace` — two intervals — and this feed ticks every 50ms,
@@ -564,7 +564,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # after the update, so a `[bad_symbol]` request right behind it means it was kept.
       assert_bulk_request_for(["BTC-USD", "ETH-USD"])
       assert_bulk_request_for(["BTC-USD", "ETH-USD"])
-      refute_receive {:request, [^bad_symbol]}, 300
+      refute_receive {:request, [^bad_symbol]}, 500
     end
 
     # A venue that refuses any request containing `bad` (400 for a batch, 404 alone) and
@@ -685,7 +685,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:request, first}, 5_000
       assert length(first) == Rest.max_bulk_symbols()
-      refute_receive {:request, _next_chunk}, 300
+      refute_receive {:request, _next_chunk}, 500
     end
 
     # A venue slow enough that the first chunk alone spends the whole `bisect_budget_ms`
@@ -874,7 +874,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:request, first}, 5_000
       assert length(first) == 3
-      refute_receive {:request, _split}, 300
+      refute_receive {:request, _split}, 500
       refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
     end
 
@@ -898,7 +898,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       assert_receive {:request, first}, 5_000
       assert length(first) == 3
-      refute_receive {:request, _split}, 300
+      refute_receive {:request, _split}, 500
       refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
     end
 
@@ -959,7 +959,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # The next cycle asks for the two live symbols, is told 401, and stops: the remembered
       # symbol would only be told the same.
       assert_receive {:request, ["BTC-USD", "ETH-USD"]}, 5_000
-      refute_receive {:request, ["LTC-USD"]}, 300
+      refute_receive {:request, ["LTC-USD"]}, 500
     end
 
     test "a :bisect_budget_ms that is not a positive integer stops the feed at init" do
@@ -1090,7 +1090,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # At 40ms/tick this window spans several more failed attempts. `PollingFeed`
       # latches to `:dead` on the first crossing and does not re-fire until recovery, so
       # nothing further should arrive here.
-      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :coverage_change}}, 200
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :coverage_change}}, 500
     end
 
     test "recovery emits a second notice, severity info, mentioning it has resumed delivering" do
@@ -1381,7 +1381,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
 
       # Nothing is down yet: the ordinary first good poll is not a recovery.
-      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 300
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 500
 
       Process.exit(:sys.get_state(feed).poller, :kill)
       assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
@@ -1392,7 +1392,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # Latched: a further good poll does not repeat it.
       send(feed, {:poll_result, :ok})
-      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 300
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 500
     end
 
     test "an unanswered coverage read is closed by the next good poll" do
@@ -1437,7 +1437,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
       # Latched: a further rejected cycle says nothing new.
       send(feed, {:poll_result, :credentials_rejected})
-      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :credentials_rejected}}, 300
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :credentials_rejected}}, 500
 
       # A good poll clears it, so the next rejection is reported again.
       send(feed, {:poll_result, :ok})
@@ -1700,7 +1700,7 @@ defmodule DpExchange.Robinhood.FeedTest do
                       %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
                      5_000
 
-      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 300
+      refute_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 500
     end
 
     test "add_symbols with no subscriber registers nobody and the boot subscriber keeps receiving" do
@@ -1944,7 +1944,7 @@ defmodule DpExchange.Robinhood.FeedTest do
 
         assert_receive {:request, first}, 5_000
         assert length(first) == 3
-        refute_receive {:request, _split}, 300
+        refute_receive {:request, _split}, 500
         refute_received {:dp_exchange, :robinhood, {:refused, _symbol, _reason}}
       end
     end
@@ -2059,7 +2059,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       assert skipped == 150
       assert_receive {:request, first}, 5_000
       assert length(first) == Rest.max_bulk_symbols()
-      refute_receive {:request, _skipped_chunk}, 300
+      refute_receive {:request, _skipped_chunk}, 500
     end
 
     # The remaining time of the cycle's budget caps a request's own `:timeout`: the smaller of
