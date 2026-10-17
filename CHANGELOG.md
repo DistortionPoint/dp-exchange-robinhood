@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.107] - 2026-10-17
+
 ### Fixed
 
 - `DpExchange.Robinhood.Fake` now exports every public function the facade does. It was
