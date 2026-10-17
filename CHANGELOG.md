@@ -19,6 +19,13 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- `DpExchange.Robinhood.Fake` now exports every public function the facade does. It was
+  missing `venue_does_not_serve/0` and `quotes/0`, so a consumer's tier-1 test calling
+  either raised `UndefinedFunctionError` where production answered. Both delegate to the
+  real facade. A parity test fails if the two modules' function lists ever diverge.
+
 ## [0.3.106] - 2026-10-17
 
 ### Dependencies

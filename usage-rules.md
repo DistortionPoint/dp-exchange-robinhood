@@ -214,6 +214,12 @@ account/order call that quietly succeeded with no credentials at all), that was 
 being *differently* capable than this venue rather than *less* capable than it, and your
 test was passing against behaviour this venue cannot produce.
 
+**Parity guarantee:** every public function on `DpExchange.Robinhood` exists on
+`DpExchange.Robinhood.Fake` with the same name and arity (including
+`venue_does_not_serve/0` and `quotes/0`); a test asserts that the facade's
+`__info__(:functions)` minus the Fake's is empty. The fake may have extra arities, never
+fewer.
+
 **The fake remembers the orders it placed, per process.** `place_order/3` issues a UUID,
 a new one per order; `get_order/3` and `get_orders/2` (narrowed by `:symbol`, `:side`, `:type` and
 `:state`) return those orders with their own symbol, side, size and price, and

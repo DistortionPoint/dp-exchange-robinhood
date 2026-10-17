@@ -129,6 +129,21 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def capabilities, do: DpExchange.Robinhood.capabilities()
 
+  @doc """
+  The real facade's `DpExchange.Robinhood.venue_does_not_serve/0`, unchanged: which
+  endpoints the venue itself does not serve is a fact about Robinhood, not about the
+  transport, so the fake reports exactly what the real adapter does.
+  """
+  @spec venue_does_not_serve() :: [{atom(), arity()}]
+  def venue_does_not_serve, do: DpExchange.Robinhood.venue_does_not_serve()
+
+  @doc """
+  The real facade's `DpExchange.Robinhood.quotes/0`, unchanged: the quote codes the shared
+  symbol normaliser recognises (a parsing vocabulary, not a listing claim).
+  """
+  @spec quotes() :: [String.t()]
+  def quotes, do: DpExchange.Robinhood.quotes()
+
   # This venue has no last-trade endpoint at all — see `DpExchange.Robinhood`'s moduledoc
   # on `get_price/2`, `:unsupported` since DpCryptoManagement's issue #21. A fake that kept
   # answering here, backed by `@price`, would make that gap untestable.
