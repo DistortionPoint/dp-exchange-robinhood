@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.108] - 2026-10-17
+
 ### Changed
 
 - **BREAKING:** a facade option the call does not read now answers
