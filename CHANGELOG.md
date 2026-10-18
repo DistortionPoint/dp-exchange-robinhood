@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.109] - 2026-10-18
+
 Depends on dp_exchange_core 0.3.103 (conformance groups 44, fake export parity, and 45, notice shapes).
 
 ### Changed
