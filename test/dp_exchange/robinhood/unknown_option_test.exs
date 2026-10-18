@@ -39,6 +39,7 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
   @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<3>>, 32))}
   @order %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"}
   @stray :sinse
+  @retry_keys [:retry_attempts, :retry_delay]
 
   # Every key of `Rest.function_options/1`'s table.
   @functions [
@@ -107,9 +108,11 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     own = Rest.function_options(String.to_existing_atom(label))
 
     allowed =
-      if label in @no_request,
-        do: [:credentials | own],
-        else: Options.transport_options() ++ own
+      cond do
+        label in @no_request -> [:credentials | own]
+        label == "cancel_order" -> (Options.transport_options() -- @retry_keys) ++ own
+        true -> Options.transport_options() ++ own
+      end
 
     [{@stray, stray_value} | Keyword.take(base, allowed)]
   end
@@ -206,5 +209,28 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
              {:error, {:unknown_option, :cursor}}
 
     assert Rest.validate_opts([{:cursor, "c"}], :get_orders) == :ok
+  end
+
+  test "a cancel is sent once: neither retry key is read, on the facade and the Fake" do
+    test_pid = self()
+
+    plug = fn conn ->
+      send(test_pid, {:request, conn.request_path})
+      Req.Test.json(conn, %{"id" => "o-1", "state" => "canceled"})
+    end
+
+    for module <- [Robinhood, Fake], key <- @retry_keys, value <- [0, 1, 3] do
+      opts = [{key, value}, credentials: @credentials, plug: plug]
+
+      assert module.cancel_order(@credentials, "o-1", opts) == {:error, {:unknown_option, key}},
+             "#{inspect(module)} #{key} #{value}"
+    end
+
+    refute_received {:request, _path}
+
+    # A write retried under an idempotency key keeps both keys.
+    for key <- @retry_keys do
+      assert Rest.validate_opts([{key, 1}], :place_order) == :ok
+    end
   end
 end

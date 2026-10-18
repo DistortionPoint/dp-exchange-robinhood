@@ -159,7 +159,8 @@ balances, accounts, orders, quantization, estimated price) accepts the shared tr
 `timeout`, `retry_attempts`, ...) and `:timestamp` where it signs; every HTTP-facing one
 (`plug`, `adapter`, `req_adapter`, `limiter`, `timeout`, `retry_attempts`, `retry_delay`,
 `max_retry_after_s`, `max_body_bytes`, `weight`, `log_requests`, `rate_limit_blocking`) reaches
-`Core.HttpClient`; none is accepted and dropped. **`:environment` is read only to be refused**:
+`Core.HttpClient`; none is accepted and dropped (`cancel_order/3` alone drops the two retry
+keys from this list: it is sent once). **`:environment` is read only to be refused**:
 Robinhood Crypto publishes no sandbox, so on a request call anything but absent, `nil` or
 `:production` answers `{:error, {:unsupported_option, :environment}}`, instead of sending a
 call to production that you believed was a test. A call that sends no request
@@ -540,8 +541,10 @@ confirmed order even if a field holds a value this package does not know (an unk
 or `state`): you get `{:ok, %Order{}}` with that field `nil`; a *read* of such an order
 (`get_order/3`) still refuses it.
 
-**A cancel is sent once.** `cancel_order/3` is never retried internally, whatever
-`:retry_attempts` says; if it fails ambiguously, `get_order/3` says what happened. An id
+**A cancel is sent once.** `cancel_order/3` is never retried internally and reads neither
+`:retry_attempts` nor `:retry_delay`: passing either (any value) answers
+`{:error, {:unknown_option, key}}` before anything is sent, on the Fake too. If it fails
+ambiguously, `get_order/3` says what happened. An id
 that is not a non-blank string is `{:error, {:invalid_order_id, id}}` on `get_order/3` and
 `cancel_order/3`, decided before the account option and credentials. A 404 on an order call
 is `{:refused, :not_found}`.

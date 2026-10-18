@@ -84,8 +84,11 @@ defmodule DpExchange.Robinhood.TickAkTest do
               {[environment: environment, credentials: @credentials] ++ extras,
                {:error, {:unknown_option, :environment}}}
             else
+              # A cancel is sent once and reads no retry key, so none is handed to it.
+              retry = if label == "cancel_order", do: [], else: [retry_attempts: 0]
+
               {[environment: environment, credentials: @credentials, plug: plug] ++
-                 [retry_attempts: 0] ++ extras, @refused}
+                 retry ++ extras, @refused}
             end
 
           assert call.(opts) == expected, "#{inspect(module)} #{label} #{inspect(environment)}"

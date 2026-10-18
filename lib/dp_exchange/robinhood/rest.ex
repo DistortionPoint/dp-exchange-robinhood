@@ -208,7 +208,8 @@ defmodule DpExchange.Robinhood.Rest do
 
   # **A shared transport key is allowed only where the call reads it** (design: transport keys
   # only where read). A call that sends an HTTP request reads every key in
-  # `Options.transport_options/0`: `:credentials`, `:base_url`, `:plug`, `:adapter`,
+  # `Options.transport_options/0` (a sent-once call, `cancel_order`, drops the two retry keys:
+  # see `@sent_once_functions`): `:credentials`, `:base_url`, `:plug`, `:adapter`,
   # `:req_adapter`, `:limiter`, `:rate_limit_blocking`, `:weight`, `:timeout`,
   # `:retry_attempts`, `:retry_delay`, `:max_retry_after_s`, `:max_body_bytes` and
   # `:log_requests` reach `Core.HttpClient` through `request_opts/1` (and `:limiter` through
@@ -221,11 +222,24 @@ defmodule DpExchange.Robinhood.Rest do
   # `:environment` there would be believed and ignored, so it is `{:unknown_option, key}`.
   @no_request_functions [:subscribe, :unsubscribe, :update_symbols, :subscribe_notices, :coverage]
 
+  # **A call that is always sent exactly once reads neither retry key** (family decision, tick
+  # AL). `cancel_order` is an unkeyed write: the venue honours no idempotency key on it, so it
+  # is never retried and `:retry_attempts` / `:retry_delay` are `{:unknown_option, key}`
+  # rather than accepted and overwritten. `place_order` keeps both: it retries under its
+  # `client_order_id`.
+  @sent_once_functions [:cancel_order]
+  @retry_options [:retry_attempts, :retry_delay]
+
   defp allowed_options(function) do
-    if request_call?(function),
-      do: Options.transport_options() ++ function_options(function),
-      else: [:credentials | function_options(function)]
+    cond do
+      not request_call?(function) -> [:credentials | function_options(function)]
+      function in @sent_once_functions -> sent_once_options(function)
+      true -> Options.transport_options() ++ function_options(function)
+    end
   end
+
+  defp sent_once_options(function),
+    do: (Options.transport_options() -- @retry_options) ++ function_options(function)
 
   defp request_call?(function), do: function not in @no_request_functions
 
@@ -1969,8 +1983,9 @@ defmodule DpExchange.Robinhood.Rest do
   or `filled`/`partially_filled` if a fill won the race). Read that state rather than
   assume it.
 
-  **A cancel is sent once.** It is never retried internally, whatever `:retry_attempts`
-  says: a second attempt after a timeout cannot tell the caller whether the first took
+  **A cancel is sent once.** It is never retried internally and reads neither
+  `:retry_attempts` nor `:retry_delay`: passing either is `{:error, {:unknown_option, key}}`
+  from the facade, before anything is sent. A second attempt after a timeout cannot tell the caller whether the first took
   effect, and the answer to "is it cancelled" is `get_order/3`. A blank or non-string id is
   `{:error, {:invalid_order_id, id}}`, decided before credentials, and a 404 is
   `{:refused, :not_found}`.
@@ -1981,7 +1996,9 @@ defmodule DpExchange.Robinhood.Rest do
     with {:ok, segment} <- order_id_segment(order_id) do
       path = "/api/v2/crypto/trading/orders/" <> segment <> "/cancel/"
 
-      path |> post(nil, credentials, Keyword.put(opts, :retry_attempts, 1)) |> read_order()
+      # `Keyword.drop/2`, not a put: the facade refuses both retry keys before this runs, and
+      # a direct caller's value is not forwarded, so Core's default (a POST is sent once) holds.
+      path |> post(nil, credentials, Keyword.drop(opts, @retry_options)) |> read_order()
     end
   end
 

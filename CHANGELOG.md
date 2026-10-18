@@ -19,6 +19,13 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- `cancel_order/3` (facade and Fake) no longer accepts `:retry_attempts` or `:retry_delay`: a
+  cancel is an unkeyed write sent exactly once, so either key (any value) is
+  `{:error, {:unknown_option, key}}` before anything is sent. It used to accept the key and
+  overwrite it internally. `place_order/3` keeps both (it retries under `client_order_id`).
+
 ## [0.3.110] - 2026-10-18
 
 Depends on dp_exchange_core 0.3.105 (conformance group 46: a call that sends no request takes no transport key).

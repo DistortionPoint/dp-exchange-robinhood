@@ -1591,12 +1591,16 @@ defmodule DpExchange.Robinhood.TradingTest do
                  base ++ [plug: responding(%{"results" => []})]
                )
 
-      assert {:ok, _cancelled} =
+      # A cancel is sent once and reads no retry key, so it is not handed one.
+      assert {:ok, cancelled} =
                DpExchange.Robinhood.cancel_order(
                  @credentials,
                  "o-1",
-                 unscoped ++ [plug: responding(%{"id" => "o-1", "state" => "canceled"})]
+                 [credentials: @credentials] ++
+                   [plug: responding(%{"id" => "o-1", "state" => "canceled"})]
                )
+
+      assert cancelled.status == :cancelled
 
       assert {:ok, _estimate} =
                DpExchange.Robinhood.get_estimated_price(
