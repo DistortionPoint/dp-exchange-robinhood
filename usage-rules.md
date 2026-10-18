@@ -87,8 +87,11 @@ non-blank strings or the feed does not start), `subscriber:` (above), `name:` / 
 poll; default none), `bisect_budget_ms:` (above), `max_queue_len:` (below),
 `rate_limit_blocking:` (default `true` for the poll, so it waits for capacity rather than
 skipping a symbol), and the request options forwarded to every poll: `base_url:`,
-`retry_attempts:`, `retry_delay:` (milliseconds), `timeout:` and `log_requests:`. `plug:` and
-`req_adapter:` are test seams for a fake transport and are not for production use.
+`retry_attempts:`, `retry_delay:` (milliseconds), `timeout:`, `log_requests:`, `weight:`,
+`max_retry_after_s:` and `max_body_bytes:`. `plug:`, `adapter:` and `req_adapter:` are test
+seams for a fake transport and are not for production use. `environment:` may be absent,
+`nil` or `:production`: this venue has no sandbox, and any other value stops the feed at start
+(`{:invalid_option, :environment}`) rather than poll production under the name of a test.
 
 ## A monitoring process can subscribe to notices separately from market data
 
@@ -152,7 +155,14 @@ refuses identically and does not consume a queued injection on a refused call. A
 answering `{:error, :not_supported}` does so whatever its options. Every call also accepts the
 shared transport keys (`DpExchange.Core.Options.transport_options/0`: `credentials`,
 `base_url`, `plug`, `limiter`, `timeout`, `retry_attempts`, ...) and `:timestamp` where it
-signs. Beyond those, each call reads exactly (the table is
+signs. Every HTTP-facing shared key (`plug`, `adapter`, `req_adapter`, `limiter`, `timeout`,
+`retry_attempts`, `retry_delay`, `max_retry_after_s`, `max_body_bytes`, `weight`,
+`log_requests`, `rate_limit_blocking`) reaches `Core.HttpClient`; none is accepted and
+dropped. **`:environment` is the exception, and it is refused**: Robinhood Crypto publishes no
+sandbox, so anything but absent, `nil` or `:production` answers
+`{:error, {:unsupported_option, :environment}}` (the reads with no error channel raise
+`ArgumentError`), instead of sending a call to production that you believed was a test.
+Beyond those, each call reads exactly (the table is
 `DpExchange.Robinhood.Rest.function_options/1`):
 
 | Call | Own options |

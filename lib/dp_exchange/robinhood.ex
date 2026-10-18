@@ -1079,6 +1079,9 @@ defmodule DpExchange.Robinhood do
 
       {:error, {:unknown_option, key}} ->
         raise ArgumentError, "unknown option #{inspect(key)}"
+
+      {:error, {:unsupported_option, key}} ->
+        raise ArgumentError, "unsupported option #{inspect(key)}"
     end
   end
 

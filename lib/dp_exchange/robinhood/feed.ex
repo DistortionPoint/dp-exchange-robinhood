@@ -412,6 +412,15 @@ defmodule DpExchange.Robinhood.Feed do
 
   @impl true
   def init(opts) do
+    # `environment: :sandbox` has no sandbox to go to; see `Rest.check_environment/1`. The
+    # feed refuses to start rather than poll production under a name that says it is a test.
+    case Rest.check_environment(opts) do
+      :ok -> init_options(opts)
+      {:error, {:unsupported_option, :environment}} -> {:stop, {:invalid_option, :environment}}
+    end
+  end
+
+  defp init_options(opts) do
     symbols = boot_symbols(Config.opt(opts, :symbols, []))
     subscriber? = subscriber?(Config.opt(opts, :subscriber, nil))
 
@@ -533,12 +542,16 @@ defmodule DpExchange.Robinhood.Feed do
         opts
         |> Keyword.take([
           :plug,
+          :adapter,
           :req_adapter,
           :base_url,
           :retry_attempts,
           :retry_delay,
           :timeout,
-          :log_requests
+          :log_requests,
+          :weight,
+          :max_retry_after_s,
+          :max_body_bytes
         ])
         # `Config.opt/3`, not `put_new/3`: a forwarded `rate_limit_blocking: nil` is a
         # PRESENT key, which `put_new/3` keeps, and `HttpClient` reads `nil` as `false` — the
@@ -857,6 +870,13 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, :unknown_call}, state}
+
+  # This feed defines no casts. `use GenServer`'s default `handle_cast/2` raises on one, so a
+  # stray `GenServer.cast(Feed, _)` from any process crashed the feed and, with it, every
+  # `update_symbols/2` and `subscribe_notices/1` made since boot (the restart is from the
+  # static opts). Ignored, as `handle_info/2` ignores a message it does not know.
+  @impl true
+  def handle_cast(_other, state), do: {:noreply, state}
 
   # The caller's list is checked and upper-cased first (`boot_symbols/1`), then `build` makes
   # the new set from it. A bad list leaves the set as it was.

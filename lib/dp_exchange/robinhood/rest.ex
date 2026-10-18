@@ -190,11 +190,35 @@ defmodule DpExchange.Robinhood.Rest do
   refuses exactly what the facade refuses.
   """
   @spec validate_opts(term(), atom()) ::
-          :ok | {:error, {:invalid_options, term()} | {:unknown_option, atom()}}
+          :ok
+          | {:error, {:invalid_options, term()}}
+          | {:error, {:unknown_option, atom()}}
+          | {:error, {:unsupported_option, :environment}}
   def validate_opts(opts, function) do
     case Options.check(opts, Options.transport_options() ++ function_options(function)) do
+      :ok -> check_environment(opts)
       {:error, {:invalid_options, value}} -> {:error, {:invalid_options, bounded_raw(value)}}
-      other -> other
+      {:error, {:unknown_option, _key}} = unknown -> unknown
+    end
+  end
+
+  @doc """
+  Refuses an `:environment` this venue cannot honour: `{:error, {:unsupported_option,
+  :environment}}` for anything but absent, `nil` or `:production`.
+
+  `:environment` is one of the shared transport keys (`DpExchange.Core.Options`), accepted
+  by the key check because other venues have a sandbox. Robinhood Crypto publishes none
+  (`DpExchange.Core` usage rules, "Running live and demo at the same time"), and this package
+  has no second host to send it to. Ignoring `environment: :sandbox` sent the call, and a
+  `place_order/3` among them, to the production venue under a name that said it was a test:
+  the failure the family's environments guide calls silent and expensive. Used by
+  `validate_opts/2` for every facade call and by `DpExchange.Robinhood.Feed` at start.
+  """
+  @spec check_environment(keyword()) :: :ok | {:error, {:unsupported_option, :environment}}
+  def check_environment(opts) do
+    case Config.opt(opts, :environment, nil) do
+      environment when environment in [nil, :production] -> :ok
+      _other -> {:error, {:unsupported_option, :environment}}
     end
   end
 
@@ -1080,10 +1104,12 @@ defmodule DpExchange.Robinhood.Rest do
 
   @doc """
   The `opts[:asset_codes]` narrowing as a list, or `{:error, {:invalid_field, :asset_codes}}`
-  when any entry is not a non-blank string. `get_balances/2` sends each as an `asset_code`
-  query parameter; a `nil` or a map in the list used to become `asset_code=` (or raise
-  inside the query encoder) on a signed request. A single string is a one-entry list and
-  absence is `[]`. Exposed so `DpExchange.Robinhood.Fake` refuses the same.
+  when any entry is not a non-blank string. `get_balances/2` sends a single code as the
+  venue's `asset_code` filter and narrows two or more locally (the vendor documents the
+  parameter as one value and never says it repeats); a `nil` or a map in the list used to
+  become `asset_code=` (or raise inside the query encoder) on a signed request. A single
+  string is a one-entry list and absence is `[]`. Exposed so `DpExchange.Robinhood.Fake`
+  refuses the same.
   """
   @spec asset_codes(keyword()) :: {:ok, [String.t()]} | {:error, {:invalid_field, :asset_codes}}
   def asset_codes(opts) do
@@ -2649,6 +2675,12 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
+  # **Every transport key `validate_opts/2` accepts that `Core.HttpClient` reads is forwarded.**
+  # `:adapter`, `:weight`, `:max_retry_after_s` and `:max_body_bytes` passed the key check (they
+  # are in `Options.transport_options/0`) and were then dropped here, so `max_body_bytes: 1_024`
+  # bounded nothing and a custom `:adapter` was never used: a limit the caller believed was in
+  # force, silently absent. `:credentials`, `:base_url` and `:environment` are not
+  # `HttpClient`'s: the first two are read here, the third is refused by `check_environment/1`.
   defp request_opts(opts) do
     opts
     |> Keyword.take([
@@ -2658,9 +2690,16 @@ defmodule DpExchange.Robinhood.Rest do
       :retry_delay,
       :log_requests,
       :plug,
+      :adapter,
       :req_adapter,
-      :rate_limit_blocking
+      :rate_limit_blocking,
+      :weight,
+      :max_retry_after_s,
+      :max_body_bytes
     ])
+    # A forwarded `nil` is an absent option, as everywhere in this family: `Core.HttpClient`
+    # reads most keys with `Config.opt/3`, but `:plug` and `:adapter` go straight to `Req`.
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Keyword.merge(provider: :robinhood, raw_status: true)
   end
 

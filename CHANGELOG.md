@@ -19,6 +19,31 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+Depends on dp_exchange_core 0.3.103 (conformance groups 44, fake export parity, and 45, notice shapes).
+
+### Changed
+
+- **BREAKING:** `:environment` is refused unless absent, `nil` or `:production`. It is one of
+  Core's shared transport keys, so the unknown-option check accepted `environment: :sandbox`,
+  and Robinhood Crypto has no sandbox: the call (a `place_order/3` among them) went to
+  production under a name that said it was a test. Every facade call and the Fake now answer
+  `{:error, {:unsupported_option, :environment}}` before anything is signed or sent;
+  `coverage/1`, `coverage_by_kind/1` and `wanted/1` raise `ArgumentError`; a `Feed` started
+  with one stops with `{:invalid_option, :environment}`. `Rest.check_environment/1` is the one
+  check.
+
+### Fixed
+
+- `:adapter`, `:weight`, `:max_retry_after_s` and `:max_body_bytes` passed the option check
+  and were then dropped before `Core.HttpClient`, so `max_body_bytes: 1_024` bounded nothing
+  and `weight:` never reached the limiter. They are forwarded on every signed call, and by the
+  poll (`Feed`) too.
+- `Feed` defined no `handle_cast/2`, so a stray `GenServer.cast/2` to it crashed it, losing
+  every `update_symbols/2` and `subscribe_notices/1` made since boot. Ignored now, as an
+  unknown `handle_info/2` message is.
+- `Rest.asset_codes/1`'s `@doc` said `get_balances/2` sends each code as an `asset_code`
+  parameter; it sends one code and narrows two or more locally. Doc corrected.
+
 ## [0.3.108] - 2026-10-17
 
 ### Changed
