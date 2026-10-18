@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.111] - 2026-10-18
+
 ### Changed
 
 - `market_status/1` (facade and Fake) now checks its options like every other call: it sends no
