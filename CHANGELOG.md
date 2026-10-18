@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.110] - 2026-10-18
+
 Depends on dp_exchange_core 0.3.105 (conformance group 46: a call that sends no request takes no transport key).
 
 ### Changed
