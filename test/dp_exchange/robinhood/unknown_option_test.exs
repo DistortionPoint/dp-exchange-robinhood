@@ -58,7 +58,8 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     :unsubscribe,
     :update_symbols,
     :subscribe_notices,
-    :coverage
+    :coverage,
+    :market_status
   ]
 
   # Every option-taking facade function, as `{label, fun}`; `fun` takes the options.
@@ -79,7 +80,8 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
       {"subscribe", &module.subscribe(["BTC-USD"], &1)},
       {"unsubscribe", &module.unsubscribe(["BTC-USD"], &1)},
       {"update_symbols", &module.update_symbols(["BTC-USD"], &1)},
-      {"subscribe_notices", &module.subscribe_notices(&1)}
+      {"subscribe_notices", &module.subscribe_notices(&1)},
+      {"market_status", &module.market_status(&1)}
     ]
   end
 
@@ -99,7 +101,7 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     end
   end
 
-  @no_request ["subscribe", "unsubscribe", "update_symbols", "subscribe_notices"]
+  @no_request ["subscribe", "unsubscribe", "update_symbols", "subscribe_notices", "market_status"]
 
   # The stray key first, then only the keys `label`'s call reads: a call that sends no request
   # is never handed a transport key (other than `:credentials`), so the one refusal left to
@@ -197,7 +199,14 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     end
 
     # A call that sends no request reads none of them but its own keys (and `:credentials`).
-    for function <- [:subscribe, :unsubscribe, :update_symbols, :subscribe_notices, :coverage],
+    for function <- [
+          :subscribe,
+          :unsubscribe,
+          :update_symbols,
+          :subscribe_notices,
+          :coverage,
+          :market_status
+        ],
         key <- Options.transport_options() -- [:credentials] do
       assert Rest.validate_opts([{key, nil}], function) == {:error, {:unknown_option, key}},
              "#{function} #{inspect(key)}"
@@ -209,6 +218,18 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
              {:error, {:unknown_option, :cursor}}
 
     assert Rest.validate_opts([{:cursor, "c"}], :get_orders) == :ok
+  end
+
+  test "market_status/1 refuses an unknown key and :timeout, and answers :open otherwise" do
+    for module <- [Robinhood, Fake] do
+      assert module.market_status(dp_contract_unknown_option: 1) ==
+               {:error, {:unknown_option, :dp_contract_unknown_option}}
+
+      assert module.market_status(timeout: 5_000) == {:error, {:unknown_option, :timeout}}
+      assert {:error, {:invalid_options, _bounded}} = module.market_status(%{timeout: 1})
+      assert module.market_status(credentials: @credentials) == {:ok, :open}
+      assert module.market_status([]) == {:ok, :open}
+    end
   end
 
   test "a cancel is sent once: neither retry key is read, on the facade and the Fake" do

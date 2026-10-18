@@ -165,7 +165,9 @@ defmodule DpExchange.Robinhood.Rest do
     unsubscribe: [:feed],
     update_symbols: [:feed | @unsupported_market_options],
     subscribe_notices: [:feed, :to],
-    coverage: [:feed]
+    coverage: [:feed],
+    # Answered locally (crypto has no session): reads no key of its own, sends no request.
+    market_status: []
   }
 
   @doc """
@@ -220,7 +222,14 @@ defmodule DpExchange.Robinhood.Rest do
   # only its own keys. `:credentials` is the one exemption, as the design records: a consumer
   # hands one credential set to every call and it changes no answer here. A `:timeout` or
   # `:environment` there would be believed and ignored, so it is `{:unknown_option, key}`.
-  @no_request_functions [:subscribe, :unsubscribe, :update_symbols, :subscribe_notices, :coverage]
+  @no_request_functions [
+    :subscribe,
+    :unsubscribe,
+    :update_symbols,
+    :subscribe_notices,
+    :coverage,
+    :market_status
+  ]
 
   # **A call that is always sent exactly once reads neither retry key** (family decision, tick
   # AL). `cancel_order` is an unkeyed write: the venue honours no idempotency key on it, so it

@@ -985,7 +985,9 @@ defmodule DpExchange.Robinhood do
   crypto-only) stays gated on the identical callback.
   """
   @impl true
-  def market_status(_opts), do: {:ok, :open}
+  def market_status(opts) do
+    with :ok <- Rest.validate_opts(opts, :market_status), do: {:ok, :open}
+  end
 
   @doc """
   Rounds a price and quantity to what the venue will actually accept.

@@ -165,7 +165,7 @@ Robinhood Crypto publishes no sandbox, so on a request call anything but absent,
 `:production` answers `{:error, {:unsupported_option, :environment}}`, instead of sending a
 call to production that you believed was a test. A call that sends no request
 (`subscribe/2`, `unsubscribe/2`, `update_symbols/2`, `subscribe_notices/1`, `coverage/1`,
-`coverage_by_kind/1`, `wanted/1`) accepts only its own keys below plus `:credentials` (one
+`coverage_by_kind/1`, `wanted/1`, `market_status/1`) accepts only its own keys below plus `:credentials` (one
 credential set may be handed to every call); `timeout:`, `plug:`, `environment:` and the rest
 answer `{:error, {:unknown_option, key}}` (the three reads raise `ArgumentError`), because
 nothing there would honour them. Each call reads exactly (the table is
@@ -183,6 +183,7 @@ nothing there would honour them. Each call reads exactly (the table is
 | `update_symbols/2` | `:feed`, plus the four unsupported market keys |
 | `unsubscribe/2`, `coverage/1`, `coverage_by_kind/1`, `wanted/1` | `:feed` |
 | `subscribe_notices/1` | `:feed`, `:to` |
+| `market_status/1` | none (always `{:ok, :open}`; any key but `:credentials` is `:unknown_option`) |
 
 Requires `dp_exchange_core ~> 0.3.101`.
 

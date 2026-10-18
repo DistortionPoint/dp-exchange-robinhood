@@ -907,8 +907,8 @@ defmodule DpExchange.Robinhood.Fake do
   and `c:DpExchange.Core.Venue.market_status/1`.
   """
   @impl true
-  def market_status(_opts) do
-    with_injection(fn -> {:ok, :open} end)
+  def market_status(opts) do
+    checked(Rest.validate_opts(opts, :market_status), fn -> {:ok, :open} end)
   end
 
   # Per-process, like the order book above: what was asked for, what a book was delivered
@@ -1132,7 +1132,7 @@ defmodule DpExchange.Robinhood.Fake do
   defp checked(:ok, symbol, fun), do: with_injection(symbol, fun)
   defp checked({:error, _reason} = refused, _symbol, _fun), do: refused
 
-  defp with_injection(symbol \\ nil, fun) do
+  defp with_injection(symbol, fun) do
     case FakeInjection.next_outcome(:robinhood, symbol) do
       {:override, outcome} -> outcome
       :none -> fun.()

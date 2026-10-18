@@ -21,6 +21,10 @@ what was run against the live venue, and when.
 
 ### Changed
 
+- `market_status/1` (facade and Fake) now checks its options like every other call: it sends no
+  request and reads no key, so anything but `:credentials` is `{:error, {:unknown_option, key}}`
+  (`timeout:` included) and a non-keyword is `{:error, {:invalid_options, _}}`. It used to
+  accept and ignore any options. The answer for valid options is still `{:ok, :open}`.
 - `cancel_order/3` (facade and Fake) no longer accepts `:retry_attempts` or `:retry_delay`: a
   cancel is an unkeyed write sent exactly once, so either key (any value) is
   `{:error, {:unknown_option, key}}` before anything is sent. It used to accept the key and

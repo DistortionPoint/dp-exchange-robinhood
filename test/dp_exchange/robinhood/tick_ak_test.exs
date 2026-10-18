@@ -38,7 +38,7 @@ defmodule DpExchange.Robinhood.TickAkTest do
   @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<3>>, 32))}
   @order %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"}
   @refused {:error, {:unsupported_option, :environment}}
-  @no_request ["subscribe", "unsubscribe", "update_symbols", "subscribe_notices"]
+  @no_request ["subscribe", "unsubscribe", "update_symbols", "subscribe_notices", "market_status"]
 
   defp calls(module) do
     [
@@ -57,7 +57,8 @@ defmodule DpExchange.Robinhood.TickAkTest do
       {"subscribe", &module.subscribe(["BTC-USD"], &1)},
       {"unsubscribe", &module.unsubscribe(["BTC-USD"], &1)},
       {"update_symbols", &module.update_symbols(["BTC-USD"], &1)},
-      {"subscribe_notices", &module.subscribe_notices(&1)}
+      {"subscribe_notices", &module.subscribe_notices(&1)},
+      {"market_status", &module.market_status(&1)}
     ]
   end
 
