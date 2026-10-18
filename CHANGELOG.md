@@ -25,6 +25,10 @@ what was run against the live venue, and when.
   cancel is an unkeyed write sent exactly once, so either key (any value) is
   `{:error, {:unknown_option, key}}` before anything is sent. It used to accept the key and
   overwrite it internally. `place_order/3` keeps both (it retries under `client_order_id`).
+- Hot paths: the duplicate-order-id check in `get_orders/2` is one `MapSet` pass instead of
+  `ids -- Enum.uniq(ids)` (quadratic in history length), and `Feed` collects a cycle's chunk
+  outcomes by prepending and concatenating once instead of `acc ++ outcomes` per chunk. No
+  behaviour change.
 
 ## [0.3.110] - 2026-10-18
 

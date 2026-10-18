@@ -854,6 +854,8 @@ defmodule DpExchange.Robinhood.TradingTest do
         assert_receive {:request, "POST", _path, _query, raw}
         body = Jason.decode!(raw)
         assert body["stop_loss_order_config"]["stop_price"] == "50000"
+        assert body["type"] == "stop_loss"
+        refute Map.has_key?(body, "stop_order_config")
       end
     end
 
@@ -1005,7 +1007,8 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert_receive {:request, "POST", _path, _query, raw}
       generated = Jason.decode!(raw)["client_order_id"]
-      assert generated =~ ~r/^[0-9a-f-]{36}$/
+      uuid_v4 = ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      assert generated =~ uuid_v4
 
       assert {:ok, _second} =
                Rest.place_order(@credentials, order,

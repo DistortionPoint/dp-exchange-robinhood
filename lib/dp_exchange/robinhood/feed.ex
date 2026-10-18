@@ -738,9 +738,13 @@ defmodule DpExchange.Robinhood.Feed do
     |> Enum.with_index()
     |> Enum.reduce_while([], fn {chunk, index}, acc ->
       outcomes = resolve_chunk(chunk, ctx, capped? or index > 0)
-      acc = acc ++ outcomes
+      # Prepended and flattened once at the end: `acc ++ outcomes` copied the whole
+      # accumulator for every chunk of a large universe.
+      acc = [outcomes | acc]
       if auth_failure?(outcomes), do: {:halt, acc}, else: {:cont, acc}
     end)
+    |> Enum.reverse()
+    |> Enum.concat()
   end
 
   # One chunk (the common case, and every bisected half) is left in the caller's order. More

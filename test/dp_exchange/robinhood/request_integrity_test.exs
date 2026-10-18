@@ -75,6 +75,7 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
 
       assert_receive {:hit, "GET", path, query, _raw, _content_type}
       refute path =~ "x/cancel/"
+      assert path == "/api/v2/crypto/trading/orders/x%2Fcancel%2F%3Fy%3D1/"
       assert query == "account_number=RH-1"
     end
 
@@ -86,6 +87,7 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
 
       assert_receive {:hit, "POST", path, query, _raw, _content_type}
       refute path =~ "a/b"
+      assert path == "/api/v2/crypto/trading/orders/a%2Fb%23c/cancel/"
       assert query == ""
     end
 
@@ -124,7 +126,9 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
         )
 
       assert_receive {:hit, "GET", _path, query, _raw, _content_type}
-      assert [{"symbol", _one_value}] = URI.query_decoder(query) |> Enum.to_list()
+      assert [{"symbol", one_value}] = URI.query_decoder(query) |> Enum.to_list()
+      # The injected text rides inside the one value; it is not a second parameter.
+      assert String.upcase(one_value) =~ "ETH"
     end
 
     test "quantization/3 cannot either" do

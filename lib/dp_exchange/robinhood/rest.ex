@@ -2433,11 +2433,17 @@ defmodule DpExchange.Robinhood.Rest do
   # twice by a caller summing fills or open size, and which copy is current is not this
   # package's to guess: the whole history is refused.
   defp distinct_orders(orders) do
-    ids = Enum.map(orders, & &1.id)
+    # One pass with a `MapSet`: `ids -- Enum.uniq(ids)` is quadratic in the history length.
+    duplicate =
+      Enum.reduce_while(orders, MapSet.new(), fn %{id: id}, seen ->
+        if MapSet.member?(seen, id),
+          do: {:halt, {:duplicate, id}},
+          else: {:cont, MapSet.put(seen, id)}
+      end)
 
-    case ids -- Enum.uniq(ids) do
-      [] -> {:ok, orders}
-      [id | _rest] -> {:error, {:duplicate_order_id, id}}
+    case duplicate do
+      {:duplicate, id} -> {:error, {:duplicate_order_id, id}}
+      _distinct -> {:ok, orders}
     end
   end
 
