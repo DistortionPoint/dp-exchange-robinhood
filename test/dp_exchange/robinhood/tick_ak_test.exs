@@ -38,6 +38,7 @@ defmodule DpExchange.Robinhood.TickAkTest do
   @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<3>>, 32))}
   @order %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: "1"}
   @refused {:error, {:unsupported_option, :environment}}
+  @no_request ["subscribe", "unsubscribe", "update_symbols", "subscribe_notices"]
 
   defp calls(module) do
     [
@@ -76,10 +77,18 @@ defmodule DpExchange.Robinhood.TickAkTest do
           own = Rest.function_options(String.to_existing_atom(label))
           extras = Keyword.take([account_number: "RH-1", feed: :no_such_feed_for_tick_ak], own)
 
-          base = [environment: environment, credentials: @credentials, plug: plug]
-          opts = base ++ [retry_attempts: 0] ++ extras
+          # A call that sends no request is handed no transport key but `:credentials`; it does
+          # not read `:environment`, so the environment is simply not an allowed key there.
+          {opts, expected} =
+            if label in @no_request do
+              {[environment: environment, credentials: @credentials] ++ extras,
+               {:error, {:unknown_option, :environment}}}
+            else
+              {[environment: environment, credentials: @credentials, plug: plug] ++
+                 [retry_attempts: 0] ++ extras, @refused}
+            end
 
-          assert call.(opts) == @refused, "#{inspect(module)} #{label} #{inspect(environment)}"
+          assert call.(opts) == expected, "#{inspect(module)} #{label} #{inspect(environment)}"
         end
       end
 
@@ -102,7 +111,8 @@ defmodule DpExchange.Robinhood.TickAkTest do
         opts = [environment: :sandbox, feed: :absent_ak_feed]
         error = assert_raise ArgumentError, fn -> read.(opts) end
 
-        assert Exception.message(error) =~ "unsupported option :environment"
+        # A call that sends no request does not read `:environment` at all.
+        assert Exception.message(error) =~ "unknown option :environment"
       end
     end
 
@@ -152,6 +162,51 @@ defmodule DpExchange.Robinhood.TickAkTest do
                )
 
       assert_received {:weight, 7}
+    end
+
+    test ":max_body_bytes refuses a body larger than the cap" do
+      row = %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}
+      body = %{"results" => [row], "padding" => String.duplicate("x", 4_096)}
+      plug = fn conn -> Req.Test.json(conn, body) end
+
+      assert {:error, reason} =
+               Robinhood.get_top_of_book("BTC-USD",
+                 credentials: @credentials,
+                 plug: plug,
+                 retry_attempts: 0,
+                 max_body_bytes: 1_024
+               )
+
+      assert inspect(reason) =~ "response_too_large"
+    end
+  end
+
+  describe "a call that sends no request reads no transport key" do
+    @refused_timeout {:error, {:unknown_option, :timeout}}
+
+    test "the facade and the Fake refuse :timeout" do
+      for module <- [Robinhood, Fake] do
+        assert module.subscribe(["BTC-USD"], timeout: 5_000) == @refused_timeout
+        assert module.unsubscribe(["BTC-USD"], timeout: 5_000) == @refused_timeout
+        assert module.update_symbols(["BTC-USD"], timeout: 5_000) == @refused_timeout
+        assert module.subscribe_notices(to: self(), timeout: 5_000) == @refused_timeout
+      end
+    end
+
+    test "the reads with no error channel raise on :timeout, and take :credentials" do
+      for module <- [Robinhood, Fake],
+          read <- [&module.coverage/1, &module.coverage_by_kind/1, &module.wanted/1] do
+        error =
+          assert_raise ArgumentError, fn -> read.(timeout: 5_000, feed: :absent_ak2_feed) end
+
+        assert Exception.message(error) =~ "unknown option :timeout"
+
+        assert read.(credentials: @credentials, feed: :absent_ak2_feed) in [
+                 %{},
+                 [],
+                 %{top_of_book: %{}}
+               ]
+      end
     end
   end
 

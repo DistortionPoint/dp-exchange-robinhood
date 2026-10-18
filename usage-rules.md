@@ -152,17 +152,22 @@ checks its options with `DpExchange.Core.Options.check/2` before anything is sig
 and answers `{:error, {:unknown_option, key}}` (the first offending key, `nil` values
 included); `coverage/1`, `coverage_by_kind/1` and `wanted/1` raise `ArgumentError`. The Fake
 refuses identically and does not consume a queued injection on a refused call. A function
-answering `{:error, :not_supported}` does so whatever its options. Every call also accepts the
-shared transport keys (`DpExchange.Core.Options.transport_options/0`: `credentials`,
-`base_url`, `plug`, `limiter`, `timeout`, `retry_attempts`, ...) and `:timestamp` where it
-signs. Every HTTP-facing shared key (`plug`, `adapter`, `req_adapter`, `limiter`, `timeout`,
-`retry_attempts`, `retry_delay`, `max_retry_after_s`, `max_body_bytes`, `weight`,
-`log_requests`, `rate_limit_blocking`) reaches `Core.HttpClient`; none is accepted and
-dropped. **`:environment` is the exception, and it is refused**: Robinhood Crypto publishes no
-sandbox, so anything but absent, `nil` or `:production` answers
-`{:error, {:unsupported_option, :environment}}` (the reads with no error channel raise
-`ArgumentError`), instead of sending a call to production that you believed was a test.
-Beyond those, each call reads exactly (the table is
+answering `{:error, :not_supported}` does so whatever its options. **A shared transport key is
+accepted only by a call that reads it.** A call that sends an HTTP request (market data,
+balances, accounts, orders, quantization, estimated price) accepts the shared transport keys
+(`DpExchange.Core.Options.transport_options/0`: `credentials`, `base_url`, `plug`, `limiter`,
+`timeout`, `retry_attempts`, ...) and `:timestamp` where it signs; every HTTP-facing one
+(`plug`, `adapter`, `req_adapter`, `limiter`, `timeout`, `retry_attempts`, `retry_delay`,
+`max_retry_after_s`, `max_body_bytes`, `weight`, `log_requests`, `rate_limit_blocking`) reaches
+`Core.HttpClient`; none is accepted and dropped. **`:environment` is read only to be refused**:
+Robinhood Crypto publishes no sandbox, so on a request call anything but absent, `nil` or
+`:production` answers `{:error, {:unsupported_option, :environment}}`, instead of sending a
+call to production that you believed was a test. A call that sends no request
+(`subscribe/2`, `unsubscribe/2`, `update_symbols/2`, `subscribe_notices/1`, `coverage/1`,
+`coverage_by_kind/1`, `wanted/1`) accepts only its own keys below plus `:credentials` (one
+credential set may be handed to every call); `timeout:`, `plug:`, `environment:` and the rest
+answer `{:error, {:unknown_option, key}}` (the three reads raise `ArgumentError`), because
+nothing there would honour them. Each call reads exactly (the table is
 `DpExchange.Robinhood.Rest.function_options/1`):
 
 | Call | Own options |

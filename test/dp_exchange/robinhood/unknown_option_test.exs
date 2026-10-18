@@ -98,9 +98,24 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     end
   end
 
+  @no_request ["subscribe", "unsubscribe", "update_symbols", "subscribe_notices"]
+
+  # The stray key first, then only the keys `label`'s call reads: a call that sends no request
+  # is never handed a transport key (other than `:credentials`), so the one refusal left to
+  # fire is the stray key's.
+  defp with_stray(label, stray_value, base) do
+    own = Rest.function_options(String.to_existing_atom(label))
+
+    allowed =
+      if label in @no_request,
+        do: [:credentials | own],
+        else: Options.transport_options() ++ own
+
+    [{@stray, stray_value} | Keyword.take(base, allowed)]
+  end
+
   test "every real facade function refuses a stray key, with nothing sent" do
-    opts = [
-      {@stray, 1},
+    base = [
       credentials: @credentials,
       account_number: "RH-1",
       plug: capturing(self()),
@@ -109,26 +124,26 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     ]
 
     for {label, call} <- calls(Robinhood) do
-      assert call.(opts) == {:error, {:unknown_option, @stray}}, label
+      assert call.(with_stray(label, 1, base)) == {:error, {:unknown_option, @stray}}, label
     end
 
     refute_received {:request, _path, _query}
   end
 
   test "a stray key holding nil is still refused" do
-    opts = [{@stray, nil}, credentials: @credentials, account_number: "RH-1"]
+    base = [credentials: @credentials, account_number: "RH-1"]
 
     for {label, call} <- calls(Robinhood) do
-      assert call.(opts) == {:error, {:unknown_option, @stray}}, label
+      assert call.(with_stray(label, nil, base)) == {:error, {:unknown_option, @stray}}, label
     end
   end
 
   test "the Fake refuses exactly what the facade refuses, and does not consult an injection" do
     FakeInjection.fail_always(:robinhood, {:error, :injected})
-    opts = [{@stray, 1}, credentials: @credentials, account_number: "RH-1"]
+    base = [credentials: @credentials, account_number: "RH-1"]
 
     for {label, call} <- calls(Fake) do
-      assert call.(opts) == {:error, {:unknown_option, @stray}}, label
+      assert call.(with_stray(label, 1, base)) == {:error, {:unknown_option, @stray}}, label
     end
 
     # Nothing was subscribed by a refused subscribe.
@@ -177,6 +192,15 @@ defmodule DpExchange.Robinhood.UnknownOptionTest do
     for key <- Options.transport_options() do
       assert Rest.validate_opts([{key, nil}], :get_accounts) == :ok, inspect(key)
     end
+
+    # A call that sends no request reads none of them but its own keys (and `:credentials`).
+    for function <- [:subscribe, :unsubscribe, :update_symbols, :subscribe_notices, :coverage],
+        key <- Options.transport_options() -- [:credentials] do
+      assert Rest.validate_opts([{key, nil}], function) == {:error, {:unknown_option, key}},
+             "#{function} #{inspect(key)}"
+    end
+
+    assert Rest.validate_opts([credentials: nil], :coverage) == :ok
 
     assert Rest.validate_opts([{:cursor, "c"}], :get_accounts) ==
              {:error, {:unknown_option, :cursor}}

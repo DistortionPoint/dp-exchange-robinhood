@@ -125,9 +125,10 @@ defmodule DpExchange.Robinhood.Rest do
   # read returned the whole catalogue to a caller who believed it had one row.
   @unsupported_market_options [:include_partial, :limit, :depth, :since]
 
-  # **The options each facade function reads, in one place.** A function's allowed list is
-  # `Options.transport_options/0` plus its entry here; `Options.check/2` refuses any other
-  # key as `{:unknown_option, key}`. The four market-data keys are listed for the calls that
+  # **The options each facade function reads, in one place.** A request-sending function's
+  # allowed list is `Options.transport_options/0` plus its entry here; a function that sends no
+  # request (see `allowed_options/1`) allows its entry plus `:credentials` only.
+  # `Options.check/2` refuses any other key as `{:unknown_option, key}`. The four market-data keys are listed for the calls that
   # refuse them as `{:unsupported_option, key}` (a more specific answer than "unknown").
   # `:timestamp` is read by `Auth.headers/5` on every signed call; `:feed` and `:to` by the
   # streaming calls. `get_orders` reads the venue's own filters, `:cursor` and `:limit`;
@@ -168,8 +169,11 @@ defmodule DpExchange.Robinhood.Rest do
   }
 
   @doc """
-  The options `function` reads beyond `DpExchange.Core.Options.transport_options/0`: the
-  table every facade function and its Fake check against. `function` is one of the facade's
+  The options `function` reads of its own, beyond the shared transport keys
+  (`DpExchange.Core.Options.transport_options/0`): the table every facade function and its
+  Fake check against. A request-sending function allows all the transport keys as well; the
+  calls that send no request (`:subscribe`, `:unsubscribe`, `:update_symbols`,
+  `:subscribe_notices`, `:coverage`) allow only this list and `:credentials`. `function` is one of the facade's
   option-taking functions (`:coverage` stands for `coverage/1`, `coverage_by_kind/1` and
   `wanted/1`).
   """
@@ -195,12 +199,35 @@ defmodule DpExchange.Robinhood.Rest do
           | {:error, {:unknown_option, atom()}}
           | {:error, {:unsupported_option, :environment}}
   def validate_opts(opts, function) do
-    case Options.check(opts, Options.transport_options() ++ function_options(function)) do
-      :ok -> check_environment(opts)
+    case Options.check(opts, allowed_options(function)) do
+      :ok -> if request_call?(function), do: check_environment(opts), else: :ok
       {:error, {:invalid_options, value}} -> {:error, {:invalid_options, bounded_raw(value)}}
       {:error, {:unknown_option, _key}} = unknown -> unknown
     end
   end
+
+  # **A shared transport key is allowed only where the call reads it** (design: transport keys
+  # only where read). A call that sends an HTTP request reads every key in
+  # `Options.transport_options/0`: `:credentials`, `:base_url`, `:plug`, `:adapter`,
+  # `:req_adapter`, `:limiter`, `:rate_limit_blocking`, `:weight`, `:timeout`,
+  # `:retry_attempts`, `:retry_delay`, `:max_retry_after_s`, `:max_body_bytes` and
+  # `:log_requests` reach `Core.HttpClient` through `request_opts/1` (and `:limiter` through
+  # `Supervisor.limiter_name/1`); `:environment` is read by `check_environment/1`, which
+  # refuses all but production. Nothing is "not read" on a request call, so nothing is named
+  # as such. A call that sends no request (`subscribe`, `unsubscribe`, `update_symbols`,
+  # `subscribe_notices` and the `coverage` reads) hands nothing to `Core.HttpClient`: it reads
+  # only its own keys. `:credentials` is the one exemption, as the design records: a consumer
+  # hands one credential set to every call and it changes no answer here. A `:timeout` or
+  # `:environment` there would be believed and ignored, so it is `{:unknown_option, key}`.
+  @no_request_functions [:subscribe, :unsubscribe, :update_symbols, :subscribe_notices, :coverage]
+
+  defp allowed_options(function) do
+    if request_call?(function),
+      do: Options.transport_options() ++ function_options(function),
+      else: [:credentials | function_options(function)]
+  end
+
+  defp request_call?(function), do: function not in @no_request_functions
 
   @doc """
   Refuses an `:environment` this venue cannot honour: `{:error, {:unsupported_option,
@@ -212,7 +239,8 @@ defmodule DpExchange.Robinhood.Rest do
   has no second host to send it to. Ignoring `environment: :sandbox` sent the call, and a
   `place_order/3` among them, to the production venue under a name that said it was a test:
   the failure the family's environments guide calls silent and expensive. Used by
-  `validate_opts/2` for every facade call and by `DpExchange.Robinhood.Feed` at start.
+  `validate_opts/2` for every facade call that sends a request (a call that sends none does
+  not allow `:environment` at all) and by `DpExchange.Robinhood.Feed` at start.
   """
   @spec check_environment(keyword()) :: :ok | {:error, {:unsupported_option, :environment}}
   def check_environment(opts) do

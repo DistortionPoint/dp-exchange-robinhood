@@ -1043,13 +1043,10 @@ defmodule DpExchange.Robinhood.Fake do
       :ok -> :ok
       {:error, {:invalid_options, shown}} -> raise ArgumentError, invalid_message(shown)
       {:error, {:unknown_option, key}} -> raise ArgumentError, "unknown option #{inspect(key)}"
-      {:error, {:unsupported_option, key}} -> raise ArgumentError, unsupported_message(key)
     end
   end
 
   defp invalid_message(shown), do: "options must be a keyword list, got: #{inspect(shown)}"
-
-  defp unsupported_message(key), do: "unsupported option #{inspect(key)}"
 
   @doc """
   Answers `:ok` for a registration of `opts[:to]` against this venue's own notices. The real

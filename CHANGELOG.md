@@ -19,6 +19,21 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+Depends on dp_exchange_core 0.3.105 (conformance group 46: a call that sends no request takes no transport key).
+
+### Changed
+
+- **BREAKING:** a call that sends no HTTP request (`subscribe/2`, `unsubscribe/2`,
+  `update_symbols/2`, `subscribe_notices/1`, `coverage/1`, `coverage_by_kind/1`, `wanted/1`)
+  accepts only its own keys (`:feed`, `:to`, and the four unsupported market keys where they
+  were listed) plus `:credentials`. A shared transport key it could never honour (`:timeout`,
+  `:plug`, `:retry_attempts`, `:limiter`, `:weight`, `:max_body_bytes`, ...) now answers
+  `{:error, {:unknown_option, key}}` on the facade and the Fake, and the three reads raise
+  `ArgumentError`, instead of being accepted and ignored. This includes `:environment`: on a
+  no-request call it is no longer checked for a value, it is simply not an allowed key
+  (`{:unknown_option, :environment}`). Every request-sending call still reads every shared
+  transport key, so its list is unchanged. `Rest.function_options/1` documents the split.
+
 ## [0.3.109] - 2026-10-18
 
 Depends on dp_exchange_core 0.3.103 (conformance groups 44, fake export parity, and 45, notice shapes).
