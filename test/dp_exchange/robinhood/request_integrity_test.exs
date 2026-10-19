@@ -12,6 +12,7 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
 
   alias DpExchange.Core.Config
   alias DpExchange.Robinhood.{Auth, Fake, Rest}
+  alias DpExchange.Robinhood.Test.SignatureCheck
 
   @moduletag :capture_log
 
@@ -32,7 +33,8 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     :ok
   end
 
-  @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<3>>, 32))}
+  @seed :binary.copy(<<3>>, 32)
+  @credentials %{api_key: "k", private_key: Base.encode64(@seed)}
   @account [account_number: "RH-1"]
   @market %{symbol: "BTC-USD", side: :buy, order_type: :market, quantity: Decimal.new("0.5")}
   @base "https://trading.robinhood.com/api/v2/crypto/trading"
@@ -51,6 +53,27 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.resp(status, Jason.encode!(body))
+    end
+  end
+
+  # `hitting/3`, and the signature the request carried is verified (as the venue would) and
+  # reported as `{:signature, :ok | {:error, reason}}`. Reported, not asserted here: an assertion
+  # raised inside a plug is rescued by `Core.HttpClient` and read as a transport failure.
+  defp verifying(body, test_pid) do
+    fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+
+      send(
+        test_pid,
+        {:hit, conn.method, conn.request_path, conn.query_string, raw,
+         Plug.Conn.get_req_header(conn, "content-type")}
+      )
+
+      send(test_pid, {:signature, SignatureCheck.verify(conn, "k", @seed, raw)})
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, Jason.encode!(body))
     end
   end
 
@@ -158,12 +181,71 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     end
 
     test "a cancel sends no body and no content type, and signs the empty string" do
-      plug = hitting(%{"id" => "o-1"}, self())
+      plug = verifying(%{"id" => "o-1"}, self())
 
       assert {:ok, _order} =
                Rest.cancel_order(@credentials, "o-1", plug: plug, retry_attempts: 0)
 
       assert_receive {:hit, "POST", _path, _query, "", []}
+      # Not merely empty on the wire: the signature is valid over the empty string, which is
+      # what the venue recomputes it over.
+      assert_receive {:signature, :ok}
+    end
+
+    test "the signature covers the exact body bytes sent" do
+      plug = verifying(%{"id" => "o-1"}, self())
+
+      assert {:ok, _order} =
+               Rest.place_order(@credentials, @market,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert_receive {:hit, "POST", _path, "account_number=RH-1", raw, ["application/json"]}
+      assert raw != ""
+      assert_receive {:signature, :ok}
+    end
+
+    test "a read signs the path with its query string, as it arrived" do
+      plug = verifying(%{"results" => [], "next" => nil}, self())
+
+      assert {:ok, []} =
+               Rest.get_orders(@credentials,
+                 account_number: "RH-1",
+                 created_at_start: "2026-08-01T00:00:00Z",
+                 plug: plug,
+                 retry_attempts: 0
+               )
+
+      assert_receive {:hit, "GET", _path, query, _raw, _content_type}
+      assert query =~ "created_at_start=2026-08-01T00%3A00%3A00Z"
+      assert_receive {:signature, :ok}
+    end
+
+    test "every attempt of a retried placement carries a signature that verifies" do
+      test_pid = self()
+      counter = :counters.new(1, [])
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        :counters.add(counter, 1, 1)
+        send(test_pid, {:signature, SignatureCheck.verify(conn, "k", @seed, raw)})
+        Plug.Conn.resp(conn, 503, "down")
+      end
+
+      assert {:error, {:order_unconfirmed, _id, _reason}} =
+               Rest.place_order(@credentials, @market,
+                 account_number: "RH-1",
+                 plug: plug,
+                 retry_attempts: 3,
+                 retry_delay: 1
+               )
+
+      assert :counters.get(counter, 1) == 3
+      assert_receive {:signature, :ok}
+      assert_receive {:signature, :ok}
+      assert_receive {:signature, :ok}
     end
   end
 

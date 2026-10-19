@@ -2063,9 +2063,13 @@ defmodule DpExchange.Robinhood.FeedTest do
     end
 
     # The remaining time of the cycle's budget caps a request's own `:timeout`: the smaller of
-    # the two wins, and a caller who set none gets the remainder.
+    # the two wins, and a caller who set none gets the remainder. What this proves is that
+    # bisection resolves, and still publishes every good symbol, down BOTH branches of that
+    # cap (`cap_timeout/2`'s set and unset clauses). The capped value itself is not observable
+    # from a `plug:`: Req replaces any `:adapter` with its plug runner, and the plug sees no
+    # request options.
     for {label, timeout} <- [{"a set", 20_000}, {"no", nil}] do
-      test "a bisected request is capped to the budget left with #{label} :timeout" do
+      test "bisection resolves through the timeout cap with #{label} :timeout" do
         start_feed(
           symbols: ["BTC-USD", "ETH-USD", "LTC-USD", "XRP-USD"],
           interval_ms: 60_000,

@@ -3,6 +3,7 @@ defmodule DpExchange.Robinhood.RestTest do
 
   alias DpExchange.Core.{Config, Types}
   alias DpExchange.Robinhood.Rest
+  alias DpExchange.Robinhood.Test.SignatureCheck
 
   @moduletag :capture_log
 
@@ -23,7 +24,8 @@ defmodule DpExchange.Robinhood.RestTest do
     :ok
   end
 
-  @credentials %{api_key: "k", private_key: Base.encode64(:binary.copy(<<3>>, 32))}
+  @seed :binary.copy(<<3>>, 32)
+  @credentials %{api_key: "k", private_key: Base.encode64(@seed)}
 
   defp responding(body, status \\ 200) do
     fn conn -> Req.Test.json(%{conn | status: status}, body) end
@@ -97,13 +99,23 @@ defmodule DpExchange.Robinhood.RestTest do
     end
 
     test "the query string is part of the signed path" do
+      # Verified the way the venue verifies it: the signature is recomputed over the path AND
+      # query string as they arrived, under the public key the seed derives. Asserting only
+      # that the query reached the wire proved nothing about what the signature covers.
+      test_pid = self()
+
       plug = fn conn ->
-        assert conn.query_string =~ "symbol=BTC-USD"
+        send(test_pid, {:query, conn.query_string})
+        send(test_pid, {:signature, SignatureCheck.verify(conn, "k", @seed, "")})
         Req.Test.json(conn, quote_body())
       end
 
       assert {:ok, _top} =
                Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
+
+      assert_receive {:query, query}
+      assert query =~ "symbol=BTC-USD"
+      assert_receive {:signature, :ok}
     end
   end
 

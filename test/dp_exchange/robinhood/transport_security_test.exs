@@ -9,6 +9,7 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
 
   alias DpExchange.Core.Config
   alias DpExchange.Robinhood.{Rest, Supervisor}
+  alias DpExchange.Robinhood.Test.SignatureCheck
 
   @moduletag :capture_log
 
@@ -29,10 +30,8 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
     :ok
   end
 
-  @credentials %{
-    api_key: "test-key-not-real",
-    private_key: Base.encode64(:binary.copy(<<3>>, 32))
-  }
+  @seed :binary.copy(<<3>>, 32)
+  @credentials %{api_key: "test-key-not-real", private_key: Base.encode64(@seed)}
   @pairs %{"results" => [%{"symbol" => "BTC-USD"}], "next" => nil}
 
   defp hitting(body, test_pid) do
@@ -113,14 +112,25 @@ defmodule DpExchange.Robinhood.TransportSecurityTest do
 
   describe "the signed path is the sent path" do
     test "a trailing slash on base_url does not send //api where /api was signed" do
+      test_pid = self()
+
+      plug = fn conn ->
+        send(test_pid, {:hit, conn.scheme, conn.request_path})
+        send(test_pid, {:signature, SignatureCheck.verify(conn, "test-key-not-real", @seed, "")})
+        Req.Test.json(conn, @pairs)
+      end
+
       assert {:ok, ["BTC-USD"]} =
                Rest.get_symbols(@credentials,
                  base_url: "https://trading.example.test/",
-                 plug: hitting(@pairs, self()),
+                 plug: plug,
                  retry_attempts: 0
                )
 
       assert_received {:hit, :https, "/api/v2/crypto/trading/trading_pairs/"}
+      # The signature, verified over the path as it arrived, is the one that was computed over
+      # `/api/...`: a signature over `//api/...` would not verify.
+      assert_received {:signature, :ok}
     end
   end
 

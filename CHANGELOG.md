@@ -19,6 +19,57 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed (tick AN: tests, HTTP paths and consumer docs audited against the vendor's document)
+
+- Ed25519 signing re-checked against the committed OpenAPI document: the message
+  (`api_key <> timestamp <> path-with-query <> METHOD <> body`), standard base64, whole-second
+  timestamp and the 30-second window all match, and every attempt is signed afresh. No code
+  change. The published `x-signature` vector is still reproduced byte for byte.
+- `usage-rules.md`: new "What every HTTP answer becomes" section. It states what a read, a
+  429, a non-JSON or wrong-shape 2xx, an oversized response, a placement and a cancel each
+  answer, including that a 4xx other than 400/401/403/404 on a READ is a plain
+  `{:error, {:exchange_error, :robinhood, "HTTP n: ..."}}` (the every-4xx-is-a-refusal rule is
+  the write rule). It also names the tuples it used to leave out: `{:unknown_enum, field,
+  value}`, `{:missing_required_field, :increments}`, `{:unsupported_side, v}`,
+  `{:error, :empty_result}`, `{:error, :symbol_not_in_response}` and
+  `{:error, :too_many_trading_pair_pages}`. The stated `dp_exchange_core` floor was
+  `~> 0.3.101`; `mix.exs` has required `~> 0.3.109` for a while.
+- `README.md` pinned `~> 0.3.92`; it now says `~> 0.3.112`. The idea doc
+  `docs/design/ideas/bulk-best-bid-ask-fetch.md` named `Feed.fetch_all/5` and a
+  `Rest.first_result/1` that do not exist (`fetch_all/6`, `Rest.result_for/2`).
+- Dependency floors (decimal 2.0.0 and 3.x, jason 1.4.0, Elixir 1.18) re-read call by call in
+  `lib/` and `test/`: every `Decimal` call (`new`, `parse`, `from_float`, `compare`, `equal?`,
+  `gt?`, `lt?`, `nan?`, `inf?`, `negative?`, `positive?`, `add`, `sub`, `to_string/2`) exists in
+  2.0.0; `lte?`/`gte?` (added in 2.2) are not used anywhere. No change.
+
+### Tests
+
+- Signatures are now verified, not just present. New `test/support/signature_check.ex`
+  recomputes the signed message from the request as it ARRIVED (path with query string,
+  uppercase method, the body bytes) and verifies `x-signature` under the seed's public key,
+  with the 30-second freshness window. Used by: the query-string test in `rest_test.exs` (it
+  asserted only that the query reached the wire), the cancel test in
+  `request_integrity_test.exs` ("signs the empty string" asserted only an empty body), the
+  trailing-slash test in `transport_security_test.exs` (its moduledoc claimed a signature check
+  nothing made), and new tests that a placement's signature covers the exact body sent, that a
+  read signs its query string, and that all three attempts of a retried placement verify.
+- New `http_paths_test.exs` (lens J), each a gap with no test before it: a transport failure
+  (`:timeout`, `:closed`, `:econnrefused`) on a placement is `order_unconfirmed` under the one
+  key every attempt carried, on a cancel is a plain error sent once, on a read is retried to
+  `retry_attempts`; a 2xx of `null`, a number, a boolean, a list, a bare JSON string or nothing
+  on EVERY read and on a placement; the vendor's `ErrorResponse` shape for the unlisted-symbol
+  400, for 401/403/404 and for an order's 404; a read's 429 (sent once, never a refusal) and
+  503 (retried); a placement's response past `max_body_bytes`.
+- `order_writes_test.exs`: "a 2xx that is not JSON is unconfirmed" served the body as
+  `application/json`, so it never reached the `text/html` path `Rest` classifies and asserted
+  nothing about the reason; it now pins `{:undecodable_response, :robinhood}` for text and keeps
+  a separate case for a body that claims to be JSON.
+- `trading_test.exs`: a refused write matched `{:refused, _}`, which any reason satisfies; it
+  now pins `{:venue_error, 400, "insufficient funds"}`. A describe block still said "the third
+  price" where the package documents two. `feed_test.exs`: two tests named "a bisected request
+  is capped to the budget left" never observed the cap (a `plug:` cannot see request options);
+  renamed for what they prove.
+
 ## [0.3.112] - 2026-10-19
 
 ### Fixed

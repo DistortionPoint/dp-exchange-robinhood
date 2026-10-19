@@ -510,7 +510,7 @@ defmodule DpExchange.Robinhood.TradingTest do
     end
   end
 
-  describe "estimated price — the third price, and the one that moved" do
+  describe "estimated price — the second price, and the one that moved" do
     test "it reaches trading, not marketdata" do
       # A package pointed at v1's path gets a 404 that reads like an outage.
       me = self()
@@ -1503,7 +1503,9 @@ defmodule DpExchange.Robinhood.TradingTest do
         )
       end
 
-      assert {:refused, _reason} =
+      # The spec's own `ErrorResponse` carries the reason in `errors[].detail`; that text, with
+      # the status, is what a caller is told. A bare `{:refused, _}` would pass for any reason.
+      assert {:refused, {:venue_error, 400, "insufficient funds"}} =
                Rest.place_order(
                  @credentials,
                  %{

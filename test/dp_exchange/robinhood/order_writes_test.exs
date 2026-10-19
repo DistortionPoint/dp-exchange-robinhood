@@ -131,15 +131,36 @@ defmodule DpExchange.Robinhood.OrderWritesTest do
       assert [^id] = sent_ids()
     end
 
-    test "a 2xx that is not JSON is unconfirmed" do
-      assert {:error, {:order_unconfirmed, id, _undecodable}} =
+    test "a 2xx that is not JSON is unconfirmed, as the undecodable response it is" do
+      # `answering/3` declares the body JSON, which sends Req's own decoder down a different
+      # path (a decode failure rather than text). A captive portal answers `text/html`, which
+      # is the path `Rest` classifies, so that is the one pinned here.
+      test_pid = self()
+
+      html = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:sent, conn.request_path, raw})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.resp(200, "<html>portal</html>")
+      end
+
+      assert {:error, {:order_unconfirmed, id, {:undecodable_response, :robinhood}}} =
+               Rest.place_order(@credentials, @market, opts(plug: html, retry_attempts: 0))
+
+      assert [^id] = sent_ids()
+    end
+
+    test "a 2xx that claims to be JSON and is not is unconfirmed too" do
+      assert {:error, {:order_unconfirmed, id, _reason}} =
                Rest.place_order(
                  @credentials,
                  @market,
                  opts(plug: answering(200, "<html>portal</html>", self()), retry_attempts: 0)
                )
 
-      assert is_binary(id)
+      assert [^id] = sent_ids()
     end
 
     test "a refusal on a retry is unconfirmed: the first attempt may have been accepted" do

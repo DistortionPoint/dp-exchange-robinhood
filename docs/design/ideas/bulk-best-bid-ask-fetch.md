@@ -45,7 +45,7 @@ cycle the bad symbol stayed in scope. That fetch is killed at 30s and this venue
 was then declared at 10 requests a second (it is now the vendor's documented 100 a minute,
 bursts of 300), so a large enough universe could not finish. A killed fetch
 publishes nothing, so one bad symbol silenced every symbol, every cycle. It also fell back
-on a 401, where every symbol is refused alike. Now `Feed.fetch_all/5` bisects a refused
+on a 401, where every symbol is refused alike. Now `Feed.fetch_all/6` bisects a refused
 batch within a 20s budget, remembers a refused symbol (`state.refused`) so the next bulk
 request leaves it out and asks for it on its own, and does not split a 401. See `Feed`'s
 moduledoc, "A refused batch is bisected, and a refused symbol is remembered".
@@ -71,7 +71,7 @@ forever" — strictly worse than per-symbol polling.
 
 ## Why the design does not need to guess
 
-Rather than wait on a probe to answer the open question above, `Feed.fetch_all/5` is built
+Rather than wait on a probe to answer the open question above, `Feed.fetch_all/6` is built
 to be correct under EITHER possible venue behaviour,
 without knowing which one is real:
 
@@ -79,7 +79,7 @@ without knowing which one is real:
   was asked for): `Rest.get_top_of_book_bulk/3` already publishes exactly the rows present.
   `Core.PollingFeed` treats a symbol absent from a bulk response as uncovered-and-retried,
   never as refused (`publish_and_record/2`) — the same principle
-  `Rest.first_result/1`'s own moduledoc states for the single-symbol path, guarding against
+  `Rest.result_for/2`'s own comment states for the single-symbol path, guarding against
   DpCryptoManagement issue #25's exact mistake (silence read as a permanent refusal).
 - **If the venue 400s the whole batch**: the bulk call comes back `{:refused, _}`, and
   `Feed` splits the batch and asks again until it reaches the refused symbol, about

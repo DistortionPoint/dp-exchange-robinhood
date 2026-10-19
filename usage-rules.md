@@ -201,7 +201,7 @@ no symbol is wanted (nothing is polled then) is closed by a `:link_up` with
 Fake answers `get_estimated_price/5` for `side: "both"` with a `"bid"` row and an `"ask"` row per
 quantity, never a row whose side is `"both"`.
 
-Requires `dp_exchange_core ~> 0.3.101`.
+Requires `dp_exchange_core ~> 0.3.109`.
 
 **A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the
 last registered subscriber has died and the feed was started without a `:subscriber`, the
@@ -397,7 +397,8 @@ The walk stops if the venue ever points at a page it already served
 A `next` is followed only if it continues the same endpoint on this venue's host: a `next`
 naming another endpoint path is `{:error, {:unexpected_next_path, path}}`, as is one
 outside `/api/`, and another host is `{:error, {:foreign_next_url, host}}`. The same walk
-(bounded at 50 pages) serves accounts, holdings and orders.
+(bounded at 50 pages) serves accounts, holdings and orders, and the catalogue past the bound is
+`{:error, :too_many_trading_pair_pages}`.
 
 **A pair the venue marks `is_api_tradable: false` is excluded from `get_symbols/1`
 entirely** — `V2TradingPair`'s own field for whether this package's other v2 endpoints
@@ -450,8 +451,12 @@ pair listed twice with different meanings in `list_instruments/1` is
 wrong side of zero (size and prices not positive; filled size, average price or fee
 negative), is `{:error, {:invalid_decimal, field, value}}` on `get_order/3`, `get_orders/2`
 and `cancel_order/3` (the answer to `place_order/3` describes an order that exists and is
-not refused for it). A top of book whose bid is above its ask is
-`{:error, {:crossed_book, bid, ask}}`; the poll drops that symbol for the cycle.
+not refused for it). A present `side`, `type`, `state` or `time_in_force` outside the venue's
+enums is `{:error, {:unknown_enum, field, value}}` on those same reads (the value cut at 64
+bytes), where `place_order/3` leaves that one field `nil`. A top of book whose bid is above its
+ask is `{:error, {:crossed_book, bid, ask}}`; the poll drops that symbol for the cycle.
+`quantization/2` with neither increment readable is `{:error, {:missing_required_field,
+:increments}}`, never rounding rules that state none.
 
 The filters it sends are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
 `:updated_at_end`, `:symbol`, `:side`, `:type` and `:state`. `:state` takes the venue's own
@@ -475,7 +480,8 @@ measured.
 - `get_top_of_book/2` — the top of the book, as the venue publishes it
 - `get_estimated_price/5` (`symbol, side, quantity, credentials, opts`) — what a **given
   quantity** would execute at now. `DpExchange.Robinhood.Fake` has it too and refuses what
-  the real path refuses (symbol, side, quantity, then credentials; `quantity` may be a list of
+  the real path refuses (symbol `{:invalid_symbol, v}`, side `{:unsupported_side, v}`, quantity
+  `{:invalid_field, :quantity}`, then credentials; `quantity` may be a list of
   at most 10, the vendor's stated maximum, beyond which `{:error, {:too_many_quantities, 10}}`
   is answered locally and nothing is sent), answering only the
   fields it can honestly state (no fees). A negative number in the venue's reply is refused
@@ -842,6 +848,37 @@ non-list.
 (`get_top_of_book/2`, `quantization/2`, the estimate call), the Fake too. The venue says so as
 a 400 `"Invalid symbol: X"`, which used to come through as
 `{:refused, {:venue_error, 400, "Invalid symbol: X"}}`; every other refusal keeps its
-`{:venue_error, status, detail}`. An empty `results` array is still not a statement and is an
-error. The poll's per-symbol `{:refused, symbol, reason}` message to `subscriber:` still carries
-the venue's own reason.
+`{:venue_error, status, detail}`. An empty `results` array is still not a statement and is
+`{:error, :empty_result}`; a `results` array with rows but none for the symbol asked about is
+`{:error, :symbol_not_in_response}`. The poll's per-symbol `{:refused, symbol, reason}` message
+to `subscriber:` still carries the venue's own reason.
+
+## What every HTTP answer becomes
+
+Every request is signed afresh on every attempt (Ed25519 over `api_key <> timestamp <> path
+<> method <> body`, `path` including the query string and `timestamp` whole seconds; the venue
+honours a timestamp for 30 seconds, so a retry is never sent with the first attempt's
+signature). Nothing below crashes in your process and nothing is answered as `{:ok, _}` with a
+default put in the venue's place.
+
+- **A read** (market data, catalogue, accounts, holdings, orders, estimates) is retried up to
+  `retry_attempts:` (default 3) on a transport failure (`:timeout`, `:closed`,
+  `:econnrefused`) or a 5xx, then answers `{:error, {:exchange_error, :robinhood, message}}`.
+  `400`, `401`, `403` and `404` are `{:refused, {:venue_error, status}}`, or
+  `{:venue_error, status, detail}` when the body carries a text reason, in the vendor's
+  `ErrorResponse` shape (`errors[].detail`) or as a top-level `detail`, cut at 1,024
+  characters. **Any other 4xx on a read** (405, 406, 409, 410, 415, 422, ...) is the plain
+  `{:error, {:exchange_error, :robinhood, "HTTP 422: ..."}}`, never a refusal: the rule below
+  that every other 4xx is `{:refused, _}` is the rule for writes.
+- **A 429** is `{:error, {:exchange_error, :robinhood, "Rate limited by the venue — retry
+  after Ns"}}` on every call: never a refusal and never retried (the venue's `Retry-After`
+  holds the limiter's bucket).
+- **A 2xx whose body is not the endpoint's shape**: `null`, a number, a boolean or a list is
+  `{:error, :unexpected_response_shape}`; a bare JSON string, an empty body or text that is not
+  JSON is `{:error, {:undecodable_response, :robinhood}}`.
+- **A response past `max_body_bytes:`** (default 16 MiB) is `{:error, {:exchange_error,
+  :robinhood, {:response_too_large, limit}}}` and is not retried.
+- **A placement** that may have been sent (a transport failure or 5xx after the retries, a 2xx
+  that is not an order) is `{:error, {:order_unconfirmed, client_order_id, reason}}`, and every
+  retry carries the same `client_order_id`. **A cancel** is sent once and answers a transport
+  failure or a 5xx as the plain error above: `get_order/3` says whether it took.
