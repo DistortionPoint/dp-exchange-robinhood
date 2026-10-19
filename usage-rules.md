@@ -201,7 +201,7 @@ no symbol is wanted (nothing is polled then) is closed by a `:link_up` with
 Fake answers `get_estimated_price/5` for `side: "both"` with a `"bid"` row and an `"ask"` row per
 quantity, never a row whose side is `"both"`.
 
-Requires `dp_exchange_core ~> 0.3.109`.
+Requires `dp_exchange_core ~> 0.3.111`.
 
 **A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the
 last registered subscriber has died and the feed was started without a `:subscriber`, the

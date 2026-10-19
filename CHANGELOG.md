@@ -19,6 +19,12 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Dependencies
+
+- **Requires `dp_exchange_core ~> 0.3.111`** (was `~> 0.3.109`). That release refuses a GET with a body
+  before sending (Req 0.7.0-0.7.2, which the Core floor admits, sent it as a retried POST) and
+  refuses URL userinfo over plain http.
+
 ### Changed (tick AN: tests, HTTP paths and consumer docs audited against the vendor's document)
 
 - Ed25519 signing re-checked against the committed OpenAPI document: the message
