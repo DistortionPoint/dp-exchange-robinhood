@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.112] - 2026-10-19
+
 ### Fixed
 
 - A `:timestamp` option that is not a positive integer of seconds is now
