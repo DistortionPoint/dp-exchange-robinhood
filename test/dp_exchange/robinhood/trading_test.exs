@@ -119,7 +119,7 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert {:ok, [account]} =
                Rest.get_accounts(@credentials,
-                 plug: capturing(%{"account_number" => "RH-1"}, me),
+                 plug: capturing(%{"next" => nil, "results" => [fake_account_row()]}, me),
                  retry_attempts: 0
                )
 
@@ -1036,12 +1036,13 @@ defmodule DpExchange.Robinhood.TradingTest do
         "side" => "buy",
         "type" => "limit",
         "state" => "partially_filled",
-        "filled_asset_quantity" => "0.25",
-        "average_price" => "60000",
+        # The schema's amounts are JSON numbers (`type: number, format: double`).
+        "filled_asset_quantity" => 0.25,
+        "average_price" => 60_000.0,
         "created_at" => "2026-09-01T12:00:00Z",
-        "fee_charged" => "0.15",
-        "estimated_fee_remaining" => "0.05",
-        "limit_order_config" => %{"asset_quantity" => "0.5", "limit_price" => "60000"}
+        "fee_charged" => 0.15,
+        "estimated_fee_remaining" => 0.05,
+        "limit_order_config" => %{"asset_quantity" => 0.5, "limit_price" => 60_000.0}
       }
 
       assert {:ok, order} =
@@ -1557,7 +1558,7 @@ defmodule DpExchange.Robinhood.TradingTest do
       assert {:ok, [_account]} =
                DpExchange.Robinhood.get_accounts(
                  @credentials,
-                 unscoped ++ [plug: responding(%{"account_number" => "RH-1"})]
+                 unscoped ++ [plug: responding(%{"results" => [fake_account_row()]})]
                )
 
       # The account's cash still comes back — dp-exchange-core issue #35.
@@ -1627,7 +1628,7 @@ defmodule DpExchange.Robinhood.TradingTest do
       # that the call succeeded, is what would have caught it.
       me = self()
 
-      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "59990", "ask" => "60010"}]}
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => 59_990.0, "ask" => 60_010.0}]}
 
       assert {:ok, book} =
                Rest.get_top_of_book("BTC-USD", @credentials,

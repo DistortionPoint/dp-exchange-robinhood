@@ -38,7 +38,8 @@ defmodule DpExchange.Robinhood.RestTest do
   # passed while `Rest.get_top_of_book/3` silently decoded `bid: nil, ask: nil` against the
   # real venue. See `Rest`'s own moduledoc, "v2's field names are not v1's."
   defp quote_body(overrides \\ %{}) do
-    row = Map.merge(%{"symbol" => "BTC-USD", "bid" => "77840.00", "ask" => "77850.00"}, overrides)
+    # `bid` and `ask` are JSON numbers (`type: number, format: double`) in `V2BestBidAsk`.
+    row = Map.merge(%{"symbol" => "BTC-USD", "bid" => 77_840.0, "ask" => 77_850.0}, overrides)
 
     %{"results" => [row]}
   end
@@ -730,8 +731,8 @@ defmodule DpExchange.Robinhood.RestTest do
     test "one signed request carries every symbol, via a repeated symbol param" do
       body = %{
         "results" => [
-          %{"symbol" => "BTC-USD", "bid" => "77840.00", "ask" => "77850.00"},
-          %{"symbol" => "ETH-USD", "bid" => "3200.00", "ask" => "3201.00"}
+          %{"symbol" => "BTC-USD", "bid" => 77_840.0, "ask" => 77_850.0},
+          %{"symbol" => "ETH-USD", "bid" => 3200.0, "ask" => 3201.0}
         ]
       }
 

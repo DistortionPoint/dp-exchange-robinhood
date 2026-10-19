@@ -50,8 +50,8 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
     test "a reordered `results` is not published under the requested name" do
       body = %{
         "results" => [
-          %{"symbol" => "ETH-USD", "bid" => "1", "ask" => "2"},
-          %{"symbol" => "BTC-USD", "bid" => "77840.00", "ask" => "77850.00"}
+          %{"symbol" => "ETH-USD", "bid" => 1.0, "ask" => 2.0},
+          %{"symbol" => "BTC-USD", "bid" => 77_840.0, "ask" => 77_850.0}
         ]
       }
 
@@ -66,7 +66,7 @@ defmodule DpExchange.Robinhood.InputFidelityTest do
     end
 
     test "a row for another symbol only is an error, not this symbol's answer" do
-      body = %{"results" => [%{"symbol" => "ETH-USD", "bid" => "1", "ask" => "2"}]}
+      body = %{"results" => [%{"symbol" => "ETH-USD", "bid" => 1.0, "ask" => 2.0}]}
 
       assert {:error, :symbol_not_in_response} =
                Rest.get_top_of_book("BTC-USD", @credentials,

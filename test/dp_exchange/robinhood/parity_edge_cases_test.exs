@@ -480,16 +480,29 @@ defmodule DpExchange.Robinhood.ParityEdgeCasesTest do
 
     test "a listed symbol answers one row per quantity, as Decimal, under the canonical symbol" do
       assert {:ok, %{"results" => [first, second]}} =
-               Fake.get_estimated_price("btc-usd", "both", ["0.1", 1], @credentials)
+               Fake.get_estimated_price("btc-usd", "ask", ["0.1", 1], @credentials)
 
       assert first["symbol"] == "BTC-USD"
-      assert first["side"] == "both"
+      assert first["side"] == "ask"
       assert Decimal.equal?(first["quantity"], Decimal.new("0.1"))
       assert Decimal.equal?(second["quantity"], 1)
       assert Decimal.lt?(first["bid"], first["ask"])
 
       # No fee figure the fake could only have invented.
       refute Map.has_key?(first, "est_fee")
+    end
+
+    test "side both answers a bid row and an ask row per quantity, never a side of \"both\"" do
+      assert {:ok, %{"results" => rows}} =
+               Fake.get_estimated_price("BTC-USD", :both, ["0.1", 1], @credentials)
+
+      # `V2EstimatedPrice.side` is the enum bid / ask: a row carries one of the two.
+      assert Enum.map(rows, &{&1["side"], Decimal.to_string(&1["quantity"])}) == [
+               {"bid", "0.1"},
+               {"ask", "0.1"},
+               {"bid", "1"},
+               {"ask", "1"}
+             ]
     end
 
     test "a single quantity, as a Decimal, answers one row" do

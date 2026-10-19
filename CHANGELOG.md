@@ -19,6 +19,40 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- A `:timestamp` option that is not a positive integer of seconds is now
+  `{:error, {:invalid_field, :timestamp}}` before anything is signed or sent (facade, Fake and
+  `Auth.headers/5`; credentials are checked first in `Auth`). It reached `to_string/1`: a float
+  signed as `"1.7e9"`, a map raised in the caller's process, and on `place_order/3` a signing
+  failure would have read as an unconfirmed write. A string timestamp that used to be signed
+  verbatim is now refused.
+- `Fake` refuses a `:base_url` the real path would not sign for (`{:insecure_url, :robinhood}`,
+  `{:invalid_base_url, :not_a_string}`) on all eleven request-sending calls, after arguments
+  and options and before credentials (`place_order/3`: after credentials, as `Rest` does). It
+  used to serve a call the venue package refuses. New `Rest.check_base_url/1` shares the rule.
+- `Feed` raises the poller's `fetch_timeout_ms` to `:bisect_budget_ms` plus 10s when that is
+  above the 30..60s `PollingFeed` derives from the interval. A larger budget used to be killed
+  by the fetch timeout part-way through a bisection, losing every finding. Defaults unchanged.
+- `Feed` sends one `:link_down` per unanswered-coverage outage instead of one per `coverage/1`
+  read while the poller is unresponsive (a health check reading every few seconds flooded every
+  notice subscriber); the next good poll still closes it with the one `:link_up`.
+- `Fake.get_estimated_price/5` no longer answers a row whose `side` is `"both"`: the vendor's
+  `V2EstimatedPrice.side` enum is `bid` / `ask`, so a `both` request now gets a bid row then an
+  ask row per quantity. Their order at the venue is unmeasured.
+- `Feed` closes an outage that has nothing left to deliver. `Core.PollingFeed` never polls an
+  empty symbol set, so a `:link_down` (a crashed poller, an unanswered coverage read) opened
+  while no symbol was wanted stayed open until a symbol was added. The restarted, idle poller,
+  or emptying the set while an outage is open, now sends the one `:link_up`
+  (`details.reason: :poll_idle`, `symbols: []`).
+- `Feed`: `update_symbols/2` against a poller that has just died was checked for the exit it
+  was feared to raise. `PollingFeed.update_symbols/2` is a cast, so it cannot exit, and the
+  restart that follows the pending `EXIT` is built from `state.symbols`. Pinned by a test; no
+  behaviour change.
+- Tests: the canned venue bodies for `best_bid_ask`, orders, accounts and holdings now use the
+  vendor schema's types (JSON numbers for `bid`, `ask` and order amounts, a `results` page for
+  accounts). The hostile-input tests keep their string and malformed forms on purpose.
+
 ## [0.3.111] - 2026-10-18
 
 ### Changed

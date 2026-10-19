@@ -13,7 +13,7 @@ defmodule DpExchange.Robinhood.FeedTest do
   # fixture here would decode to `bid: nil, ask: nil` silently, which is exactly the defect
   # `Rest.get_top_of_book/3` carried until this field-name fix, invisible to this suite
   # because every test below only matched on the struct's `symbol`, never its `bid`/`ask`.
-  @good_book %{"results" => [%{"symbol" => "BTC-USD", "bid" => "0.99", "ask" => "1.01"}]}
+  @good_book %{"results" => [%{"symbol" => "BTC-USD", "bid" => 0.99, "ask" => 1.01}]}
 
   defp responding(body) do
     fn conn ->
@@ -398,8 +398,8 @@ defmodule DpExchange.Robinhood.FeedTest do
     test "every symbol arrives from ONE request" do
       body = %{
         "results" => [
-          %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"},
-          %{"symbol" => "ETH-USD", "bid" => "3", "ask" => "4"}
+          %{"symbol" => "BTC-USD", "bid" => 1.0, "ask" => 2.0},
+          %{"symbol" => "ETH-USD", "bid" => 3.0, "ask" => 4.0}
         ]
       }
 
@@ -438,7 +438,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       # simply missing is silence, and `PollingFeed` already treats silence as
       # uncovered-and-retried on its own (see `publish_and_record/2`); this proves this
       # venue's own wiring does not undo that.
-      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}]}
+      body = %{"results" => [%{"symbol" => "BTC-USD", "bid" => 1.0, "ask" => 2.0}]}
 
       feed =
         start_feed(
@@ -496,7 +496,7 @@ defmodule DpExchange.Robinhood.FeedTest do
             Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
 
           [symbol] ->
-            body = %{"results" => [%{"symbol" => symbol, "bid" => "1", "ask" => "2"}]}
+            body = %{"results" => [%{"symbol" => symbol, "bid" => 1.0, "ask" => 2.0}]}
             Plug.Conn.resp(conn, 200, Jason.encode!(body))
         end
       end
@@ -541,7 +541,7 @@ defmodule DpExchange.Robinhood.FeedTest do
             Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
 
           [symbol] ->
-            body = %{"results" => [%{"symbol" => symbol, "bid" => "1", "ask" => "2"}]}
+            body = %{"results" => [%{"symbol" => symbol, "bid" => 1.0, "ask" => 2.0}]}
             Plug.Conn.resp(conn, 200, Jason.encode!(body))
         end
       end
@@ -585,7 +585,7 @@ defmodule DpExchange.Robinhood.FeedTest do
             Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
 
           true ->
-            rows = for s <- symbols, do: %{"symbol" => s, "bid" => "1", "ask" => "2"}
+            rows = for s <- symbols, do: %{"symbol" => s, "bid" => 1.0, "ask" => 2.0}
             Plug.Conn.resp(conn, 200, Jason.encode!(%{"results" => rows}))
         end
       end
@@ -643,7 +643,7 @@ defmodule DpExchange.Robinhood.FeedTest do
       plug = fn conn ->
         asked = query_symbols(conn.query_string)
         send(test_pid, {:request, asked})
-        rows = Enum.map(asked, &%{"symbol" => &1, "bid" => "1", "ask" => "2"})
+        rows = Enum.map(asked, &%{"symbol" => &1, "bid" => 1.0, "ask" => 2.0})
 
         conn
         |> Plug.Conn.put_resp_content_type("application/json")
@@ -697,7 +697,7 @@ defmodule DpExchange.Robinhood.FeedTest do
         asked = query_symbols(conn.query_string)
         send(test_pid, {:request, asked})
         if :atomics.get(slow?, 1) == 1, do: Process.sleep(150)
-        rows = Enum.map(asked, &%{"symbol" => &1, "bid" => "1", "ask" => "2"})
+        rows = Enum.map(asked, &%{"symbol" => &1, "bid" => 1.0, "ask" => 2.0})
 
         conn
         |> Plug.Conn.put_resp_content_type("application/json")
@@ -1972,7 +1972,7 @@ defmodule DpExchange.Robinhood.FeedTest do
             Plug.Conn.resp(conn, 404, Jason.encode!(%{"detail" => "Symbol not found"}))
 
           true ->
-            rows = for s <- symbols, do: %{"symbol" => s, "bid" => "1", "ask" => "2"}
+            rows = for s <- symbols, do: %{"symbol" => s, "bid" => 1.0, "ask" => 2.0}
             Plug.Conn.resp(conn, 200, Jason.encode!(%{"results" => rows}))
         end
       end
@@ -2086,6 +2086,132 @@ defmodule DpExchange.Robinhood.FeedTest do
 
         assert Enum.sort(arrived) == ["BTC-USD", "ETH-USD", "XRP-USD"]
       end
+    end
+  end
+
+  describe "tick AM: an unanswered coverage read is announced once per outage" do
+    test "repeated reads against an unresponsive poller send ONE :link_down" do
+      feed = start_feed()
+      :ok = Feed.subscribe_notices(feed, to: self())
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+
+      orphaned = :sys.get_state(feed).poller
+      on_exit(fn -> Process.exit(orphaned, :kill) end)
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 5_000
+      :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
+
+      assert Feed.coverage(feed) == %{}
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+
+      # A health check reading again while the outage is open is not a second outage.
+      assert Feed.coverage(feed) == %{}
+      assert Feed.coverage(feed) == %{}
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 500
+
+      # Closed by the next good poll, and announced afresh if it goes down again.
+      send(feed, {:poll_result, :ok})
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 5_000
+      assert Feed.coverage(feed) == %{}
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+    end
+  end
+
+  describe "tick AM: a poller that died under a symbol change is rebuilt with the change" do
+    test "update_symbols against a dead poller answers :ok and the restart carries the set" do
+      feed = start_feed()
+      orphaned = :sys.get_state(feed).poller
+      on_exit(fn -> Process.exit(orphaned, :kill) end)
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 5_000
+      :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
+
+      # The window: the poller is gone and its `EXIT` has not been handled yet.
+      assert :ok = Feed.update_symbols(feed, ["eth-usd"])
+      assert :ok = Feed.add_symbols(feed, ["LTC-USD"])
+      assert Process.alive?(feed)
+      assert Feed.wanted(feed) == ["ETH-USD", "LTC-USD"]
+
+      send(feed, {:EXIT, dead, :killed})
+      %{poller: rebuilt} = :sys.get_state(feed)
+      on_exit(fn -> Process.exit(rebuilt, :kill) end)
+
+      refute rebuilt == dead
+      assert Process.alive?(rebuilt)
+      assert Feed.wanted(feed) == ["ETH-USD", "LTC-USD"]
+    end
+  end
+
+  describe "tick AM: an outage with no symbols wanted is closed, not left open" do
+    test "a poller that crashes while no symbol is wanted is announced down, then idle-up" do
+      feed = start_feed(symbols: [])
+      :ok = Feed.subscribe_notices(feed, to: self())
+
+      kill_and_settle(feed, :sys.get_state(feed).poller)
+
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up} = up}, 5_000
+      assert up.details == %{reason: :poll_idle, symbols: []}
+      refute :sys.get_state(feed).link_down
+
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 500
+    end
+
+    test "emptying the set while an outage is open closes it" do
+      feed = start_feed()
+      :ok = Feed.subscribe_notices(feed, to: self())
+      assert_receive {:dp_exchange, :robinhood, %DpExchange.Core.Types.TopOfBook{}}, 5_000
+
+      orphaned = :sys.get_state(feed).poller
+      on_exit(fn -> Process.exit(orphaned, :kill) end)
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}, 5_000
+      :sys.replace_state(feed, fn state -> %{state | poller: dead} end)
+
+      assert Feed.coverage(feed) == %{}
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+      assert :sys.get_state(feed).link_down
+
+      assert :ok = Feed.update_symbols(feed, [])
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up} = up}, 5_000
+      assert up.details.reason == :poll_idle
+      refute :sys.get_state(feed).link_down
+    end
+  end
+
+  defp poller_fetch_timeout(feed),
+    do: :sys.get_state(:sys.get_state(feed).poller).fetch_timeout_ms
+
+  describe "tick AM: the poller's fetch timeout covers the bisection budget" do
+    test "a default budget keeps the interval-derived timeout PollingFeed would pick" do
+      assert poller_fetch_timeout(start_feed(interval_ms: 5_000)) == 30_000
+      assert poller_fetch_timeout(start_feed(interval_ms: 45_000)) == 45_000
+      assert poller_fetch_timeout(start_feed(interval_ms: 600_000)) == 60_000
+    end
+
+    test "a budget past the derived bound raises the timeout to the budget plus a margin" do
+      assert poller_fetch_timeout(start_feed(interval_ms: 5_000, bisect_budget_ms: 50_000)) ==
+               60_000
+
+      assert poller_fetch_timeout(start_feed(interval_ms: 5_000, bisect_budget_ms: 100_000)) ==
+               110_000
+    end
+
+    test "a restarted poller is built with the same timeout" do
+      feed = start_feed(interval_ms: 5_000, bisect_budget_ms: 50_000)
+      old = :sys.get_state(feed).poller
+      kill_and_settle(feed, old)
+
+      new = :sys.get_state(feed).poller
+      refute new == old
+      assert :sys.get_state(new).fetch_timeout_ms == 60_000
     end
   end
 end

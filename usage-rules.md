@@ -185,6 +185,22 @@ nothing there would honour them. Each call reads exactly (the table is
 | `subscribe_notices/1` | `:feed`, `:to` |
 | `market_status/1` | none (always `{:ok, :open}`; any key but `:credentials` is `:unknown_option`) |
 
+**`:timestamp` is whole seconds.** It is the `x-timestamp` header, which the venue honours for
+30 seconds. A present `:timestamp` that is not a positive integer (a float, a string, `0`, a
+negative) answers `{:error, {:invalid_field, :timestamp}}` from every call that signs, before
+anything is signed or sent; on `place_order/3` that keeps it a plain error rather than an
+unconfirmed write. **The Fake also refuses a `:base_url` the real path would not sign for**
+(`{:error, {:insecure_url, :robinhood}}`, `{:error, {:invalid_base_url, :not_a_string}}`),
+after the call's arguments and options and before credentials (`place_order/3` checks
+credentials first, as the real path does). A feed started with `:bisect_budget_ms` above what
+its interval allows has its poller's fetch timeout raised to the budget plus 10 seconds, so a
+long bisection is not killed part-way. An unanswered `coverage/1` read sends one `:link_down`
+per outage, closed by the next good poll's `:link_up`, not one per read. An outage opened while
+no symbol is wanted (nothing is polled then) is closed by a `:link_up` with
+`details.reason: :poll_idle` as soon as the poller is running again or the set is emptied. The
+Fake answers `get_estimated_price/5` for `side: "both"` with a `"bid"` row and an `"ask"` row per
+quantity, never a row whose side is `"both"`.
+
 Requires `dp_exchange_core ~> 0.3.101`.
 
 **A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the

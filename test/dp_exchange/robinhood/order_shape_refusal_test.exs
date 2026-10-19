@@ -176,13 +176,13 @@ defmodule DpExchange.Robinhood.OrderShapeRefusalTest do
         "side" => "buy",
         "type" => "market",
         "state" => "filled",
-        "filled_asset_quantity" => "0.25",
-        "average_price" => "50000.00",
+        "filled_asset_quantity" => 0.25,
+        "average_price" => 50_000.0,
         # `quantity` reads from the type-named config's own `asset_quantity`, not from
         # `filled_asset_quantity` — see `DpExchange.Robinhood.Rest.order_struct/1`'s own
         # comment. A fully filled order still has `quantity == filled_quantity` here because
         # the two figures happen to agree, not because one is read from the other.
-        "market_order_config" => %{"asset_quantity" => "0.25"}
+        "market_order_config" => %{"asset_quantity" => 0.25}
       }
 
       assert {:ok, %Order{} = order} = Rest.get_order(@credentials, "o-42", opts(body))

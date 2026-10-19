@@ -18,6 +18,12 @@ defmodule DpExchange.Robinhood.Fake do
     this venue, market data and trading alike — there is no venue-internal function this
     venue leaves ungated, because there is no venue-internal function the real venue
     leaves unsigned.
+  - **Every call that would send a request refuses a `:base_url` the real path would not sign
+    for**, as `{:error, {:insecure_url, :robinhood}}` or `{:error, {:invalid_base_url,
+    :not_a_string}}` (`Rest.check_base_url/1`): after the call's arguments and options, before
+    credentials, except `place_order/3` where the real path checks credentials first. A
+    `:timestamp` that is not a positive integer is `{:error, {:invalid_field, :timestamp}}`
+    from the option check, as on the facade.
   - **Coverage is `:internal_poll`, not `:stream`** — the one place a consumer can see that
     this venue has no socket, and it shows up as *what is arriving*, never as *how*.
   - **No candles, no order book, no volume.** The venue serves none, so neither does this.
@@ -165,6 +171,7 @@ defmodule DpExchange.Robinhood.Fake do
   def get_top_of_book(symbol, opts \\ []) do
     checked(Rest.validate_market_opts(opts, :get_top_of_book), symbol, fn ->
       with :ok <- fake_symbol(symbol),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated(opts) do
         listed_book(symbol)
       end
@@ -231,8 +238,10 @@ defmodule DpExchange.Robinhood.Fake do
 
   **Less capable than the venue, on purpose.** It states no `fee_ratio`, `est_fee`,
   `est_total_cost` or `est_total_credit`: the fake has no fee schedule, and a figure it made
-  up would be one the venue never stated. It does not model what the venue answers for
-  `side: "both"` (unmeasured); the row's `side` is the one asked for.
+  up would be one the venue never stated. `V2EstimatedPrice.side` is `bid` or `ask` in the
+  vendor's schema, so a `side: "both"` request is answered with a bid row then an ask row
+  per quantity (their order and grouping at the venue are unmeasured). Otherwise the row's
+  `side` is the one asked for.
   """
   @spec get_estimated_price(
           String.t(),
@@ -244,13 +253,23 @@ defmodule DpExchange.Robinhood.Fake do
   def get_estimated_price(symbol, side, quantity, credentials, opts \\ []) do
     checked(Rest.validate_opts(opts, :get_estimated_price), symbol, fn ->
       with {:ok, request} <- Rest.estimate_request(symbol, side, quantity),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials),
            {:ok, book} <- listed_book(symbol) do
-        rows = Enum.map(request.quantities, &estimate_row(book, request.side, &1))
+        rows = Enum.flat_map(request.quantities, &estimate_rows(book, request.side, &1))
         {:ok, %{"results" => rows}}
       end
     end)
   end
+
+  # `V2EstimatedPrice.side` is the enum `bid` / `ask` in the vendor's schema; a row never
+  # says `both`. A request for `both` is answered with a bid row and then an ask row for each
+  # quantity (how the venue lays them out is unmeasured, but every row it sends is one of the
+  # two).
+  defp estimate_rows(book, "both", quantity),
+    do: [estimate_row(book, "bid", quantity), estimate_row(book, "ask", quantity)]
+
+  defp estimate_rows(book, side, quantity), do: [estimate_row(book, side, quantity)]
 
   defp estimate_row(book, side, quantity) do
     %{
@@ -271,7 +290,8 @@ defmodule DpExchange.Robinhood.Fake do
   def get_symbols(opts \\ []) do
     checked(Rest.validate_market_opts(opts, :get_symbols), fn ->
       # Sorted, as `Rest.get_symbols/2` sorts what it collects.
-      with :ok <- authenticated(opts),
+      with :ok <- Rest.check_base_url(opts),
+           :ok <- authenticated(opts),
            do: {:ok, Enum.sort(@symbols)}
     end)
   end
@@ -325,7 +345,8 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def list_instruments(opts) do
     checked(Rest.validate_market_opts(opts, :list_instruments), fn ->
-      with :ok <- authenticated(opts),
+      with :ok <- Rest.check_base_url(opts),
+           :ok <- authenticated(opts),
            do: {:ok, Enum.map(@symbols, &fake_instrument/1)}
     end)
   end
@@ -358,6 +379,7 @@ defmodule DpExchange.Robinhood.Fake do
     checked(Rest.validate_opts(opts, :get_balances), fn ->
       with {:ok, account} <- fake_account(opts),
            {:ok, asset_codes} <- Rest.asset_codes(opts),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials),
            :ok <- held_account(account) do
         # Total above available: the difference is a balance sitting in an open order, which
@@ -407,7 +429,8 @@ defmodule DpExchange.Robinhood.Fake do
   @impl true
   def get_accounts(credentials, opts) do
     checked(Rest.validate_opts(opts, :get_accounts), fn ->
-      with :ok <- authenticated_credentials(credentials) do
+      with :ok <- Rest.check_base_url(opts),
+           :ok <- authenticated_credentials(credentials) do
         {:ok,
          [
            %{
@@ -452,7 +475,8 @@ defmodule DpExchange.Robinhood.Fake do
       with {:ok, parts} <- Rest.normalize_order_request(request),
            {:ok, key} <- Rest.supplied_client_order_id(request, opts),
            {:ok, _account} <- fake_account(opts),
-           :ok <- authenticated_credentials(credentials) do
+           :ok <- authenticated_credentials(credentials),
+           :ok <- Rest.check_base_url(opts) do
         # `open`, not `filled`: an accepted order is not an executed one, and a fake that
         # filled every order would let a consumer ship code that never handles a resting one.
         {:ok, place_once(parts, key)}
@@ -582,6 +606,7 @@ defmodule DpExchange.Robinhood.Fake do
       # caller placed, not a bare `nil`-filled acknowledgement. An id this fake never issued
       # is the venue's 404, as `Rest` delivers it.
       with :ok <- fake_order_id(id),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials),
            {:ok, order} <- find_order(id) do
         {:ok, remember_order(%{order | status: :cancelled, updated_at: DateTime.utc_now()})}
@@ -599,6 +624,7 @@ defmodule DpExchange.Robinhood.Fake do
       # The id first, then the account option, then credentials: `Rest.get_order/3`'s order.
       with :ok <- fake_order_id(id),
            {:ok, _account} <- fake_account(opts),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials) do
         find_order(id)
       end
@@ -618,6 +644,7 @@ defmodule DpExchange.Robinhood.Fake do
            :ok <- Rest.validate_order_filters(opts),
            :ok <- fake_cursor(Keyword.get(opts, :cursor)),
            :ok <- Rest.validate_limit(opts),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials) do
         placed = @orders_key |> Process.get(%{}) |> Map.values() |> Enum.sort_by(& &1.id)
         {:ok, Enum.filter(placed, &order_matches?(&1, opts))}
@@ -884,6 +911,7 @@ defmodule DpExchange.Robinhood.Fake do
   def quantization(symbol, opts \\ []) do
     checked(Rest.validate_opts(opts, :quantization), symbol, fn ->
       with :ok <- fake_symbol(symbol),
+           :ok <- Rest.check_base_url(opts),
            :ok <- authenticated(opts),
            true <- listed?(symbol) || unlisted(SymbolFormat.to_canonical_symbol(symbol)) do
         {:ok,

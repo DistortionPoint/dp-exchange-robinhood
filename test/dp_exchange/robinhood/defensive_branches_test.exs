@@ -199,7 +199,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
     test "a fetched book reaches the subscriber through the sink", %{limiter: limiter} do
       # The feed is a poll, and this is the wiring that makes a poll indistinguishable
       # from a socket to whoever subscribed.
-      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "77850.00", "bid" => "77840.00"}]}
+      body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => 77_850.0, "bid" => 77_840.0}]}
 
       {:ok, feed} =
         Feed.start_link(

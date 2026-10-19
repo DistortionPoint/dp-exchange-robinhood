@@ -402,7 +402,7 @@ defmodule DpExchange.Robinhood.FakeFidelityTest do
     test "a REST call reaches the limiter under the supervisor's name" do
       Config.put_override(:rate_limit_module, RecordingLimiter)
 
-      row = %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}
+      row = %{"symbol" => "BTC-USD", "bid" => 1.0, "ask" => 2.0}
       plug = fn conn -> Req.Test.json(conn, %{"results" => [row]}) end
 
       assert {:ok, _book} =

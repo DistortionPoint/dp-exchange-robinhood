@@ -54,7 +54,9 @@ defmodule DpExchange.Robinhood.Auth do
   otherwise become. An api key or private key with surrounding whitespace or a control
   character (typically a trailing newline from a `.env` file) is
   `{:error, {:invalid_credentials, :robinhood}}`. The error names the venue, never the field
-  or the value.
+  or the value. A `opts[:timestamp]` that is present and not a positive integer of seconds
+  (the venue honours a timestamp for 30 seconds) is `{:error, {:invalid_field, :timestamp}}`,
+  decided after the credentials.
 
   Builds the signed string through `payload/5` rather than concatenating a second time
   here — see that function's moduledoc for why a second, hand-kept copy of the same
@@ -66,9 +68,9 @@ defmodule DpExchange.Robinhood.Auth do
 
   def headers(method, path, body, %{api_key: api_key, private_key: private_key}, opts)
       when is_binary(method) and is_binary(path) and is_binary(body) and is_binary(api_key) do
-    timestamp = opts |> request_timestamp() |> to_string()
-
-    with {:ok, seed} <- credential_seed(api_key, private_key) do
+    with {:ok, seed} <- credential_seed(api_key, private_key),
+         {:ok, seconds} <- request_timestamp(opts) do
+      timestamp = Integer.to_string(seconds)
       signed_payload = payload(api_key, timestamp, path, method, body)
       # OTP's Ed25519 private key IS the 32-byte seed (`generate_key/3` hands the same
       # bytes back beside the public key), so the seed signs directly. Deriving the key pair
@@ -95,10 +97,15 @@ defmodule DpExchange.Robinhood.Auth do
   # reached `to_string/1` as `""`: an `x-timestamp:` header that is empty and a signature
   # over a payload with no timestamp in it, which the venue refuses as unauthorised -- a
   # credential problem the caller does not have. `nil` is an absent option.
+  #
+  # A present `:timestamp` must be a positive integer of seconds. A float signed as `"1.7e9"`,
+  # a string as whatever it held and a map raised in `to_string/1`: the venue refuses all of
+  # them as unauthorised, a credential problem the caller does not have.
   defp request_timestamp(opts) do
     case Keyword.get(opts, :timestamp) do
-      nil -> System.system_time(:second)
-      timestamp -> timestamp
+      nil -> {:ok, System.system_time(:second)}
+      seconds when is_integer(seconds) and seconds > 0 -> {:ok, seconds}
+      _other -> {:error, {:invalid_field, :timestamp}}
     end
   end
 

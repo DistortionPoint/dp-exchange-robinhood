@@ -154,7 +154,7 @@ defmodule DpExchange.Robinhood.TickAkTest do
     end
 
     test ":weight is the cost the limiter is asked for" do
-      row = %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}
+      row = %{"symbol" => "BTC-USD", "bid" => 1.0, "ask" => 2.0}
       plug = fn conn -> Req.Test.json(conn, %{"results" => [row]}) end
 
       assert {:ok, _book} =
@@ -169,7 +169,7 @@ defmodule DpExchange.Robinhood.TickAkTest do
     end
 
     test ":max_body_bytes refuses a body larger than the cap" do
-      row = %{"symbol" => "BTC-USD", "bid" => "1", "ask" => "2"}
+      row = %{"symbol" => "BTC-USD", "bid" => 1.0, "ask" => 2.0}
       body = %{"results" => [row], "padding" => String.duplicate("x", 4_096)}
       plug = fn conn -> Req.Test.json(conn, body) end
 

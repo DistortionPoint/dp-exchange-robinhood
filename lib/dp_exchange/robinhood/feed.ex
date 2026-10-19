@@ -100,7 +100,9 @@ defmodule DpExchange.Robinhood.Feed do
 
   - **A refused batch is split in half and each half asked again**, down to single
     symbols. One bad symbol among 300 is found in about 17 requests, not 300. A cycle
-    stops splitting at `@bisect_budget_ms` (20s), well inside the fetch timeout. What it
+    stops splitting at `@bisect_budget_ms` (20s), well inside the fetch timeout (which is
+    raised to the budget plus 10s when `:bisect_budget_ms` is configured past what
+    `PollingFeed` derives from the interval, so a larger budget is never killed). What it
     has not resolved by then is silence, retried next cycle, never reported as refused.
     Each request after the first is sent with `:timeout` capped to the budget left, which
     also bounds a limiter wait, so no single request overruns the deadline.
@@ -613,6 +615,7 @@ defmodule DpExchange.Robinhood.Feed do
       symbols: state.symbols,
       interval_ms: state.interval_ms,
       start_delay_ms: state.start_delay_ms,
+      fetch_timeout_ms: fetch_timeout_ms(state.interval_ms, budget_ms),
       sink: fn book -> send(parent, {:dp_exchange, :robinhood, book}) end,
       on_refusal: on_refusal,
       on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
@@ -620,6 +623,21 @@ defmodule DpExchange.Robinhood.Feed do
         fetch_all(symbols, credentials, request_opts, on_refusal, parent, budget_ms)
       end
     )
+  end
+
+  # **The fetch is allowed the whole bisection budget, and a margin.** `PollingFeed` kills a
+  # fetch at `:fetch_timeout_ms`, which it derives from the interval alone (clamped to
+  # 30..60s). A `:bisect_budget_ms` past that derived bound let the kill land inside a
+  # bisection, losing every finding it had made: the failure `@bisect_budget_ms` is documented
+  # to prevent, reachable by configuring it. The default (20s budget, 30s floor) is the
+  # derivation `PollingFeed` already made, so a default feed is unchanged.
+  @fetch_margin_ms 10_000
+  @min_fetch_timeout_ms 30_000
+  @max_fetch_timeout_ms 60_000
+
+  defp fetch_timeout_ms(interval_ms, budget_ms) do
+    derived = interval_ms |> max(@min_fetch_timeout_ms) |> min(@max_fetch_timeout_ms)
+    max(derived, budget_ms + @fetch_margin_ms)
   end
 
   # The `:fetch_all` this feed hands to `PollingFeed` — see the moduledoc's "This does not
@@ -948,8 +966,31 @@ defmodule DpExchange.Robinhood.Feed do
         refused: MapSet.intersection(state.refused, symbol_set)
     }
 
-    {:reply, PollingFeed.update_symbols(state.poller, symbols), state}
+    # `PollingFeed.update_symbols/2` is a cast: it cannot exit when the poller has just died
+    # (a cast to a dead pid is dropped), and nothing is lost by that, because the restart
+    # triggered by the pending `EXIT` is built from `state.symbols`, set above.
+    result = PollingFeed.update_symbols(state.poller, symbols)
+    {:reply, result, close_idle_link(state)}
   end
+
+  # **An outage with nothing to deliver is over.** `link_down` is closed by the first good
+  # poll, but `PollingFeed` does not poll an empty set at all, so a poller that crashed (or a
+  # read that went unanswered) while no symbol was wanted left the `:link_down` open until some
+  # symbol was added: a consumer waiting for a recovery that had nothing to wait for. With no
+  # symbols a live, idle poller is the recovery, and is announced once.
+  defp close_idle_link(%{link_down: true, symbols: []} = state) do
+    notice =
+      Notice.new(:link_up, :robinhood,
+        severity: :info,
+        message: "poll is idle: no symbols are wanted, so there is nothing to deliver",
+        details: %{reason: :poll_idle, symbols: []}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+    %{state | link_down: false}
+  end
+
+  defp close_idle_link(state), do: state
 
   # A notice subscriber that died. Dropped, and its monitor forgotten.
   #
@@ -1113,7 +1154,7 @@ defmodule DpExchange.Robinhood.Feed do
   defp restart_poller(state, crashes) do
     case start_poller(state) do
       {:ok, new_poller} ->
-        {:noreply, %{state | poller: new_poller, poller_crashes: crashes}}
+        {:noreply, close_idle_link(%{state | poller: new_poller, poller_crashes: crashes})}
 
       # As unreachable in practice as `init/1`'s own `{:error, other}` branch — `fetch`
       # is always supplied — but this feed has no lesser fallback the way a socket-based
@@ -1157,7 +1198,11 @@ defmodule DpExchange.Robinhood.Feed do
     {PollingFeed.coverage(state.poller), state}
   catch
     :exit, reason ->
-      notify_poller_unresponsive(state, reason)
+      # **One `:link_down` per outage, not one per read.** A health check reads coverage every
+      # few seconds; against a wedged poller each read re-sent the notice to every subscriber,
+      # while the one `:link_up` that closes it is latched. An outage already open (from a
+      # crash, or an earlier unanswered read) is not announced again.
+      unless state.link_down, do: notify_poller_unresponsive(state, reason)
       {%{}, %{state | link_down: true}}
   end
 

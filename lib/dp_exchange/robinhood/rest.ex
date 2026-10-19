@@ -200,12 +200,43 @@ defmodule DpExchange.Robinhood.Rest do
           | {:error, {:invalid_options, term()}}
           | {:error, {:unknown_option, atom()}}
           | {:error, {:unsupported_option, :environment}}
+          | {:error, {:invalid_field, :timestamp}}
   def validate_opts(opts, function) do
     case Options.check(opts, allowed_options(function)) do
-      :ok -> if request_call?(function), do: check_environment(opts), else: :ok
+      :ok -> if request_call?(function), do: check_request_opts(opts), else: :ok
       {:error, {:invalid_options, value}} -> {:error, {:invalid_options, bounded_raw(value)}}
       {:error, {:unknown_option, _key}} = unknown -> unknown
     end
+  end
+
+  defp check_request_opts(opts) do
+    with :ok <- check_environment(opts), do: check_timestamp(opts)
+  end
+
+  # **`:timestamp` is the `x-timestamp` header, in whole seconds, and the venue honours it for
+  # 30 seconds** (the `Timestamp` security scheme in the vendor's OpenAPI document). It reached
+  # `to_string/1` unchecked: a float (`1.7e9`) signed as `"1.7e9"`, a map raised inside the
+  # signer in the caller's process, and on `place_order/3` a signing failure after the first
+  # attempt would have read as an unconfirmed write. Anything but a positive integer (or
+  # absent / `nil`) is refused up front, before anything is signed or sent.
+  defp check_timestamp(opts) do
+    case Config.opt(opts, :timestamp, nil) do
+      nil -> :ok
+      seconds when is_integer(seconds) and seconds > 0 -> :ok
+      _other -> {:error, {:invalid_field, :timestamp}}
+    end
+  end
+
+  @doc """
+  Whether this call's `:base_url` is one `Rest` would send a signed request to: `:ok`,
+  `{:error, {:insecure_url, :robinhood}}` or `{:error, {:invalid_base_url, :not_a_string}}`.
+  Exposed so `DpExchange.Robinhood.Fake` refuses exactly what the real path refuses before it
+  signs anything, instead of answering a call the venue package would not send.
+  """
+  @spec check_base_url(keyword()) ::
+          :ok | {:error, {:insecure_url, :robinhood} | {:invalid_base_url, :not_a_string}}
+  def check_base_url(opts) do
+    with {:ok, _base} <- secure_base_url(opts), do: :ok
   end
 
   # **A shared transport key is allowed only where the call reads it** (design: transport keys
@@ -1863,7 +1894,8 @@ defmodule DpExchange.Robinhood.Rest do
          :ok <- Auth.validate_credentials(credentials),
          # Checked here as well as in `post/5`: a refusal out of `post/5` would be read by
          # `confirm_order/4` as a send that may have happened, and nothing has been sent.
-         {:ok, _base} <- secure_base_url(opts) do
+         {:ok, _base} <- secure_base_url(opts),
+         :ok <- check_timestamp(opts) do
       client_order_id = supplied || generate_client_order_id()
       path = "/api/v2/crypto/trading/orders/" <> query_string([{"account_number", account}])
       calls = :atomics.new(1, signed: false)
