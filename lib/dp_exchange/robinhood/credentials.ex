@@ -61,6 +61,14 @@ defmodule DpExchange.Robinhood.Credentials do
   # `credentials: nil` — an option forwarded from an unset value. Empty, so `Auth` refuses
   # with `missing_credentials` instead of `Feed.init/1` raising and restart-looping.
   def wrap(nil), do: %__MODULE__{}
+
+  # A host's own credentials STRUCT (a map, but not enumerable): `struct/2` enumerates its
+  # second argument and raised `Protocol.UndefinedError`, whose message prints the whole
+  # struct, secret included, into the starting process's crash report. Converted to a plain
+  # map first.
+  def wrap(%{__struct__: _module} = credentials),
+    do: struct(__MODULE__, Map.from_struct(credentials))
+
   def wrap(credentials) when is_map(credentials), do: struct(__MODULE__, credentials)
 
   @doc """
@@ -84,7 +92,15 @@ defmodule DpExchange.Robinhood.Credentials do
       {:ok, credentials} when is_map(credentials) ->
         Keyword.put(opts, :credentials, wrap(credentials))
 
-      _absent_or_not_a_map ->
+      # Neither absent, `nil` nor a map: a keyword list or a bare string, typically a
+      # credential in the wrong shape. It was left in place, so it sat in the supervisor's
+      # stored start argument (printed on any termination) and in `FunctionClauseError`'s
+      # argument list when `Feed.init/1` tried to wrap it. Replaced by a marker that carries
+      # nothing; `Feed.init/1` refuses it as `{:invalid_option, :credentials}`.
+      {:ok, credentials} when credentials != nil ->
+        Keyword.put(opts, :credentials, :invalid)
+
+      _absent_or_nil ->
         opts
     end
   end

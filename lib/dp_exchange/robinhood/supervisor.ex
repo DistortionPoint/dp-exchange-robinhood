@@ -57,21 +57,46 @@ defmodule DpExchange.Robinhood.Supervisor do
 
   @impl true
   def init(opts) do
+    # The feed is handed the limiter by name: its own `:name` is the feed's, and a limiter name
+    # derived from that would not be the one started below.
+    feed_opts =
+      opts |> Keyword.put(:name, feed_name(opts)) |> Keyword.put(:limiter, limiter_name(opts))
+
     children = [
       {DefaultRateLimiter, name: limiter_name(opts), limits: limits()},
-      {Feed, Keyword.put(opts, :name, feed_name(opts))}
+      {Feed, feed_opts}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
   end
 
-  @doc "The limiter this venue meters against."
+  @doc """
+  The limiter this venue meters against: `opts[:limiter]`, else one derived from the tree's
+  `opts[:name]` (`<name>.RateLimiter`), else `DpExchange.Robinhood.RateLimiter` for the default
+  tree. A second tree started with only a distinct `name:` therefore owns its own limiter.
+  """
   @spec limiter_name(keyword()) :: atom()
-  def limiter_name(opts), do: Config.opt(opts, :limiter, DpExchange.Robinhood.RateLimiter)
+  def limiter_name(opts) do
+    Config.opt(opts, :limiter, derived_name(opts, "RateLimiter", default_limiter()))
+  end
 
-  @doc "This venue's feed process."
+  defp default_limiter, do: DpExchange.Robinhood.RateLimiter
+
+  @doc """
+  This venue's feed process: `opts[:feed]`, else one derived from the tree's `opts[:name]`
+  (`<name>.Feed`), else `DpExchange.Robinhood.Feed` for the default tree.
+  """
   @spec feed_name(keyword()) :: atom()
-  def feed_name(opts), do: Config.opt(opts, :feed, Feed)
+  def feed_name(opts), do: Config.opt(opts, :feed, derived_name(opts, "Feed", Feed))
+
+  # The default tree name (or none, or one that is not an atom and so cannot be extended) keeps
+  # the fixed default, so a consumer running one tree is unaffected.
+  defp derived_name(opts, suffix, default) do
+    case Config.opt(opts, :name, __MODULE__) do
+      name when is_atom(name) and name != __MODULE__ -> Module.concat(name, suffix)
+      _default_or_unnameable -> default
+    end
+  end
 
   defp limits do
     caps = DpExchange.Robinhood.capabilities()

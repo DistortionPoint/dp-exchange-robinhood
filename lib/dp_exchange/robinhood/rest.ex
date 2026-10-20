@@ -128,26 +128,31 @@ defmodule DpExchange.Robinhood.Rest do
   # **The options each facade function reads, in one place.** A request-sending function's
   # allowed list is `Options.transport_options/0` plus its entry here; a function that sends no
   # request (see `allowed_options/1`) allows its entry plus `:credentials` only.
-  # `Options.check/2` refuses any other key as `{:unknown_option, key}`. The four market-data keys are listed for the calls that
-  # refuse them as `{:unsupported_option, key}` (a more specific answer than "unknown").
+  # `Options.check/2` refuses any other key as `{:unknown_option, key}`. The four market-data
+  # keys are listed for the calls that refuse them as `{:unsupported_option, key}` (a more
+  # specific answer than "unknown").
   # `:timestamp` is read by `Auth.headers/5` on every signed call; `:feed` and `:to` by the
-  # streaming calls. `get_orders` reads the venue's own filters, `:cursor` and `:limit`;
+  # streaming calls. `:name` is the supervision tree's name: where `:feed` / `:limiter` are not
+  # given, the feed and limiter this call addresses are the ones derived from it
+  # (`Supervisor.feed_name/1`, `limiter_name/1`), which is how a second tree is addressed.
+  # `get_orders` reads the venue's own filters, `:cursor` and `:limit`;
   # `place_order` reads `:client_order_id` as well as the key on the request.
   # `:account_number` is listed only where the call sends it (holdings, orders). On
   # `cancel_order`, `get_accounts`, `get_estimated_price` and `quantization` it is refused: a
   # caller who passed it would believe it scoped a call that ignores it.
   @function_options %{
-    get_top_of_book: [:timestamp | @unsupported_market_options],
-    get_symbols: [:timestamp | @unsupported_market_options],
-    list_instruments: [:timestamp | @unsupported_market_options],
-    quantization: [:timestamp],
-    get_balances: [:timestamp, :account_number, :asset_codes],
-    get_accounts: [:timestamp],
-    place_order: [:timestamp, :account_number, :client_order_id],
-    cancel_order: [:timestamp],
-    get_order: [:timestamp, :account_number],
+    get_top_of_book: [:timestamp, :name | @unsupported_market_options],
+    get_symbols: [:timestamp, :name | @unsupported_market_options],
+    list_instruments: [:timestamp, :name | @unsupported_market_options],
+    quantization: [:timestamp, :name],
+    get_balances: [:timestamp, :name, :account_number, :asset_codes],
+    get_accounts: [:timestamp, :name],
+    place_order: [:timestamp, :name, :account_number, :client_order_id],
+    cancel_order: [:timestamp, :name],
+    get_order: [:timestamp, :name, :account_number],
     get_orders: [
       :timestamp,
+      :name,
       :account_number,
       :cursor,
       :limit,
@@ -160,12 +165,12 @@ defmodule DpExchange.Robinhood.Rest do
       :type,
       :state
     ],
-    get_estimated_price: [:timestamp],
-    subscribe: [:feed, :to | @unsupported_market_options],
-    unsubscribe: [:feed],
-    update_symbols: [:feed | @unsupported_market_options],
-    subscribe_notices: [:feed, :to],
-    coverage: [:feed],
+    get_estimated_price: [:timestamp, :name],
+    subscribe: [:feed, :name, :to | @unsupported_market_options],
+    unsubscribe: [:feed, :name],
+    update_symbols: [:feed, :name | @unsupported_market_options],
+    subscribe_notices: [:feed, :name, :to],
+    coverage: [:feed, :name],
     # Answered locally (crypto has no session): reads no key of its own, sends no request.
     market_status: []
   }
@@ -204,10 +209,38 @@ defmodule DpExchange.Robinhood.Rest do
   def validate_opts(opts, function) do
     case Options.check(opts, allowed_options(function)) do
       :ok -> if request_call?(function), do: check_request_opts(opts), else: :ok
-      {:error, {:invalid_options, value}} -> {:error, {:invalid_options, bounded_raw(value)}}
+      {:error, {:invalid_options, value}} -> {:error, {:invalid_options, bounded_options(value)}}
       {:error, {:unknown_option, _key}} = unknown -> unknown
     end
   end
+
+  # **Options that are not a keyword list ride the error, and a credential can be inside
+  # them.** A map of options (`%{credentials: %{api_key: ..., private_key: ...}}`), or the
+  # credentials map itself passed where the options go, was inspected into the error tuple, and
+  # `bounded_raw/1`'s cut is 64 characters on a string and ten elements on a collection: a
+  # 44-character base64 seed fits inside both. The error is logged, stored and printed by the
+  # caller, so the secret keys are replaced before the value is rendered. The shape of the
+  # rest is kept, bounded as before.
+  @secret_option_keys [
+    :credentials,
+    :api_key,
+    :private_key,
+    "credentials",
+    "api_key",
+    "private_key"
+  ]
+
+  defp bounded_options(value) when is_binary(value), do: bounded_raw(value)
+  defp bounded_options(value), do: value |> redact_options() |> bounded_raw()
+
+  # A struct is left to its own `Inspect` (`Credentials` redacts itself). Everything else is
+  # walked, an improper tail included.
+  defp redact_options(%{__struct__: _module} = struct), do: struct
+  defp redact_options(map) when is_map(map), do: map |> Map.to_list() |> redact_options()
+  defp redact_options({key, _value}) when key in @secret_option_keys, do: {key, :redacted}
+  defp redact_options({key, value}), do: {key, redact_options(value)}
+  defp redact_options([head | tail]), do: [redact_options(head) | redact_options(tail)]
+  defp redact_options(other), do: other
 
   defp check_request_opts(opts) do
     with :ok <- check_environment(opts), do: check_timestamp(opts)

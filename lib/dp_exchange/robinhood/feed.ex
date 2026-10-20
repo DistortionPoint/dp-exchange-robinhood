@@ -109,9 +109,9 @@ defmodule DpExchange.Robinhood.Feed do
   - **A symbol the venue refused is remembered** (`state.refused`) until it delivers again
     or leaves scope. The next cycle's bulk request leaves it out, so the others are back to
     ONE request without waiting for a consumer to drop it. The remembered symbols are
-    asked for in a request of their own, and bisected again if more than one, so one that
-    starts answering rejoins at once, and one still refused is reported again, once per
-    cycle, as before.
+    asked for one request each (never as a batch, which would be bisected again at about
+    2M - 1 requests for M of them), so the cost is M a cycle; one that starts answering
+    rejoins at once, and one still refused is reported again, once per cycle, as before.
   - **A 401 or 403 is not split.** An unauthenticated request is refused for every symbol
     alike. It is returned as the cycle's error, and `PollingFeed`'s "delivering nothing"
     notice says so, with no per-symbol refusals attributed to symbols that did nothing wrong.
@@ -247,7 +247,8 @@ defmodule DpExchange.Robinhood.Feed do
 
   Refuses to start, as `{:error, {:invalid_option, key}}`, when `:symbols` is not a list of
   non-blank strings, `:subscriber` is neither a pid nor a registered name, or
-  `:bisect_budget_ms` is not a positive integer. A `:max_queue_len` that is not a positive
+  `:bisect_budget_ms` is not a positive integer, or `:credentials` is neither a map nor `nil`.
+  A `:max_queue_len` that is not a positive
   integer is not an `{:error, _}` return: it raises `ArgumentError` from `init/1`
   (`Core.Fanout.max_queue_len!/2`), so a back-pressure bound you believe you set is never
   silently replaced by the default.
@@ -423,18 +424,31 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   defp init_options(opts) do
-    symbols = boot_symbols(Config.opt(opts, :symbols, []))
-    subscriber? = subscriber?(Config.opt(opts, :subscriber, nil))
-
-    budget? = valid_budget?(Config.opt(opts, :bisect_budget_ms, @bisect_budget_ms))
-
-    case {symbols, subscriber?, budget?} do
-      {{:ok, symbols}, true, true} -> init_feed(opts, symbols)
-      {:error, _subscriber?, _budget?} -> {:stop, {:invalid_option, :symbols}}
-      {{:ok, _symbols}, false, _budget?} -> {:stop, {:invalid_option, :subscriber}}
-      {{:ok, _symbols}, true, false} -> {:stop, {:invalid_option, :bisect_budget_ms}}
+    with {:ok, symbols} <- checked(boot_symbols(Config.opt(opts, :symbols, [])), :symbols),
+         :ok <- checked(subscriber?(Config.opt(opts, :subscriber, nil)), :subscriber),
+         :ok <-
+           checked(
+             valid_budget?(Config.opt(opts, :bisect_budget_ms, @bisect_budget_ms)),
+             :bisect_budget_ms
+           ),
+         :ok <- checked(valid_credentials?(Keyword.get(opts, :credentials)), :credentials) do
+      init_feed(opts, symbols)
+    else
+      {:invalid_option, key} -> {:stop, {:invalid_option, key}}
     end
   end
+
+  defp checked(:error, key), do: {:invalid_option, key}
+  defp checked(false, key), do: {:invalid_option, key}
+  defp checked(true, _key), do: :ok
+  defp checked({:ok, _value} = ok, _key), do: ok
+
+  # Credentials are a map (or `nil`, which `Auth` refuses at the first fetch). Anything else
+  # reached `Credentials.wrap/1` and raised `FunctionClauseError` with the value in its
+  # argument list, in the crash report of the process starting the feed. `Credentials.
+  # wrap_opt/1` has already replaced such a value with a marker carrying nothing.
+  defp valid_credentials?(nil), do: true
+  defp valid_credentials?(credentials), do: is_map(credentials)
 
   # A budget that is not a positive integer made every cycle's deadline arithmetic raise in the
   # fetch task, so the feed delivered nothing, cycle after cycle, with only a fetch failure to
@@ -567,7 +581,12 @@ defmodule DpExchange.Robinhood.Feed do
         # `DefaultRateLimiter`'s own default-named process, which this package never starts:
         # every poll failed `:rate_limiter_unavailable` and the feed delivered nothing. The
         # facade's REST calls already default it (`with_limiter/1`); the poll must too.
-        |> Keyword.put(:limiter, DpExchange.Robinhood.Supervisor.limiter_name(opts))
+        # `:limiter` itself, not `Supervisor.limiter_name/1`: the supervisor hands the feed the
+        # limiter it started, and a name derived here would come from the FEED's own `:name`.
+        |> Keyword.put(
+          :limiter,
+          Config.opt(opts, :limiter, DpExchange.Robinhood.RateLimiter)
+        )
     }
 
     case start_poller(state) do
@@ -665,7 +684,7 @@ defmodule DpExchange.Robinhood.Feed do
     outcomes =
       if auth_failure?(active_outcomes),
         do: active_outcomes,
-        else: active_outcomes ++ resolve(suspect, ctx, true, cycle)
+        else: active_outcomes ++ probe(suspect, ctx, cycle)
 
     report_budget(parent, outcomes)
 
@@ -676,6 +695,32 @@ defmodule DpExchange.Robinhood.Feed do
       [] -> no_events(outcomes)
       events -> {:ok, events}
     end
+  end
+
+  # **Remembered-refused symbols are probed one request each, never as a batch.** They used
+  # to be sent together and bisected again whenever the batch was refused, which costs about
+  # 2M - 1 requests a cycle for M symbols that are all still refused (M of 50 is over the
+  # venue's 100 a minute). Singly it is M requests, and each still reports its own refusal
+  # (once per cycle) or, answering, rejoins. Taken in sorted order starting at a position that
+  # rotates with the cycle, so a budget too small for all of them starves a different one each
+  # cycle. A 401 or 403 ends the probes.
+  defp probe(suspects, ctx, cycle) do
+    suspects
+    |> rotate(cycle)
+    |> Enum.reduce_while([], fn symbol, acc ->
+      outcomes = resolve_chunk([symbol], ctx, true)
+      acc = [outcomes | acc]
+      if auth_failure?(outcomes), do: {:halt, acc}, else: {:cont, acc}
+    end)
+    |> Enum.reverse()
+    |> Enum.concat()
+  end
+
+  defp rotate([], _cycle), do: []
+
+  defp rotate(symbols, cycle) do
+    {head, tail} = symbols |> Enum.sort() |> Enum.split(rem(cycle, length(symbols)))
+    tail ++ head
   end
 
   # Tells the feed whether the cycle was a good one, for the `:link_up` and

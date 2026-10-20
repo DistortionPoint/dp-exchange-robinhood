@@ -19,6 +19,54 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed (tick AO: secret hygiene and process identity)
+
+- **`{:error, {:invalid_options, value}}` no longer carries a credential.** Options passed as a
+  map, or the credentials map passed where the options go, were inspected into the error tuple
+  (`bounded_raw/1` cuts at 64 characters and ten elements; a 44-character base64 seed fits in
+  both). The value is now walked first and every `credentials`, `api_key` and `private_key`
+  entry (atom or string key, nested maps and lists, improper tails) is replaced by `:redacted`.
+  The same value rides the `ArgumentError` the Fake and the facade raise for `coverage/1`,
+  `coverage_by_kind/1` and `wanted/1`.
+- **Credentials in the wrong shape no longer reach a crash report.** A keyword list or a
+  string given as `credentials:` stayed in the supervisor's stored start argument and then in
+  the `FunctionClauseError` argument list when `Feed.init/1` tried to wrap it; a host's own
+  credentials struct made `Credentials.wrap/1` raise `Protocol.UndefinedError`, which prints the
+  struct. `Credentials.wrap_opt/1` now replaces such a value with the marker `:invalid`,
+  `Credentials.wrap/1` converts a foreign struct to a map first, and `Feed` refuses to start with
+  `{:error, {:invalid_option, :credentials}}` (a map or `nil` is still accepted; `nil` is still
+  refused at the first fetch as `missing_credentials`).
+- **Remembered-refused symbols are probed one request each, not as a bisected batch.** They
+  were asked for together and bisected again whenever that batch was refused: about 2M - 1
+  requests a cycle for M symbols that are all still refused (over the venue's 100 a minute at
+  M of 50). Now M requests a cycle, each still reporting its own refusal once per cycle or
+  rejoining when it answers; the order rotates with the cycle so a budget too small for all of
+  them starves a different one each time, and a 401 or 403 ends the probes. No existing test
+  pinned the batch pattern (every one has a single remembered symbol, which is one request
+  either way). New test: 10 refused symbols among 40 cost 11 requests in the second cycle,
+  one of 30 symbols and ten of one.
+- **A second tree needs only its own `name:`.** The feed and limiter default names were fixed,
+  so a second tree collided on both unless `feed:` and `limiter:` were also given. With no
+  explicit `feed:` / `limiter:` they are now derived from the tree's `name:`
+  (`<name>.Feed`, `<name>.RateLimiter`); the default tree name, no name, or a name that is not
+  an atom keep today's `DpExchange.Robinhood.Feed` / `RateLimiter`. The feed is handed the
+  limiter the tree started. Every facade call that addresses a feed or limiter now accepts
+  `name:` (in `Rest.function_options/1`; the Fake accepts it and ignores it, as it has no
+  tree) and resolves the same derived names; `feed:` and `limiter:` still win.
+
+### Audited, no change (tick AO)
+
+- Signing: the base64 seed is decoded per request, inside `Auth.headers/5`, and used directly
+  as the Ed25519 private key; it is held by no process state, no closure outlives the request
+  (the signer closure captures the wrapped credentials and is called by Core per attempt) and
+  no error tuple names a value or a field.
+- Polling cost: one bad symbol among a 100-symbol chunk costs 1 + 2 x ceil(log2 100) = 15
+  requests the first cycle and then 2 a cycle (the bulk request without it, and the remembered
+  symbol on its own), because `state.refused` remembers it until it delivers again or leaves
+  scope. A 401 or 403 is never split. (M remembered symbols: see the fix above.)
+- No `String.to_atom`, no ETS, `:persistent_term`, Registry or `:global` use, and no `Logger`
+  call in `lib/`.
+
 ## [0.3.113] - 2026-10-19
 
 ### Dependencies

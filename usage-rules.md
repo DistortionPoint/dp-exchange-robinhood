@@ -75,15 +75,17 @@ venue refuses a request (400 or 404), it is split in half and asked again, down 
 symbols, for at most `bisect_budget_ms:` (default `20_000`; a positive integer or the feed does not start,
 `{:invalid_option, :bisect_budget_ms}`). A symbol the venue refused alone is delivered to
 `subscriber:` as `{:dp_exchange, :robinhood, {:refused, symbol, reason}}`, left out of the
-bulk request from then on, and asked for by itself each cycle until it answers again or you
-drop it. A 401 or 403 is not split and blames no symbol: it is the cycle's error. A symbol the
+bulk request from then on, and asked for by itself (one request each, never re-bisected) each
+cycle until it answers again or you drop it. A 401 or 403 is not split and blames no symbol: it is the cycle's error. A symbol the
 venue simply omits from a response is silence, retried next cycle, never a refusal.
 
 **Every option the supervision tree reads.** `credentials:` (the api key and base64 seed;
 wrapped so a crash report never prints them), `symbols:` (the boot set; upper-cased, a list of
 non-blank strings or the feed does not start), `subscriber:` (above), `name:` / `feed:` /
 `limiter:` (process names; defaults `DpExchange.Robinhood.Supervisor`, `...Feed`,
-`...RateLimiter`), `interval_ms:` (default `30_000`), `start_delay_ms:` (wait before the first
+`...RateLimiter`; a tree given only `name: :account_two` gets `:account_two.Feed` and
+`:account_two.RateLimiter`, so two accounts need only distinct `name:`s, and every facade
+call that addresses the feed or limiter takes the same `name: :account_two`), `interval_ms:` (default `30_000`), `start_delay_ms:` (wait before the first
 poll; default none), `bisect_budget_ms:` (above), `max_queue_len:` (below),
 `rate_limit_blocking:` (default `true` for the poll, so it waits for capacity rather than
 skipping a symbol), and the request options forwarded to every poll: `base_url:`,
@@ -137,7 +139,8 @@ at start must be a pid or a name too, or the feed does not start
 
 **Options are checked, not ignored.** Options that are not a keyword list answer
 `{:error, {:invalid_options, value}}` from every facade call that reads them (it used to
-raise in your process, `place_order/3` and `cancel_order/3` included); `coverage/1`,
+raise in your process, `place_order/3` and `cancel_order/3` included; the value in the error
+has any `credentials`, `api_key` or `private_key` entry replaced by `:redacted`); `coverage/1`,
 `coverage_by_kind/1` and `wanted/1` have no room for an error, and an empty answer would read
 as "nothing covered", so they raise `ArgumentError`.
 `get_top_of_book/2`, `get_symbols/1`, `list_instruments/1`, `subscribe/2` and
@@ -169,7 +172,9 @@ call to production that you believed was a test. A call that sends no request
 credential set may be handed to every call); `timeout:`, `plug:`, `environment:` and the rest
 answer `{:error, {:unknown_option, key}}` (the three reads raise `ArgumentError`), because
 nothing there would honour them. Each call reads exactly (the table is
-`DpExchange.Robinhood.Rest.function_options/1`):
+`DpExchange.Robinhood.Rest.function_options/1`). Every call below also reads `:name` (the
+supervision tree's name, from which the feed and limiter it addresses are derived; `:feed`
+and `:limiter` win), and `:timestamp` where it signs; the table lists the rest:
 
 | Call | Own options |
 | --- | --- |
