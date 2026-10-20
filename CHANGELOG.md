@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.114] - 2026-10-20
+
 ### Dependencies
 
 - **Requires `dp_exchange_core ~> 0.3.114`** (was `~> 0.3.111`). The conformance suite now runs
