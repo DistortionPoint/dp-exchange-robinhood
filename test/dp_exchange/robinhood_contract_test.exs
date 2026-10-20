@@ -20,6 +20,9 @@ defmodule DpExchange.RobinhoodContractTest do
     # Conformance group 42 (Core 0.3.98): the real `Rest.place_order/3` with a 503 on every
     # attempt must answer `order_unconfirmed`; a request refused before sending must not.
     ambiguous_place_order: &AmbiguousWrite.place/1,
+    # Conformance group 51 (Core 0.3.113): the whole tree, started with canary credentials and
+    # no network, rendered with `:sys.get_status/2`.
+    process_probe: {DpExchange.Robinhood.Test.ProcessProbe, :start},
     credentials: %{api_key: "test-key", private_key: Base.encode64(:binary.copy(<<1>>, 32))},
     # The options this venue's own endpoints require before its fake will answer at all.
     #
