@@ -19,6 +19,13 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Dependencies
+
+- **Requires `dp_exchange_core ~> 0.3.116`** (was `~> 0.3.114`). Its conformance groups
+  now have teeth this package passes: group 39 counts a success only if it holds something to
+  inspect, group 37 judges a bar's timeframe label, group 42 requires the sent
+  `client_order_id` on `:order_unconfirmed`, and group 19 checks all 37 secret names.
+
 ### Fixed (tick AP: time, clocks and timers)
 
 - **A caller-pinned `:timestamp` is no longer replayed on a retry.** `Rest` re-signs every
