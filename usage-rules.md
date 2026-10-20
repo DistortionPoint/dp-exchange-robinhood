@@ -222,7 +222,7 @@ nothing delivered yet), you get a `:link_down` `Core.Notice`, and this package r
 the poll with the symbols this feed actually had — including any added afterward via
 `update_symbols/2` — without you calling anything again. The restart is bounded: more than five poller crashes
 within a minute stop `Feed` with `{:poller_crash_loop, reason}`, handing the loop to the
-supervisor (which restarts it from the static `opts`, as below). A poller that is alive but
+supervisor (which restarts it and resumes from the ledger, as below). A poller that is alive but
 did not answer a `coverage/1` read gives that one read `%{}` and a `:link_down` notice
 (`severity: :warning`); the feed keeps running. A fetch task killed from outside does not
 kill the poll either.
@@ -237,15 +237,21 @@ sorted), latched: not once per cycle, and none without a prior `:link_down`.
 feed (not one per cycle) and cleared by the next cycle that delivers a book. Coverage is
 unchanged: the symbols simply stop being covered, as before.
 
-**What still costs you your whole symbol set: `Feed` itself crashing** — a bug outside
-the poller-crash path, or anything that kills the `Feed` pid directly.
-`DpExchange.Robinhood.Supervisor` restarts `Feed` under `:one_for_one`, but from the
-*static* `opts` your supervision tree started it with; every `update_symbols/2` and
-`subscribe_notices/1` call you made afterward is gone. Nothing inside this package can
-replay those calls — it never held onto the functions or the process that made them.
-If your consumer needs to survive a `Feed` restart unattended, monitor the `Feed` pid
-(or the `DpExchange.Robinhood` pid it sits under) yourself and re-issue
-`update_symbols/2` on `:DOWN`.
+**A `Feed` crash is resumed, and announced.** For a bug outside the poller-crash path, or
+anything that kills the `Feed` pid directly, `DpExchange.Robinhood.Supervisor` restarts `Feed`
+(the tree is `:rest_for_one`: ledger, limiter, feed). It used to restart from the *static*
+`opts` your tree was started with, so every `subscribe/2`, `update_symbols/2`,
+`unsubscribe/2` and `subscribe_notices/1` made afterward was gone, silently. Now the tree's
+`DpExchange.Robinhood.Ledger` (named `<name>.Ledger`, or `ledger:`) keeps the feed's wanted
+symbols and its registered data and notice subscribers, written after every call the feed
+*accepted* (a refused call writes nothing). The restarted feed reads them back after it has
+started, monitors the pids again, and sends every notice subscriber one
+`%Core.Notice{kind: :coverage_change}` with `details.reason: :feed_restarted` and
+`details.symbols` (the restored set); `coverage/1` is empty until the next poll delivers. What
+is not kept is observed state (which symbols the venue refused: re-learned by polling) and the
+credentials (the tree's wrapped start arguments already hold them). A crash of the ledger
+itself restarts the whole tree from the static `opts`, as before. A feed started on its own
+(not under this tree) has no ledger and keeps nothing.
 
 **Your `private_key` will not appear in the crash log.** `Feed` keeps the credentials you
 supplied at start for as long as it runs — it needs them to rebuild the poller's `fetch`

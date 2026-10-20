@@ -53,6 +53,19 @@ what was run against the live venue, and when.
   limiter the tree started. Every facade call that addresses a feed or limiter now accepts
   `name:` (in `Rest.function_options/1`; the Fake accepts it and ignores it, as it has no
   tree) and resolves the same derived names; `feed:` and `limiter:` still win.
+- **A crashed `Feed` no longer loses the symbols and subscribers added since boot, silently.**
+  The supervisor restarted it from the tree's static options, so every `subscribe/2`,
+  `update_symbols/2`, `unsubscribe/2` and `subscribe_notices/1` since was gone and no one was
+  told. New `DpExchange.Robinhood.Ledger` (per tree, `<name>.Ledger` or `ledger:`) is started
+  first under `:rest_for_one`; the feed writes a snapshot of its wanted symbols and its data and
+  notice subscribers after every accepted change (a refused call writes nothing) and, after a
+  restart, reads it back in `handle_continue/2` (`init/1` does no work), re-monitors the pids
+  and sends each notice subscriber a `:coverage_change` notice with
+  `details.reason: :feed_restarted` (a kind Core already defines). Credentials are not stored
+  (they stay in the tree's wrapped start arguments); observed state (refused symbols) is
+  re-learned. A limiter crash now also restarts the feed behind it, which resumes the same way.
+  Existing test changed: the tree now has three children (`robinhood_test.exs`). New tests:
+  kill the feed, same wanted set, the subscriber still receives deliveries and the notice.
 
 ### Audited, no change (tick AO)
 

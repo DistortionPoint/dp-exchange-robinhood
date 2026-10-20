@@ -198,12 +198,21 @@ defmodule DpExchange.Robinhood.Feed do
   one `:link_down` per turn, and no supervisor's intensity limited it because `Feed` itself
   never died. More than five crashes within a minute stop `Feed` with
   `{:poller_crash_loop, reason}`, handing the loop to the supervisor.
+
+  ## A crashed Feed resumes from the tree's ledger
+
+  The supervisor restarts a crashed `Feed` from the options the tree started with, which used
+  to lose every symbol and subscriber added since, with no word to anyone. Under a tree, the
+  feed now writes its durable intent (wanted symbols, registered data and notice subscribers)
+  to `DpExchange.Robinhood.Ledger` after every accepted change and reads it back in
+  `handle_continue/2` after a restart, re-monitoring the pids and sending each notice
+  subscriber a `:coverage_change` notice with `details.reason: :feed_restarted`. See `Ledger`.
   """
 
   use GenServer
 
   alias DpExchange.Core.{Config, Fanout, Notice, PollingFeed}
-  alias DpExchange.Robinhood.{Credentials, Rest}
+  alias DpExchange.Robinhood.{Credentials, Ledger, Rest}
 
   # Matches the platform's collection cadence — an internal/operational choice, not
   # derived from any Robinhood-published rate limit. Faster buys nothing on a venue whose
@@ -546,6 +555,9 @@ defmodule DpExchange.Robinhood.Feed do
       # `{:refused, symbol, _}`, removed when that symbol's book arrives or it leaves scope.
       # The fetch reads it so the bulk request leaves them out.
       refused: MapSet.new(),
+      # The tree's ledger (see `Ledger`), or `nil` for a feed started on its own. Written with
+      # the durable intent after every accepted change, read back in `handle_continue/2`.
+      ledger: Config.opt(opts, :ledger, nil),
       # Wrapped immediately, before it reaches `state` — see `Credentials`'s moduledoc.
       # `start_poller/1`'s `fetch` closure and `Rest.get_top_of_book/3`/`Auth.headers/5`
       # keep working unchanged: a struct is a map.
@@ -591,7 +603,8 @@ defmodule DpExchange.Robinhood.Feed do
 
     case start_poller(state) do
       {:ok, pid} ->
-        {:ok, %{state | poller: pid}}
+        # Not read here: a slow ledger must not block the supervisor starting the tree.
+        {:ok, %{state | poller: pid}, {:continue, :restore}}
 
       # `PollingFeed` refuses to start without a fetcher, which cannot happen here — `fetch`
       # is always supplied above — but a feed that ran forever delivering nothing is
@@ -929,7 +942,7 @@ defmodule DpExchange.Robinhood.Feed do
             monitors: Fanout.watch(subscriber, state.monitors)
         }
 
-        {:reply, :ok, state}
+        {:reply, :ok, persist(state)}
 
       {:error, _reason} = error ->
         {:reply, error, state}
@@ -937,6 +950,72 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, :unknown_call}, state}
+
+  # **A restarted feed resumes what it was asked to do.** Read here and not in `init/1`, so a
+  # slow ledger never blocks the supervisor. `:none` (first boot, nothing yet accepted, no
+  # ledger) leaves the feed as its options made it. Otherwise the wanted symbols and the
+  # registered subscribers replace what the options gave, the pids are monitored again (a dead
+  # one is dropped by the `:DOWN` that follows), and every notice subscriber is told.
+  @impl true
+  def handle_continue(:restore, state) do
+    case Ledger.fetch(state.ledger) do
+      {:ok, intent} -> {:noreply, restore(state, intent)}
+      :none -> {:noreply, state}
+    end
+  end
+
+  defp restore(state, intent) do
+    symbol_set = MapSet.new(intent.symbols)
+    data = MapSet.new(intent.data_subscribers)
+    notices = MapSet.union(state.notice_subscribers, MapSet.new(intent.notice_subscribers))
+
+    # The boot `:subscriber` is configuration and is never monitored (see `init_feed/2`).
+    monitors =
+      data
+      |> MapSet.union(notices)
+      |> MapSet.delete(state.subscriber)
+      |> Enum.reduce(state.monitors, &Fanout.watch/2)
+
+    state = %{
+      state
+      | symbols: intent.symbols,
+        symbol_set: symbol_set,
+        added: symbol_set |> MapSet.intersection(MapSet.new(intent.added)),
+        data_subscribers: data,
+        notice_subscribers: notices,
+        monitors: monitors
+    }
+
+    PollingFeed.update_symbols(state.poller, state.symbols)
+
+    notice =
+      Notice.new(:coverage_change, :robinhood,
+        severity: :warning,
+        message:
+          "the feed restarted: its wanted symbols and subscribers were restored, and coverage " <>
+            "is empty until the next poll delivers",
+        details: %{reason: :feed_restarted, symbols: Enum.sort(state.symbols)}
+      )
+
+    fan_out(state.notice_subscribers, {:dp_exchange, :robinhood, notice})
+    state
+  end
+
+  # The durable intent, handed to the ledger after every ACCEPTED change (a refused call
+  # returns the state it was given and never reaches this). A snapshot, not a delta, so a lost
+  # or repeated write cannot leave the ledger half-applied.
+  defp persist(%{ledger: nil} = state), do: state
+
+  defp persist(state) do
+    Ledger.record(state.ledger, %{
+      symbols: state.symbols,
+      added: MapSet.to_list(state.added),
+      data_subscribers: MapSet.to_list(state.data_subscribers),
+      notice_subscribers: MapSet.to_list(state.notice_subscribers)
+    })
+
+    state
+  end
 
   # This feed defines no casts. `use GenServer`'s default `handle_cast/2` raises on one, so a
   # stray `GenServer.cast(Feed, _)` from any process crashed the feed and, with it, every
@@ -1015,7 +1094,7 @@ defmodule DpExchange.Robinhood.Feed do
     # (a cast to a dead pid is dropped), and nothing is lost by that, because the restart
     # triggered by the pending `EXIT` is built from `state.symbols`, set above.
     result = PollingFeed.update_symbols(state.poller, symbols)
-    {:reply, result, close_idle_link(state)}
+    {:reply, result, state |> persist() |> close_idle_link()}
   end
 
   # **An outage with nothing to deliver is over.** `link_down` is closed by the first good
@@ -1059,7 +1138,7 @@ defmodule DpExchange.Robinhood.Feed do
         monitors: Fanout.forget(pid, state.monitors)
     }
 
-    {:noreply, release_orphaned(state)}
+    {:noreply, state |> release_orphaned() |> persist()}
   end
 
   # A cycle's count of symbols its budget left unrequested. The notice goes out on the

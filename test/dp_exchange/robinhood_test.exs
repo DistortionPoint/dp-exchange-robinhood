@@ -458,7 +458,7 @@ defmodule DpExchange.RobinhoodTest do
   end
 
   describe "the supervision tree" do
-    test "starts a limiter and a feed" do
+    test "starts a ledger, a limiter and a feed" do
       unique = System.unique_integer([:positive])
 
       opts = [
@@ -472,7 +472,8 @@ defmodule DpExchange.RobinhoodTest do
       assert {:ok, pid} = Robinhood.start_link(opts)
       on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :shutdown) end)
 
-      assert length(Elixir.Supervisor.which_children(pid)) == 2
+      # The ledger is the third: it keeps what the feed was asked to do across a feed restart.
+      assert length(Elixir.Supervisor.which_children(pid)) == 3
       # Each child is registered under the name the options gave it.
       assert is_pid(Process.whereis(opts[:feed]))
       assert is_pid(Process.whereis(opts[:limiter]))

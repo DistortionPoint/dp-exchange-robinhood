@@ -17,7 +17,7 @@ defmodule DpExchange.Robinhood.Supervisor do
   use Supervisor
 
   alias DpExchange.Core.{Config, DefaultRateLimiter}
-  alias DpExchange.Robinhood.{Credentials, Feed}
+  alias DpExchange.Robinhood.{Credentials, Feed, Ledger}
 
   @doc """
   The child spec for supervising this tree directly, with `opts[:credentials]` wrapped.
@@ -40,8 +40,9 @@ defmodule DpExchange.Robinhood.Supervisor do
   end
 
   @doc """
-  Starts this venue's tree: its rate limiter, then its feed (`one_for_one`, so a crashed feed
-  restarts without resetting the limiter). Registered as `opts[:name]`, default
+  Starts this venue's tree: its ledger, its rate limiter, then its feed (`rest_for_one`, so a
+  crashed feed restarts alone, resuming its wanted symbols and subscribers from the ledger).
+  Registered as `opts[:name]`, default
   `DpExchange.Robinhood.Supervisor`; the remaining `opts` go to `DpExchange.Robinhood.Feed`,
   whose name is `opts[:feed]` and whose limiter is `opts[:limiter]`.
   """
@@ -60,15 +61,29 @@ defmodule DpExchange.Robinhood.Supervisor do
     # The feed is handed the limiter by name: its own `:name` is the feed's, and a limiter name
     # derived from that would not be the one started below.
     feed_opts =
-      opts |> Keyword.put(:name, feed_name(opts)) |> Keyword.put(:limiter, limiter_name(opts))
+      opts
+      |> Keyword.put(:name, feed_name(opts))
+      |> Keyword.put(:limiter, limiter_name(opts))
+      |> Keyword.put(:ledger, ledger_name(opts))
 
+    # `:rest_for_one`, ledger first: a crashed feed restarts alone and resumes what it was
+    # asked to do from the ledger (see `Ledger`); a crashed limiter restarts the feed behind
+    # it, which resumes the same way.
     children = [
+      {Ledger, name: ledger_name(opts)},
       {DefaultRateLimiter, name: limiter_name(opts), limits: limits()},
       {Feed, feed_opts}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :rest_for_one)
   end
+
+  @doc """
+  This tree's ledger: `opts[:ledger]`, else one derived from the tree's `opts[:name]`
+  (`<name>.Ledger`), else `DpExchange.Robinhood.Ledger` for the default tree.
+  """
+  @spec ledger_name(keyword()) :: atom()
+  def ledger_name(opts), do: Config.opt(opts, :ledger, derived_name(opts, "Ledger", Ledger))
 
   @doc """
   The limiter this venue meters against: `opts[:limiter]`, else one derived from the tree's

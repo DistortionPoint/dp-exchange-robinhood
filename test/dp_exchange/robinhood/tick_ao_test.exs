@@ -3,9 +3,9 @@ defmodule DpExchange.Robinhood.TickAoTest do
   # and two instances of the tree in one VM.
   use ExUnit.Case, async: true
 
-  alias DpExchange.Core.DefaultRateLimiter
+  alias DpExchange.Core.{DefaultRateLimiter, Notice}
   alias DpExchange.Robinhood
-  alias DpExchange.Robinhood.{Credentials, Fake, Feed, Rest}
+  alias DpExchange.Robinhood.{Credentials, Fake, Feed, Ledger, Rest}
   alias DpExchange.Robinhood.Supervisor, as: RobinhoodSupervisor
 
   @api_key "AO_LEAK_PROOF_API_KEY_abc123"
@@ -180,6 +180,104 @@ defmodule DpExchange.Robinhood.TickAoTest do
       assert RobinhoodSupervisor.feed_name(name: :rh, feed: :mine) == :mine
       assert RobinhoodSupervisor.limiter_name(name: :rh, limiter: :mine) == :mine
       assert RobinhoodSupervisor.limiter_name(name: :rh, limiter: nil) != nil
+    end
+  end
+
+  describe "a crashed feed resumes what it was asked to do" do
+    defp wait_for_new_process(name, old, waited \\ 0) do
+      case Process.whereis(name) do
+        pid when is_pid(pid) and pid != old ->
+          pid
+
+        _missing_or_old when waited >= 5_000 ->
+          flunk("#{inspect(name)} was not restarted within 5000ms")
+
+        _missing_or_old ->
+          Process.sleep(10)
+          wait_for_new_process(name, old, waited + 10)
+      end
+    end
+
+    defp book(symbol) do
+      %DpExchange.Core.Types.TopOfBook{
+        symbol: symbol,
+        bid: Decimal.new("1"),
+        ask: Decimal.new("2"),
+        bid_size: nil,
+        ask_size: nil,
+        venue_time: nil,
+        observed_at: DateTime.utc_now(),
+        provider: :robinhood
+      }
+    end
+
+    test "the restarted feed has the same wanted set, the same subscribers and says so" do
+      Process.flag(:trap_exit, true)
+      tree = :"rh_ao_ledger_#{System.unique_integer([:positive])}"
+      sup = start_named_tree(tree)
+      feed_name = RobinhoodSupervisor.feed_name(name: tree)
+      old = Process.whereis(feed_name)
+
+      assert :ok = Robinhood.subscribe(["BTC-USD", "ETH-USD"], name: tree)
+      assert :ok = Robinhood.subscribe_notices(name: tree)
+
+      ref = Process.monitor(old)
+      Process.exit(old, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^old, :killed}, 5_000
+
+      new = wait_for_new_process(feed_name, old)
+
+      assert Robinhood.wanted(name: tree) == ["BTC-USD", "ETH-USD"]
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %Notice{
+                        kind: :coverage_change,
+                        details: %{reason: :feed_restarted, symbols: ["BTC-USD", "ETH-USD"]}
+                      }},
+                     5_000
+
+      # The registered subscriber is still a data subscriber of the new feed.
+      send(new, {:dp_exchange, :robinhood, book("BTC-USD")})
+
+      assert_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "BTC-USD"}},
+                     5_000
+
+      # A symbol the restored set does not hold is still dropped.
+      send(new, {:dp_exchange, :robinhood, book("DOGE-USD")})
+
+      refute_receive {:dp_exchange, :robinhood,
+                      %DpExchange.Core.Types.TopOfBook{symbol: "DOGE-USD"}},
+                     500
+
+      Supervisor.stop(sup)
+    end
+
+    test "a refused change writes nothing to the ledger, an accepted one does" do
+      Process.flag(:trap_exit, true)
+      tree = :"rh_ao_ledger_#{System.unique_integer([:positive])}"
+      sup = start_named_tree(tree)
+      feed = Process.whereis(RobinhoodSupervisor.feed_name(name: tree))
+      ledger = RobinhoodSupervisor.ledger_name(name: tree)
+
+      assert Ledger.fetch(ledger) == :none
+      assert :ok = Robinhood.update_symbols(["BTC-USD"], name: tree)
+
+      assert {:error, {:invalid_symbols, _value}} = Feed.update_symbols(feed, [""])
+      assert {:error, {:invalid_subscriber, _value}} = Feed.add_symbols(feed, ["ETH-USD"], "no")
+      assert {:error, {:invalid_subscriber, _value}} = Feed.subscribe_notices(feed, to: "no")
+      _settled = :sys.get_state(feed)
+
+      assert {:ok, %{symbols: ["BTC-USD"], data_subscribers: []}} = Ledger.fetch(ledger)
+
+      Supervisor.stop(sup)
+    end
+
+    test "the ledger is named per tree like the feed and the limiter" do
+      assert RobinhoodSupervisor.ledger_name([]) == Ledger
+      assert RobinhoodSupervisor.ledger_name(ledger: :mine) == :mine
+      first = RobinhoodSupervisor.ledger_name(name: :a)
+      refute first == RobinhoodSupervisor.ledger_name(name: :b)
     end
   end
 
