@@ -93,6 +93,41 @@ defmodule DpExchange.Robinhood.RestTest do
       assert String.to_integer(second) > String.to_integer(first)
     end
 
+    test "a pinned :timestamp signs the first attempt only; a retry reads the clock" do
+      # Pinned ten seconds back, inside the venue's window so the check below can verify the
+      # signature, and distinguishable from a fresh stamp. Replayed on the retry (the bug) the
+      # second attempt would carry the pin again, however late it went out.
+      pinned = System.system_time(:second) - 10
+      test_pid = self()
+      counter = :counters.new(1, [])
+
+      plug = fn conn ->
+        :counters.add(counter, 1, 1)
+        [timestamp] = Plug.Conn.get_req_header(conn, "x-timestamp")
+        send(test_pid, {:attempt, :counters.get(counter, 1), timestamp})
+        verdict = SignatureCheck.verify(conn, "k", @seed, "")
+        send(test_pid, {:verified, :counters.get(counter, 1), verdict})
+
+        if :counters.get(counter, 1) == 1,
+          do: Plug.Conn.resp(conn, 503, "busy"),
+          else: Req.Test.json(conn, quote_body())
+      end
+
+      assert {:ok, _top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: plug,
+                 retry_attempts: 2,
+                 retry_delay: 1,
+                 timestamp: pinned
+               )
+
+      assert_received {:attempt, 1, first}
+      assert_received {:attempt, 2, second}
+      assert first == Integer.to_string(pinned)
+      assert String.to_integer(second) > pinned
+      assert_received {:verified, 2, :ok}
+    end
+
     test "without credentials it refuses rather than sending unsigned" do
       assert {:error, {:missing_credentials, :robinhood}} =
                Rest.get_top_of_book("BTC-USD", %{}, retry_attempts: 0)
@@ -186,9 +221,9 @@ defmodule DpExchange.Robinhood.RestTest do
       # real one to every consumer that only checks for `nil`. `0` is a common venue sentinel
       # for "unknown".
       #
-      # `from_epoch/1`'s own comment called 1970 "loud". It is not — a consumer computing an
-      # age gets fifty-six years and may skip the row, but one that logs or charts the
-      # timestamp shows 1970 and calls it data.
+      # A 1970 stamp is not "loud": a consumer computing an age gets fifty-six years and may
+      # skip the row, but one that logs or charts the timestamp shows 1970 and calls it data.
+      # (A number is no longer read as an epoch at all; this pins that `0` stays nil.)
       for bad <- [0, -1, "0"] do
         assert {:ok, top} =
                  Rest.get_top_of_book("BTC-USD", @credentials,
@@ -264,8 +299,10 @@ defmodule DpExchange.Robinhood.RestTest do
   end
 
   describe "timestamps — defensive coverage against a field v2 does not currently send" do
-    test "an epoch in seconds or milliseconds both land in the right year" do
-      for value <- [1_787_936_147, 1_787_936_147_000] do
+    test "an epoch is not a documented spelling and its unit is never guessed" do
+      # Seconds and milliseconds used to be told apart by magnitude. The vendor documents
+      # only `date-time`, so a number is nil, not a guessed year.
+      for value <- [1_787_936_147, 1_787_936_147_000, "1787936147"] do
         body = quote_body(%{"timestamp" => value})
 
         assert {:ok, top} =
@@ -274,8 +311,29 @@ defmodule DpExchange.Robinhood.RestTest do
                    retry_attempts: 0
                  )
 
-        assert top.venue_time.year == 2026
+        assert top.venue_time == nil, "#{inspect(value)} must not become an instant"
       end
+    end
+
+    test "an ISO instant with an offset is converted to UTC, and one with no zone is nil" do
+      with_offset = quote_body(%{"timestamp" => "2026-10-20T12:00:00+02:00"})
+      no_zone = quote_body(%{"timestamp" => "2026-10-20T12:00:00"})
+
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(with_offset),
+                 retry_attempts: 0
+               )
+
+      assert top.venue_time == ~U[2026-10-20 10:00:00Z]
+
+      assert {:ok, top} =
+               Rest.get_top_of_book("BTC-USD", @credentials,
+                 plug: responding(no_zone),
+                 retry_attempts: 0
+               )
+
+      assert top.venue_time == nil
     end
   end
 

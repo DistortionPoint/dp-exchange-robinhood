@@ -2755,13 +2755,31 @@ defmodule DpExchange.Robinhood.Rest do
   # and the venue refused it as unauthorised: `{:refused, _}`, a credential problem the
   # caller does not have. Passing a function makes the client sign each attempt afresh. A
   # write stays safe to retry because `client_order_id` is this venue's idempotency key.
+  #
+  # **A caller-pinned `:timestamp` is for the first attempt only.** `Auth.headers/5` signs a
+  # present `:timestamp` as given, and this closure runs again for every retry, so a pinned
+  # stamp was replayed on a retry that went out after the window: the very stale signature
+  # this function exists to prevent, refused as unauthorised. The pin is honoured for the
+  # signings of attempt one (two on a blocking limiter, which signs before and after its wait)
+  # and every later signing reads the clock. Counted in an `:atomics` so the closure stays
+  # pure for its caller.
   defp signer(method, path, body, credentials, opts, extra \\ []) do
+    signings = :atomics.new(1, signed: false)
+    pinned_signings = if Config.opt(opts, :rate_limit_blocking, false), do: 2, else: 1
+
     fn ->
-      with {:ok, headers} <- Auth.headers(method, path, body, credentials, opts) do
+      sign_opts = pin_for_attempt(opts, :atomics.add_get(signings, 1, 1), pinned_signings)
+
+      with {:ok, headers} <- Auth.headers(method, path, body, credentials, sign_opts) do
         {:ok, headers ++ extra}
       end
     end
   end
+
+  defp pin_for_attempt(opts, signing, pinned_signings) when signing > pinned_signings,
+    do: Keyword.delete(opts, :timestamp)
+
+  defp pin_for_attempt(opts, _signing, _pinned_signings), do: opts
 
   defp post_body(nil), do: {"", nil, []}
 
@@ -2876,40 +2894,29 @@ defmodule DpExchange.Robinhood.Rest do
     end
   end
 
+  # **ISO 8601 with an offset, and nothing else.** The vendor's OpenAPI document types
+  # `OrderResponse.created_at` / `.updated_at` as a bare `string` (every example in it, and
+  # every fixture here, is ISO 8601 with `Z`; the execution and estimate `timestamp`s are
+  # `format: date-time`) and documents no epoch field anywhere. Neither is in a `required`
+  # list (the schema has none), so an unreadable one is `nil`, "the venue did not say", not a
+  # refusal of the order, and an order that exists must not be refused for its clock. This
+  # used to accept a bare
+  # integer (or integer string) and GUESS its unit from its magnitude (above 1e11 was
+  # milliseconds, else seconds): a nearby substitute for an error. A guess that is wrong puts
+  # a 2026 quote in 1970 or in the year 58,000, and `0`, a common venue sentinel for
+  # "unknown", used to need its own refusal to keep it from becoming 1970. A number is not a
+  # documented spelling of an instant here, so it is `{:error, {:unparseable_venue_timestamp,
+  # value}}`, which every caller already turns into `nil`. A string with no zone offset
+  # (`from_iso8601/1` answers `:missing_offset`) is refused the same way rather than read as
+  # UTC; one with an offset is converted to UTC by `from_iso8601/1`.
   defp parse_time(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} ->
-        {:ok, datetime}
-
-      _not_iso ->
-        case Integer.parse(value) do
-          {epoch, ""} -> from_epoch(epoch)
-          _other -> {:error, {:unparseable_venue_timestamp, value}}
-        end
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      _not_iso -> {:error, {:unparseable_venue_timestamp, value}}
     end
   end
 
-  defp parse_time(value) when is_integer(value), do: from_epoch(value)
   defp parse_time(other), do: {:error, {:unparseable_venue_timestamp, other}}
-
-  # Ten digits is seconds, thirteen is milliseconds. A threshold rather than a fallback:
-  # guessing wrong puts a 2026 quote in 1970 or in the year 58,000, and both are loud.
-  # Non-positive is refused before the unit question is even asked.
-  #
-  # `DateTime.from_unix/2` answers `{:ok, ~U[1970-01-01 00:00:00Z]}` for 0 and a 1969 instant
-  # for negatives — valid `DateTime`s, which is exactly why they are the dangerous case.
-  # `0` is a common venue sentinel for "unknown", and the comment below calls 1970 "loud"
-  # while it is not: a consumer computing an age gets fifty-six years and may well skip the
-  # row, but one that logs or charts the timestamp shows 1970 and calls it data. The family
-  # settled this for level timestamps — "an unreadable level timestamp does not become the
-  # epoch" — and the same answer applies wherever an epoch is converted.
-  #
-  # `{:error, :invalid_unix_time}` is the shape an out-of-range value already produces here,
-  # so every caller handles it unchanged.
-  defp from_epoch(value) when value <= 0, do: {:error, :invalid_unix_time}
-
-  defp from_epoch(value) when value > 100_000_000_000, do: DateTime.from_unix(value, :millisecond)
-  defp from_epoch(value), do: DateTime.from_unix(value)
 
   defp refusal(status, body) do
     case refusal_body(body) do

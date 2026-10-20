@@ -248,6 +248,30 @@ defmodule DpExchange.Robinhood.UnexercisedBranchesTest do
       assert order.updated_at == nil
       assert order.id == "o-1"
     end
+
+    # `OrderResponse.created_at` / `.updated_at` are a bare `string` in the vendor's schema,
+    # with no `required` list on it: an unreadable stamp is "not said" (`nil`) and never a
+    # refusal of an order that exists. Only ISO 8601 with an offset is a documented spelling;
+    # a number's unit used to be guessed from its magnitude.
+    test "reads ISO 8601 with an offset as UTC, and never guesses an epoch's unit" do
+      for {raw, expected} <- [
+            {"2026-10-20T12:00:00Z", ~U[2026-10-20 12:00:00Z]},
+            {"2026-10-20T12:00:00+02:00", ~U[2026-10-20 10:00:00Z]},
+            {"2026-10-20T12:00:00", nil},
+            {1_787_936_147, nil},
+            {1_787_936_147_000, nil},
+            {"1787936147", nil},
+            {0, nil}
+          ] do
+        body = %{"id" => "o-1", "state" => "open", "created_at" => raw, "updated_at" => raw}
+
+        opts = @account ++ rest_opts(plug: responding(body))
+
+        assert {:ok, order} = Rest.get_order(@credentials, "o-1", opts)
+        assert order.created_at == expected, "created_at #{inspect(raw)}"
+        assert order.updated_at == expected, "updated_at #{inspect(raw)}"
+      end
+    end
   end
 
   describe "Rest.place_order/3: a limiter that cannot answer" do

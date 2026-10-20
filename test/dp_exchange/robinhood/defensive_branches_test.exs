@@ -168,7 +168,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
                Rest.get_top_of_book("BTC-USD", @credentials, plug: plug, retry_attempts: 0)
     end
 
-    test "a seconds epoch as a string is read" do
+    test "a seconds epoch as a string is nil, not a guessed instant" do
       body = %{"results" => [%{"symbol" => "BTC-USD", "ask" => "1", "timestamp" => "1787936147"}]}
 
       assert {:ok, top} =
@@ -177,7 +177,7 @@ defmodule DpExchange.Robinhood.DefensiveBranchesTest do
                  retry_attempts: 0
                )
 
-      assert top.venue_time.year == 2026
+      assert top.venue_time == nil
     end
 
     test "a timestamp of an unexpected type is nil, not a guess" do

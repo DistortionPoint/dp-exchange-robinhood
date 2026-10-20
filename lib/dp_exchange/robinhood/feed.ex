@@ -224,6 +224,13 @@ defmodule DpExchange.Robinhood.Feed do
   # arithmetic: the poll is ONE bulk request per tick (see the moduledoc), so this cadence
   # costs 2 requests a minute against that ceiling when nothing is refused. That headroom
   # is a coincidence of the two numbers, not a derivation of one from the other.
+  #
+  # **The interval is measured from the END of a cycle, not its start** (`Core.PollingFeed`
+  # arms the next `:poll_all` when a fetch finishes). A cycle that takes 8 seconds (limiter
+  # wait, bisection) is followed by 30 more, so the period is the interval plus the cycle's
+  # own duration. That is deliberate: cycles never overlap or queue behind each other, and
+  # the request rate can only fall under load, never rise. Nothing here depends on a
+  # fixed period; `coverage/1` is windowed by the poller's own clock.
   @interval_ms 30_000
 
   # How long one cycle may spend bisecting a refused batch. Well inside `PollingFeed`'s
@@ -520,6 +527,10 @@ defmodule DpExchange.Robinhood.Feed do
       # cycle left symbols unrequested for want of budget (the latch behind the one
       # `:degraded` notice per crossing). See `report_budget/2`.
       cycle: 0,
+      # Which poller this is: 0 for the first, one more for each crash-restart. A cycle's
+      # `:poll_result` / `:poll_budget` carry the number of the poller that ran it, and the
+      # latches below act only on the current poller's. See `restart_poller/2`.
+      generation: 0,
       budget_exhausted: false,
       # Latches: a `:link_down` is open until the next good poll closes it with a `:link_up`;
       # `:credentials_rejected` is open until the next good poll. See `{:poll_result, _}`.
@@ -627,6 +638,7 @@ defmodule DpExchange.Robinhood.Feed do
     credentials = state.credentials
     request_opts = state.request_opts
     budget_ms = state.bisect_budget_ms
+    generation = state.generation
 
     # Named so it can be handed to `PollingFeed` for its own per-symbol refusal channel
     # AND reused inside `fetch_all/6`'s bisection below — one function, one
@@ -652,7 +664,7 @@ defmodule DpExchange.Robinhood.Feed do
       on_refusal: on_refusal,
       on_notice: fn notice -> send(parent, {:dp_exchange, :robinhood, notice}) end,
       fetch_all: fn symbols ->
-        fetch_all(symbols, credentials, request_opts, on_refusal, parent, budget_ms)
+        fetch_all(symbols, credentials, request_opts, on_refusal, {parent, generation}, budget_ms)
       end
     )
   end
@@ -678,7 +690,14 @@ defmodule DpExchange.Robinhood.Feed do
   # one request. A refusal is reported by CALLING `on_refusal`, not through the return
   # value: `PollingFeed`'s `fetch_all` contract carries one outcome per call, and a cycle
   # that found a bad symbol also has every other symbol's events to publish.
-  defp fetch_all(symbols, credentials, request_opts, on_refusal, parent, budget_ms) do
+  defp fetch_all(
+         symbols,
+         credentials,
+         request_opts,
+         on_refusal,
+         {parent, generation},
+         budget_ms
+       ) do
     {refused, cycle} = cycle_plan(parent)
     {suspect, active} = Enum.split_with(symbols, &MapSet.member?(refused, &1))
 
@@ -699,10 +718,10 @@ defmodule DpExchange.Robinhood.Feed do
         do: active_outcomes,
         else: active_outcomes ++ probe(suspect, ctx, cycle)
 
-    report_budget(parent, outcomes)
+    report_budget(parent, generation, outcomes)
 
     events = for({:events, events} <- outcomes, do: events) |> List.flatten()
-    report_result(parent, outcomes, events)
+    report_result(parent, generation, outcomes, events)
 
     case events do
       [] -> no_events(outcomes)
@@ -739,7 +758,7 @@ defmodule DpExchange.Robinhood.Feed do
   # Tells the feed whether the cycle was a good one, for the `:link_up` and
   # `:credentials_rejected` latches. A cycle that was refused for credentials is not good
   # even when another chunk delivered.
-  defp report_result(parent, outcomes, events) do
+  defp report_result(parent, generation, outcomes, events) do
     result =
       cond do
         auth_failure?(outcomes) -> :credentials_rejected
@@ -747,7 +766,7 @@ defmodule DpExchange.Robinhood.Feed do
         true -> :silent
       end
 
-    send(parent, {:poll_result, result})
+    send(parent, {:poll_result, result, generation})
   end
 
   defp auth_failure?(outcomes) do
@@ -780,10 +799,10 @@ defmodule DpExchange.Robinhood.Feed do
   # symbols it skipped (0 when none) and the feed latches it: one `:degraded` notice on the
   # first cycle that skips, one on the first that does not after. Coverage needs nothing
   # here: it is windowed, so a symbol that got no fresh book stops being reported covered.
-  defp report_budget(parent, outcomes) do
+  defp report_budget(parent, generation, outcomes) do
     skipped = Enum.sum(for {:skipped, symbols} <- outcomes, do: length(symbols))
 
-    send(parent, {:poll_budget, skipped})
+    send(parent, {:poll_budget, skipped, generation})
   end
 
   # One bulk request for `symbols`; on a refusal, split in half and ask again, down to
@@ -1141,6 +1160,23 @@ defmodule DpExchange.Robinhood.Feed do
     {:noreply, state |> release_orphaned() |> persist()}
   end
 
+  # **A cycle report from a poller that has since been replaced is dropped.** The cycle's
+  # `:poll_result` and `:poll_budget` are sent from the fetch task and carry the generation of
+  # the poller that ran it. One already in this mailbox when that poller crashed and was
+  # restarted would otherwise close the `:link_down` the crash had just opened with a
+  # `:link_up` ("poll is answering again") before the new poller had polled at all, or move the
+  # budget latch on the old poller's say-so. The un-tagged two-tuples below are the current
+  # poller's own form and are what the clauses further down handle.
+  def handle_info({:poll_result, result, generation}, %{generation: generation} = state),
+    do: handle_info({:poll_result, result}, state)
+
+  def handle_info({:poll_budget, skipped, generation}, %{generation: generation} = state),
+    do: handle_info({:poll_budget, skipped}, state)
+
+  def handle_info({tag, _value, _stale_generation}, state)
+      when tag in [:poll_result, :poll_budget],
+      do: {:noreply, state}
+
   # A cycle's count of symbols its budget left unrequested. The notice goes out on the
   # crossing into exhaustion and on the crossing out, never once per cycle.
   def handle_info({:poll_budget, skipped}, %{budget_exhausted: false} = state)
@@ -1276,6 +1312,8 @@ defmodule DpExchange.Robinhood.Feed do
   # a failed restart stops with the previous, still-pid, state).
 
   defp restart_poller(state, crashes) do
+    state = %{state | generation: state.generation + 1}
+
     case start_poller(state) do
       {:ok, new_poller} ->
         {:noreply, close_idle_link(%{state | poller: new_poller, poller_crashes: crashes})}

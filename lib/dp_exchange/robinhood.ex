@@ -252,7 +252,8 @@ defmodule DpExchange.Robinhood do
   end
 
   @doc """
-  Starts the supervision tree: the rate limiter and the polling feed.
+  Starts the supervision tree: the ledger, the rate limiter and the polling feed
+  (`:rest_for_one`, in that order).
 
   Delegates to `DpExchange.Robinhood.Supervisor.start_link/1`. See
   `c:DpExchange.Core.Venue.start_link/1`.

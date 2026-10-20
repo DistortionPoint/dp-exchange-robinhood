@@ -19,6 +19,40 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed (tick AP: time, clocks and timers)
+
+- **A caller-pinned `:timestamp` is no longer replayed on a retry.** `Rest` re-signs every
+  retry, but the signer passed the same `opts` each time, so a present `:timestamp` was signed
+  again as given and a retry sent after the venue's 30-second window carried the stale stamp it
+  existed to avoid. The pin now signs the first attempt only (two signings on a blocking
+  limiter); every later signing reads the clock. Test: `RestTest`, "a pinned :timestamp signs
+  the first attempt only".
+- **A cycle report from a replaced poller is ignored.** `Feed` now numbers its pollers and each
+  cycle's `:poll_result` / `:poll_budget` carries the number of the poller that ran it. A
+  report already queued when that poller crashed could close the `:link_down` the crash had
+  just opened ("poll is answering again") before the replacement had polled, or move the
+  budget latch. Test: `FeedTest`, "a cycle report from a replaced poller".
+- **A venue timestamp is ISO 8601 with an offset or `nil`; a number is no longer read as an
+  epoch.** `Rest` accepted an integer (or integer string) and guessed seconds or milliseconds
+  from its magnitude (above 1e11 was ms). The vendor documents no epoch field: its examples
+  and fixtures are ISO 8601 with `Z`, and `OrderResponse.created_at` / `.updated_at` are a bare
+  `string` that no `required` list names, so the guess was a nearby substitute for an error and
+  an unreadable stamp is "not said" (`nil`), never a refusal of an order that exists.
+  `venue_time` / `created_at` / `updated_at` from a numeric stamp are now `nil`, as an
+  unparseable one already was; an offset is converted to UTC and a stamp with no zone is `nil`.
+  No field this package decodes is a `required` timestamp (`OrderExecution.timestamp` is, and
+  is not decoded). Tests: `RestTest`, "an epoch is not a documented spelling" and "an ISO
+  instant with an offset"; `UnexercisedBranchesTest`, "reads ISO 8601 with an offset as UTC".
+- **Docs:** `Robinhood.start_link/1` now names the ledger beside the limiter and the feed
+  (`:rest_for_one`); `usage-rules.md` states that the poll cadence runs from the end of a
+  cycle and what a venue timestamp may be.
+
+### Changed
+
+- Documented that the poll interval runs from the end of a cycle (`Core.PollingFeed`), so the
+  period is the interval plus the cycle's duration. `usage-rules.md` states the pinned
+  `:timestamp` rule.
+
 ## [0.3.114] - 2026-10-20
 
 ### Dependencies

@@ -61,7 +61,9 @@ The one visible difference is `coverage/1`, which reports **`:internal_poll`** r
 Do not build a poll of your own on top of this. The package already polls, paced against
 this venue's budget, and a second loop doubles the request count for no extra data.
 
-**Cadence and cost.** One cycle every 30 seconds (`interval_ms:`, default `30_000`), and each
+**Cadence and cost.** One cycle every 30 seconds (`interval_ms:`, default `30_000`, counted
+from the END of the previous cycle, so a cycle that takes 8 seconds is followed by 30 more and
+cycles never overlap), and each
 cycle is ONE signed request carrying every wanted symbol (at most 100 per request, this
 package's own conservative cap since the vendor states none: a larger set is sent as several
 requests and merged; every request after the cycle's first shares the `bisect_budget_ms:`
@@ -396,6 +398,12 @@ all. That is correct, not a gap: `Core.Types.TopOfBook` itself says `venue_time`
 "where the venue publishes none," and a book that arrived without a date is still a real,
 current book — refusing it would throw away a genuine bid and ask over a field that is
 allowed to be absent. `observed_at` is always this package's own clock at request time.
+
+**A venue timestamp is ISO 8601 with an offset, or `nil`.** The same holds for an order's
+`created_at` and `updated_at`: an offset is converted to UTC; a stamp with no zone, a number
+(seconds or milliseconds: the unit is never guessed from its size), `0` or text that is not a
+date is `nil`, never a substituted instant. The vendor's schema names none of these as required,
+so an order that exists is not refused for its clock.
 
 ## The catalogue is what your credential sees
 
@@ -869,7 +877,8 @@ to `subscriber:` still carries the venue's own reason.
 Every request is signed afresh on every attempt (Ed25519 over `api_key <> timestamp <> path
 <> method <> body`, `path` including the query string and `timestamp` whole seconds; the venue
 honours a timestamp for 30 seconds, so a retry is never sent with the first attempt's
-signature). Nothing below crashes in your process and nothing is answered as `{:ok, _}` with a
+signature, or with its timestamp: a `:timestamp` you pin signs the first attempt only and
+every retry reads the clock). Nothing below crashes in your process and nothing is answered as `{:ok, _}` with a
 default put in the venue's place.
 
 - **A read** (market data, catalogue, accounts, holdings, orders, estimates) is retried up to

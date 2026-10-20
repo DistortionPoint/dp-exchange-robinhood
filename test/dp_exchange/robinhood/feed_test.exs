@@ -1185,6 +1185,32 @@ defmodule DpExchange.Robinhood.FeedTest do
       end)
     end
 
+    test "a cycle report from a replaced poller does not close the outage its crash opened" do
+      # Every request fails, so only a hand-sent report can say the poll is answering. One
+      # from poller generation 0 was in the mailbox when that poller died; acting on it sent
+      # "poll is answering again" before the replacement had polled at all.
+      feed = start_feed(plug: responding_error())
+      :ok = Feed.subscribe_notices(feed, to: self())
+      assert :sys.get_state(feed).generation == 0
+
+      Process.exit(:sys.get_state(feed).poller, :kill)
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_down}}, 5_000
+      assert :sys.get_state(feed).generation == 1
+
+      send(feed, {:poll_result, :ok, 0})
+      send(feed, {:poll_budget, 3, 0})
+      state = :sys.get_state(feed)
+      assert state.link_down
+      refute state.budget_exhausted
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 500
+      refute_receive {:dp_exchange, :robinhood, %Notice{kind: :degraded}}, 500
+
+      # The current poller's own report still counts.
+      send(feed, {:poll_result, :ok, 1})
+      assert_receive {:dp_exchange, :robinhood, %Notice{kind: :link_up}}, 5_000
+      refute :sys.get_state(feed).link_down
+    end
+
     test "a poller that keeps crashing is handed to the supervisor, not restarted forever" do
       Process.flag(:trap_exit, true)
       feed = start_feed()
