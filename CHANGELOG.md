@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.117] - 2026-10-21
+
 ### Fixed (tick AR: documentation against code, tests that cannot fail, order lifecycle)
 
 - **`Fake.cancel_order/3` no longer rewrites an order that is already closed.** It stamped
