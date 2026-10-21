@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.116] - 2026-10-21
+
 ### Fixed (tick AQ: numbers and identifiers, start-up and options, unbounded state)
 
 - **An order amount past the vendor's documented precision is refused, not sent.** A quantity,
