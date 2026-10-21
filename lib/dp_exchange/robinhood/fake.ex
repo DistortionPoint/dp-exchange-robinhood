@@ -62,7 +62,7 @@ defmodule DpExchange.Robinhood.Fake do
   @behaviour DpExchange.Core.Venue
 
   alias DpExchange.Core.{Capabilities, Config, FakeInjection, Fanout, Instrument, Types, Venue}
-  alias DpExchange.Robinhood.{Auth, Feed, Rest, SymbolFormat}
+  alias DpExchange.Robinhood.{Auth, Credentials, Feed, Rest, SymbolFormat}
 
   # Every symbol here is presumed API-tradable. `Rest.get_symbols/2` and
   # `Rest.list_instruments/2` both read the real venue's `is_api_tradable` field
@@ -98,14 +98,22 @@ defmodule DpExchange.Robinhood.Fake do
   """
   @impl true
   def child_spec(opts),
-    do: %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
+    do: %{id: Config.opt(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
 
   @doc """
-  Starts nothing and answers `:ignore`: the fake runs no process.
-  See `c:DpExchange.Core.Venue.start_link/1`.
+  Starts nothing and answers `:ignore`: the fake runs no process. It refuses what the real
+  `DpExchange.Robinhood.start_link/1` refuses before it starts anything (an option the tree
+  does not read, options that are not a keyword list, a `:sandbox` environment, credentials
+  that could never sign), so a consumer's tier-1 suite cannot start a tree here that production
+  would not. See `c:DpExchange.Core.Venue.start_link/1`.
   """
   @impl true
-  def start_link(_opts), do: :ignore
+  def start_link(opts) do
+    with :ok <- Rest.validate_opts(opts, :start_link),
+         :ok <- Credentials.check_opt(opts) do
+      :ignore
+    end
+  end
 
   @doc """
   The real facade's `DpExchange.Robinhood.provider_name/0`.
@@ -949,7 +957,10 @@ defmodule DpExchange.Robinhood.Fake do
   Adds `symbols` to the wanted set and delivers a book (or the venue's refusal) for each to
   `opts[:to]` (default: the caller) at once, from memory.
 
-  Checks the symbol list, then the subscriber, as the real facade does.
+  Checks the symbol list, then the subscriber, as the real facade does, and refuses what the
+  real feed refuses past its bounds: `{:error, {:too_many_symbols, 1000}}` for a wanted set
+  past 1,000 symbols and `{:error, {:too_many_subscribers, 1000}}` for a 1,001st distinct
+  subscriber, changing nothing (`DpExchange.Robinhood.Feed.canonical_symbols/1`).
   See `c:DpExchange.Core.Venue.subscribe/2`.
   """
   @impl true
@@ -957,7 +968,9 @@ defmodule DpExchange.Robinhood.Fake do
     # The same checks, in the same order, as the real facade: symbols, then the subscriber.
     with {:ok, symbols} <- Feed.canonical_symbols(symbols),
          :ok <- Rest.validate_market_opts(opts, :subscribe),
-         {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())) do
+         {:ok, to} <- Feed.valid_subscriber(Config.opt(opts, :to, self())),
+         :ok <- Feed.within_symbol_cap(MapSet.to_list(wanted_set()), symbols),
+         :ok <- Feed.within_subscriber_cap(subscribers(), to) do
       do_subscribe(symbols, to)
     end
   end

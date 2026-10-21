@@ -19,6 +19,87 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed (tick AQ: numbers and identifiers, start-up and options, unbounded state)
+
+- **An order amount past the vendor's documented precision is refused, not sent.** A quantity,
+  price or stop price accepted up to 40 fractional digits. The vendor documents `asset_increment`
+  and `quote_increment` as "up to 18 decimal places" (`V2TradingPair`,
+  `docs/reference/robinhood/openapi`), so an amount with a 19th fractional digit is a multiple of
+  no increment and could only be refused by the venue or rounded by it, the substitute this family
+  refuses. Now `{:invalid_quantity | :invalid_price | :invalid_stop_price, value}` for more than 18
+  fractional digits or more than 34 digits in all (and `{:invalid_field, :quantity}` on the
+  estimate call), on the Fake alike. An accepted amount is still sent in full notation and never
+  rounded or reformatted (`"1e-8"` is `"0.00000001"`; trailing zeros are kept, so a 19 digit
+  `"0.1000000000000000000"` is refused and `"0.1"` is what to send). Per-pair increments and
+  `max_order_size` stay the venue's to state (`quantization/2`). Tests: `TickAqTest`, "an order
+  amount is bounded by what the vendor documents".
+- **A venue number past 34 digits is unreadable.** `Rest.decimal/1` bounded the exponent to
+  +-1000 but not the coefficient, so a 100,000 digit string parsed and then cost every compare a
+  consumer made. A coefficient of 35 digits or more is now `nil` like `NaN`, so a book side,
+  holding, buying power, order amount or fee carrying one is the usual `{:invalid_decimal, field,
+  value}` and an increment or size limit is stated as `nil`; never truncated. Tests: `TickAqTest`,
+  "a venue number past 34 digits is unreadable".
+- **A symbol is validated before it is signed into a request line.** `subscribe/2`,
+  `update_symbols/2`, `unsubscribe/2` and a feed's boot `symbols:` accepted any non-blank string,
+  so `" BTC-USD"`, `"BTC USD"` or a megabyte of text was kept in the wanted set and polled every
+  cycle, to be refused by the venue and bisected. A symbol is now 1 to 32 characters of ASCII
+  letters, digits and `-_.`; anything else is `{:error, {:invalid_symbols, list}}` (a feed started
+  with one stops with `{:invalid_option, :symbols}`), on the Fake alike. Test: `TickAqTest`, "a
+  symbol is 1 to 32 characters".
+- **A tree that could never poll refuses to start.** `DpExchange.Robinhood.start_link/1` (and
+  `Fake.start_link/1`) now judge their options first: a key the tree does not read is
+  `{:error, {:unknown_option, key}}` (a misspelt `start_dely_ms:` used to start a feed that polled
+  at once), options that are not a keyword list are `{:error, {:invalid_options, value}}`, and
+  `environment: :sandbox` is `{:error, {:unsupported_option, :environment}}`. **Credentials are
+  judged with the signer's own rules at start**: a private key that is not the base64 32-byte
+  Ed25519 seed is `{:error, {:invalid_private_key, reason}}`, a blank or partial pair (a `.env`
+  line `NAME=` is `""`) is `{:error, {:missing_credentials, :robinhood}}` and padding or a control
+  character is `{:error, {:invalid_credentials, :robinhood}}`; none names a value. Before, the
+  tree started and every poll failed `invalid_private_key` for the life of the process.
+  Credentials that are absent, `nil` or `%{}` still start, as before. The keys are
+  `Rest.function_options(:start_link)` plus the transport keys. Tests: `TickAqTest`,
+  "DpExchange.Robinhood.start_link/1 judges its options and its credentials".
+- **A feed refuses a request option it would fail on every cycle.** `Feed.init/1` stops with
+  `{:invalid_option, key}` for a `base_url:` that is cleartext (non-loopback `http`), schemeless or
+  not a string, and for a `timeout:`, `retry_attempts:`, `retry_delay:`, `max_body_bytes:`,
+  `weight:`, `max_retry_after_s:`, `log_requests:` or `rate_limit_blocking:` that
+  `Core.HttpClient` would raise `ArgumentError` on. That raise happened inside the poller's fetch,
+  was counted as a failed fetch and repeated every cycle, so a mistyped option looked like a venue
+  outage. `nil` is absent, as everywhere. Test: `TickAqTest`, "a feed refuses a request option it
+  would fail on every cycle".
+- **The wanted set and the subscribers are bounded.** `subscribe/2` and `update_symbols/2` kept
+  any number of symbols, and registered subscriber NAMES (which are never monitored, so never
+  pruned) any number of atoms. Now `{:error, {:too_many_symbols, 1000}}` for a wanted set past
+  1,000 distinct symbols and `{:error, {:too_many_subscribers, 1000}}` for a 1,001st distinct data
+  or notice subscriber; an already registered one is never refused. A refused call is refused
+  whole and keeps nothing, **not even a monitor** (the cap is judged before the pid is
+  monitored). The Fake refuses the same. At 1,000 symbols a cycle is ten bulk requests, 20 a
+  minute against the vendor's documented 100. The figures are this package's own, not the
+  venue's. Tests: `TickAqTest`, "the wanted set is bounded" and "subscribers are bounded".
+- **A forwarded `name: nil` is the default name.** The facade's, the tree's, the feed's and the
+  Fake's `child_spec/1` took `Keyword.get(opts, :name, default)`, so a `nil` (this family forwards
+  `opts` unchanged) became the child id `nil`, and `Supervisor.start_link/1` registered nothing
+  for it while its ledger, limiter and feed took the default names. Now `Config.opt/3`, as the
+  derived process names already read it. Test: `TickAqTest`, "a forwarded name: nil".
+- **Verified, no change: an add/remove cycle returns the feed's state to its start.** Symbols,
+  `added`, `refused`, the subscriber sets, monitors and `dropping`, and the poller's own symbols,
+  `scheduled`, `refused`, `last_ok` and `timers`, are all back to their starting sizes after
+  `subscribe/2`, a venue refusal, `unsubscribe/2` and the subscribers dying, repeated. Test:
+  `TickAqTest`, "an add/remove cycle leaves no residue".
+
+### Changed
+
+- `DpExchange.Robinhood.start_link/1` returns `{:error, term()}` for the refusals above instead of
+  starting. A consumer passing an option this tree never read (and which was silently ignored)
+  must now remove it.
+
+### Dependencies
+
+- `dp_exchange_core` floor raised to `~> 0.3.119` (tick AQ: value types refuse non-positive
+  prices and negative sizes, conformance groups 52 and 53, group 26 requires coverage to
+  empty after the last unsubscribe).
+
+
 ## [0.3.115] - 2026-10-20
 
 ### Dependencies

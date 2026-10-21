@@ -258,13 +258,48 @@ defmodule DpExchange.Robinhood.Feed do
   # behind something should WAIT for it, never die of it.
   @call_timeout 15_000
 
+  # **Bounds on what a caller can make this process keep.** The wanted set, and the two
+  # subscriber sets, grow with what callers hand `subscribe/2` and `subscribe_notices/1`, and
+  # the registered NAMES among the subscribers are never removed (a name is not a process: see
+  # `Core.Fanout.watch/2`). This venue lists on the order of a hundred pairs and a feed has a
+  # handful of consumers, so these are ten times a generous figure, ours and not the venue's.
+  # Past a bound the call is refused (`{:too_many_symbols, n}` / `{:too_many_subscribers, n}`),
+  # changes nothing, and registers no monitor; nothing is dropped silently. At the symbol bound
+  # a cycle is ten bulk requests (`Rest.max_bulk_symbols/0` each), 20 a minute against the
+  # vendor's documented 100.
+  @max_symbols 1_000
+  @max_subscribers 1_000
+
+  # Request options the poll forwards to `Core.HttpClient`, which raises `ArgumentError` for a
+  # value it cannot use. Inside the poller's fetch that raise is caught and counted as a failed
+  # fetch, every cycle, for as long as the feed runs: a mistyped option looked like a venue
+  # outage. Judged at start instead. The rules are `HttpClient`'s own; `nil` is absent.
+  @checked_request_options [
+    :timeout,
+    :retry_attempts,
+    :retry_delay,
+    :max_body_bytes,
+    :weight,
+    :max_retry_after_s,
+    :log_requests,
+    :rate_limit_blocking
+  ]
+
+  # The most seconds `Core.HttpClient` accepts for `:max_retry_after_s` (a process can sleep
+  # 4_294_967_295 ms).
+  @max_retry_after_s 4_294_967
+
   @doc """
   Starts the feed, registered as `opts[:name]` (default: this module).
 
   Refuses to start, as `{:error, {:invalid_option, key}}`, when `:symbols` is not a list of
-  non-blank strings, `:subscriber` is neither a pid nor a registered name, or
-  `:bisect_budget_ms` is not a positive integer, or `:credentials` is neither a map nor `nil`.
-  A `:max_queue_len` that is not a positive
+  valid symbols (see `canonical_symbols/1`, at most #{@max_symbols}), `:subscriber` is neither
+  a pid nor a registered name, `:bisect_budget_ms` is not a positive integer, `:credentials`
+  is neither a map nor `nil`, `:base_url` is not an `https` URL (a loopback host may use
+  `http`), or one of the request options the poll forwards (`:timeout`, `:retry_attempts`,
+  `:retry_delay`, `:max_body_bytes`, `:weight`, `:max_retry_after_s`, `:log_requests`,
+  `:rate_limit_blocking`) holds a value `Core.HttpClient` would raise on, which the poll would
+  otherwise retry as a failed fetch every cycle. A `:max_queue_len` that is not a positive
   integer is not an `{:error, _}` return: it raises `ArgumentError` from `init/1`
   (`Core.Fanout.max_queue_len!/2`), so a back-pressure bound you believe you set is never
   silently replaced by the default.
@@ -275,7 +310,7 @@ defmodule DpExchange.Robinhood.Feed do
     # crash report could print, whichever way the feed was started.
     opts = Credentials.wrap_opt(opts)
 
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    GenServer.start_link(__MODULE__, opts, name: Config.opt(opts, :name, __MODULE__))
   end
 
   @doc """
@@ -289,7 +324,7 @@ defmodule DpExchange.Robinhood.Feed do
   def child_spec(opts) do
     opts = DpExchange.Robinhood.Credentials.wrap_opt(opts)
 
-    %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
+    %{id: Config.opt(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
   end
 
   @doc "Which symbols are actually arriving. Observed, never intended."
@@ -316,15 +351,22 @@ defmodule DpExchange.Robinhood.Feed do
   value}}` and the set is left as it was. It used to raise inside the feed process for a
   non-list, which restarted the feed from its boot-time opts.
   """
-  @spec update_symbols(GenServer.server(), term()) :: :ok | {:error, {:invalid_symbols, term()}}
+  @spec update_symbols(GenServer.server(), term()) ::
+          :ok | {:error, {:invalid_symbols, term()} | {:too_many_symbols, pos_integer()}}
   def update_symbols(feed, symbols),
     do: GenServer.call(feed, {:update_symbols, symbols}, @call_timeout)
 
   @doc """
   The canonical spelling of a symbol list: upper-cased and de-duplicated.
 
-  `{:error, {:invalid_symbols, value}}` for anything that is not a proper list of non-blank
-  strings (whitespace-only is blank). Shared by the facade, `Fake` and this feed's own
+  `{:error, {:invalid_symbols, value}}` for anything that is not a proper list of symbols.
+  A symbol is 1 to 32 characters of letters, digits, `-`, `_` and `.`: whitespace, a control
+  character, `&`, `=`, `#`, `/` and anything non-ASCII are refused here instead of being
+  signed into a request URL (a venue pair is `BASE-QUOTE`, and a padded `" BTC-USD"` is a
+  different string that the venue would only refuse, after it was polled every cycle).
+  `{:error, {:too_many_symbols, #{@max_symbols}}}` for more than #{@max_symbols} distinct
+  symbols: the wanted set is state this process keeps for as long as it runs, and the venue
+  lists on the order of a hundred pairs. Shared by the facade, `Fake` and this feed's own
   calls, so all three refuse the same values.
 
   **Symbols are upper-cased on the way in.** Canonical symbols are upper case, and `Feed`
@@ -335,12 +377,47 @@ defmodule DpExchange.Robinhood.Feed do
   the one difference normalised here. Anything else that is not canonical is the caller's
   to fix.
   """
-  @spec canonical_symbols(term()) :: {:ok, [String.t()]} | {:error, {:invalid_symbols, term()}}
+  @spec canonical_symbols(term()) ::
+          {:ok, [String.t()]}
+          | {:error, {:invalid_symbols, term()} | {:too_many_symbols, pos_integer()}}
   def canonical_symbols(symbols) do
     case boot_symbols(symbols) do
       {:ok, _checked} = ok -> ok
+      {:too_many, cap} -> {:error, {:too_many_symbols, cap}}
       :error -> {:error, {:invalid_symbols, symbols}}
     end
+  end
+
+  @doc """
+  Whether `additional` symbols can join `current` without the wanted set passing its bound
+  (#{@max_symbols} distinct symbols): `:ok`, or `{:error, {:too_many_symbols, #{@max_symbols}}}`.
+
+  Both lists are canonical already. Shared by this feed's `add_symbols/3` and `Fake.subscribe/2`
+  so the two refuse alike, and a refusal changes nothing.
+  """
+  @spec within_symbol_cap([String.t()], [String.t()]) ::
+          :ok | {:error, {:too_many_symbols, pos_integer()}}
+  def within_symbol_cap(current, additional) do
+    if length(Enum.uniq(current ++ additional)) <= @max_symbols,
+      do: :ok,
+      else: {:error, {:too_many_symbols, @max_symbols}}
+  end
+
+  @doc """
+  Whether `subscriber` can be registered beside the ones in `registered` without passing the
+  bound of #{@max_subscribers} distinct subscribers: `:ok` (an already registered one always
+  is), or `{:error, {:too_many_subscribers, #{@max_subscribers}}}`.
+
+  A pid is dropped when it dies, but a registered name is never monitored (the process behind
+  it may restart under it), so a caller minting a fresh name per short-lived consumer would
+  otherwise grow the set for the life of the feed. Shared with `Fake.subscribe/2`.
+  """
+  @spec within_subscriber_cap(MapSet.t(), pid() | atom()) ::
+          :ok | {:error, {:too_many_subscribers, pos_integer()}}
+  def within_subscriber_cap(registered, subscriber) do
+    if MapSet.member?(registered, subscriber) or MapSet.size(registered) < @max_subscribers,
+      do: :ok,
+      else: {:error, {:too_many_subscribers, @max_subscribers}}
   end
 
   @doc """
@@ -366,7 +443,10 @@ defmodule DpExchange.Robinhood.Feed do
   `subscriber` is a pid or a registered name; the facade passes `opts[:to]`, default the
   caller. It is added to the boot `:subscriber`, never replacing it. Registering a pid
   monitors it, and its death removes it. A subscriber that is not a pid or a name is
-  `{:error, {:invalid_subscriber, value}}` and nothing is changed.
+  `{:error, {:invalid_subscriber, value}}` and nothing is changed. So is a call that would take
+  the wanted set past #{@max_symbols} symbols (`{:error, {:too_many_symbols, #{@max_symbols}}}`)
+  or the data subscribers past #{@max_subscribers} (`{:error, {:too_many_subscribers,
+  #{@max_subscribers}}}`): refused whole, with no monitor left behind.
 
   **Not `update_symbols(coverage ++ symbols)`.** `DpExchange.Robinhood.subscribe/2` used to
   do exactly that, and `coverage/1` is what has been observed arriving, not what was asked
@@ -377,7 +457,12 @@ defmodule DpExchange.Robinhood.Feed do
   set is changed here, against `state.symbols`, in one call.
   """
   @spec add_symbols(GenServer.server(), term(), term()) ::
-          :ok | {:error, {:invalid_symbols, term()} | {:invalid_subscriber, term()}}
+          :ok
+          | {:error,
+             {:invalid_symbols, term()}
+             | {:invalid_subscriber, term()}
+             | {:too_many_symbols, pos_integer()}
+             | {:too_many_subscribers, pos_integer()}}
   def add_symbols(feed, symbols, subscriber \\ nil),
     do: GenServer.call(feed, {:add_symbols, symbols, subscriber}, @call_timeout)
 
@@ -387,7 +472,7 @@ defmodule DpExchange.Robinhood.Feed do
   Upper-cased like every other entry point, so `"btc-usd"` removes `"BTC-USD"`.
   """
   @spec remove_symbols(GenServer.server(), term()) ::
-          :ok | {:error, {:invalid_symbols, term()}}
+          :ok | {:error, {:invalid_symbols, term()} | {:too_many_symbols, pos_integer()}}
   def remove_symbols(feed, symbols),
     do: GenServer.call(feed, {:remove_symbols, symbols}, @call_timeout)
 
@@ -408,6 +493,8 @@ defmodule DpExchange.Robinhood.Feed do
   {:invalid_subscriber, value}}`: it used to be stored, and `Core.Fanout.resolve/1` has no
   clause for it, so the feed crashed on its next notice. (This was `{:invalid_field, :to}`,
   and `true`/`false` were accepted, before the family converged on `:invalid_subscriber`.)
+  A registration that would take the notice subscribers past #{@max_subscribers} is
+  `{:error, {:too_many_subscribers, #{@max_subscribers}}}`.
   """
   # `@call_timeout`, not `GenServer.call/2`'s five-second default.
   #
@@ -423,7 +510,8 @@ defmodule DpExchange.Robinhood.Feed do
   # uses to *hear that something is wrong* was the one call that could kill the host's
   # calling process for asking during exactly the conditions it exists to report.
   @spec subscribe_notices(GenServer.server(), keyword()) ::
-          :ok | {:error, {:invalid_subscriber, term()}}
+          :ok
+          | {:error, {:invalid_subscriber, term()} | {:too_many_subscribers, pos_integer()}}
   def subscribe_notices(feed, opts \\ []),
     do: GenServer.call(feed, {:subscribe_notices, Config.opt(opts, :to, self())}, @call_timeout)
 
@@ -440,6 +528,13 @@ defmodule DpExchange.Robinhood.Feed do
   end
 
   defp init_options(opts) do
+    case start_options(opts) do
+      {:ok, symbols} -> init_feed(opts, symbols)
+      {:invalid_option, key} -> {:stop, {:invalid_option, key}}
+    end
+  end
+
+  defp start_options(opts) do
     with {:ok, symbols} <- checked(boot_symbols(Config.opt(opts, :symbols, [])), :symbols),
          :ok <- checked(subscriber?(Config.opt(opts, :subscriber, nil)), :subscriber),
          :ok <-
@@ -447,17 +542,41 @@ defmodule DpExchange.Robinhood.Feed do
              valid_budget?(Config.opt(opts, :bisect_budget_ms, @bisect_budget_ms)),
              :bisect_budget_ms
            ),
-         :ok <- checked(valid_credentials?(Keyword.get(opts, :credentials)), :credentials) do
-      init_feed(opts, symbols)
-    else
-      {:invalid_option, key} -> {:stop, {:invalid_option, key}}
+         :ok <- checked(valid_credentials?(Keyword.get(opts, :credentials)), :credentials),
+         :ok <- checked(Rest.check_base_url(opts) == :ok, :base_url),
+         :ok <- check_request_options(opts) do
+      {:ok, symbols}
     end
   end
 
   defp checked(:error, key), do: {:invalid_option, key}
+  defp checked({:too_many, _cap}, key), do: {:invalid_option, key}
   defp checked(false, key), do: {:invalid_option, key}
   defp checked(true, _key), do: :ok
   defp checked({:ok, _value} = ok, _key), do: ok
+
+  defp check_request_options(opts) do
+    Enum.find_value(@checked_request_options, :ok, fn key ->
+      value = Config.opt(opts, key, nil)
+
+      if is_nil(value) or request_option?(key, value), do: nil, else: {:invalid_option, key}
+    end)
+  end
+
+  defp request_option?(:timeout, value), do: value == :infinity or non_negative?(value)
+  defp request_option?(:retry_attempts, value), do: non_negative?(value)
+  defp request_option?(:retry_delay, value), do: non_negative?(value)
+  defp request_option?(:max_body_bytes, value), do: positive?(value)
+  defp request_option?(:weight, value), do: positive?(value)
+
+  defp request_option?(:max_retry_after_s, value),
+    do: non_negative?(value) and value <= @max_retry_after_s
+
+  defp request_option?(flag, value) when flag in [:log_requests, :rate_limit_blocking],
+    do: is_boolean(value)
+
+  defp non_negative?(value), do: is_integer(value) and value >= 0
+  defp positive?(value), do: is_integer(value) and value > 0
 
   # Credentials are a map (or `nil`, which `Auth` refuses at the first fetch). Anything else
   # reached `Credentials.wrap/1` and raised `FunctionClauseError` with the value in its
@@ -483,12 +602,23 @@ defmodule DpExchange.Robinhood.Feed do
   # normalised the later calls and not this one. A list that is not a list of non-blank
   # strings stops the feed rather than polling a symbol the venue refuses whole.
   defp boot_symbols(symbols) when is_list(symbols) do
-    if proper_list?(symbols) and Enum.all?(symbols, &(is_binary(&1) and String.trim(&1) != "")),
-      do: {:ok, symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()},
+    if proper_list?(symbols) and Enum.all?(symbols, &symbol?/1),
+      do: bounded_symbols(symbols |> Enum.map(&String.upcase/1) |> Enum.uniq()),
       else: :error
   end
 
   defp boot_symbols(_not_a_list), do: :error
+
+  defp bounded_symbols(unique) when length(unique) <= @max_symbols, do: {:ok, unique}
+  defp bounded_symbols(_unique), do: {:too_many, @max_symbols}
+
+  # One query value in a SIGNED path: ASCII letters, digits and `-_.`, 1 to 32 characters. A
+  # pair is `BASE-QUOTE` (`BTC-USD`). Anything else is a string the venue cannot list, and
+  # one with whitespace or `&`/`=` in it is not worth encoding into a signed request.
+  defp symbol?(symbol) when is_binary(symbol),
+    do: Regex.match?(~r/\A[A-Za-z0-9._-]{1,32}\z/, symbol)
+
+  defp symbol?(_not_a_string), do: false
 
   # An improper list (`[a | b]`) is a list to `is_list/1` and raises in `Enum`.
   defp proper_list?([]), do: true
@@ -936,7 +1066,10 @@ defmodule DpExchange.Robinhood.Feed do
     do: change_symbols(%{state | added: MapSet.new()}, symbols, & &1)
 
   def handle_call({:add_symbols, symbols, subscriber}, _from, state) do
+    # The bounds are judged BEFORE the subscriber is registered: registering monitors a pid, and
+    # a refused call keeps nothing, not even a monitor nothing would ever demonitor.
     with {:ok, checked} <- canonical_symbols(symbols),
+         :ok <- within_symbol_cap(state.symbols, checked),
          {:ok, registered} <- register_data_subscriber(state, subscriber) do
       replace_symbols(
         track_added(registered, subscriber, checked),
@@ -953,18 +1086,17 @@ defmodule DpExchange.Robinhood.Feed do
   def handle_call(:wanted, _from, state), do: {:reply, state.symbols, state}
 
   def handle_call({:subscribe_notices, subscriber}, _from, state) do
-    case valid_subscriber(subscriber) do
-      {:ok, subscriber} ->
-        state = %{
-          state
-          | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
-            monitors: Fanout.watch(subscriber, state.monitors)
-        }
+    with {:ok, subscriber} <- valid_subscriber(subscriber),
+         :ok <- within_subscriber_cap(state.notice_subscribers, subscriber) do
+      state = %{
+        state
+        | notice_subscribers: MapSet.put(state.notice_subscribers, subscriber),
+          monitors: Fanout.watch(subscriber, state.monitors)
+      }
 
-        {:reply, :ok, persist(state)}
-
-      {:error, _reason} = error ->
-        {:reply, error, state}
+      {:reply, :ok, persist(state)}
+    else
+      {:error, _reason} = error -> {:reply, error, state}
     end
   end
 
@@ -1064,7 +1196,8 @@ defmodule DpExchange.Robinhood.Feed do
   defp register_data_subscriber(%{subscriber: subscriber} = state, subscriber), do: {:ok, state}
 
   defp register_data_subscriber(state, subscriber) do
-    with {:ok, subscriber} <- valid_subscriber(subscriber) do
+    with {:ok, subscriber} <- valid_subscriber(subscriber),
+         :ok <- within_subscriber_cap(state.data_subscribers, subscriber) do
       {:ok,
        %{
          state

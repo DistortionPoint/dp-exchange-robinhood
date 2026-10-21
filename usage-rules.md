@@ -97,6 +97,24 @@ seams for a fake transport and are not for production use. `environment:` may be
 `nil` or `:production`: this venue has no sandbox, and any other value stops the feed at start
 (`{:invalid_option, :environment}`) rather than poll production under the name of a test.
 
+**A tree that could never poll refuses to start** (`DpExchange.Robinhood.start_link/1`, and the
+Fake's, before it starts anything): a key this tree does not read is `{:error, {:unknown_option,
+key}}`, so a misspelt `start_dely_ms:` is not silently ignored; options that are not a keyword
+list are `{:error, {:invalid_options, value}}`; and `credentials:` are judged with the signer's
+own rules, so a private key that is not the base64 32-byte Ed25519 seed the venue issues is
+`{:error, {:invalid_private_key, reason}}`, a blank or partial pair (a `.env` line `NAME=` reads
+as `""`) is `{:error, {:missing_credentials, :robinhood}}`, and padding or a control character
+is `{:error, {:invalid_credentials, :robinhood}}`. No answer names a value. Absent, `nil` or
+`%{}` credentials still start, and every poll then reports them missing. The feed then judges
+the values it reads and stops with `{:invalid_option, key}`: `base_url:` (an `https` URL; a
+loopback host may use `http`), and `timeout:`, `retry_attempts:`, `retry_delay:`,
+`max_body_bytes:`, `weight:`, `max_retry_after_s:`, `log_requests:` and `rate_limit_blocking:`
+where `Core.HttpClient` would raise, which the poll used to retry as a failed fetch every cycle.
+The wanted set holds at most 1,000 symbols and each subscriber set 1,000 distinct subscribers:
+past that `subscribe/2` and `update_symbols/2` answer `{:error, {:too_many_symbols, 1000}}`,
+and `subscribe/2` and `subscribe_notices/1` `{:error, {:too_many_subscribers, 1000}}`, refused
+whole and keeping nothing. An already registered subscriber is never refused.
+
 ## A monitoring process can subscribe to notices separately from market data
 
 **Pass `subscriber:`, because there is no default.** A feed started without one delivers
@@ -531,7 +549,12 @@ a key the builder does not read (`post_only`, `reduce_only`, ...)
 venue's own `:stop_loss` is accepted too) and `:stop_limit`
 `{:unsupported_order_type, type}`; `{:invalid_quantity, v}`, `{:invalid_price, v}`,
 `{:invalid_stop_price, v}` (zero, negative, `NaN`, unparseable, **or a float** — a float has
-already lost digits; pass a `Decimal`, an integer or a numeric string);
+already lost digits; pass a `Decimal`, an integer or a numeric string; **or more than 18
+fractional digits, or 34 digits in all**: the vendor documents its increments as "up to 18
+decimal places", so a 19th digit is a multiple of nothing. Amounts are sent in full notation
+(`"1e-8"` goes out as `"0.00000001"`) and never rounded to an increment, trailing zeros
+included: `"0.1000000000000000000"` is refused and `"0.1"` is what to send. A pair's own
+increments and `max_order_size` are the venue's to state; read them with `quantization/2`);
 `{:unexpected_field, key}` for a `price` on a market or stop order or a `stop_price` on a
 market or limit order (a field the type does not use is never silently dropped);
 `{:invalid_client_order_id, v}`; then `{:missing_option, :account_number}`; then missing or
@@ -849,10 +872,11 @@ feed's mailbox and is applied when the feed reaches it. Retrying is safe because
 these calls is idempotent (add, remove or replace a symbol set, applied in order), and
 `wanted/1` reads back what the feed holds once it answers.
 
-**A symbol list must be a proper list of non-blank strings.** Anything else (a bare string,
-`nil`, an atom, a blank or whitespace-only element) answers `{:error, {:invalid_symbols,
+**A symbol list must be a proper list of symbols: 1 to 32 characters of ASCII letters, digits
+and `-_.`.** Anything else (a bare string, `nil`, an atom, a blank element, whitespace, `&`, `=`,
+`/`, a non-ASCII character, a 33 character string) answers `{:error, {:invalid_symbols,
 value}}` from `subscribe/2`, `unsubscribe/2` and `update_symbols/2`, and the feed is left as
-it was. The arguments are checked, symbols first and then the subscriber, before the feed is
+it was. More than 1,000 distinct symbols is `{:error, {:too_many_symbols, 1000}}`. The arguments are checked, symbols first and then the subscriber, before the feed is
 looked at, so a bad argument answers the same whether or not a feed is running. It used to
 be `{:invalid_field, :symbols}`, and before that it was passed through, where a non-list
 crashed the feed and lost every later subscription. Symbols are upper-cased on the way in.

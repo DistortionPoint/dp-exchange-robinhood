@@ -172,7 +172,23 @@ defmodule DpExchange.Robinhood.Rest do
     subscribe_notices: [:feed, :name, :to],
     coverage: [:feed, :name],
     # Answered locally (crypto has no session): reads no key of its own, sends no request.
-    market_status: []
+    market_status: [],
+    # The tree's own start options (`DpExchange.Robinhood.start_link/1`), beside the transport
+    # keys it forwards to every poll. A key outside this list is `{:unknown_option, key}` at
+    # start rather than silently ignored: a misspelt `start_dely_ms:` used to start a feed that
+    # polled at once. Process names are `:name`, `:feed` and `:ledger` (`:limiter` is a
+    # transport key); `Feed.init/1` judges the values.
+    start_link: [
+      :name,
+      :feed,
+      :ledger,
+      :symbols,
+      :subscriber,
+      :interval_ms,
+      :start_delay_ms,
+      :bisect_budget_ms,
+      :max_queue_len
+    ]
   }
 
   @doc """
@@ -182,7 +198,7 @@ defmodule DpExchange.Robinhood.Rest do
   calls that send no request (`:subscribe`, `:unsubscribe`, `:update_symbols`,
   `:subscribe_notices`, `:coverage`) allow only this list and `:credentials`. `function` is one of the facade's
   option-taking functions (`:coverage` stands for `coverage/1`, `coverage_by_kind/1` and
-  `wanted/1`).
+  `wanted/1`; `:start_link` for `start_link/1`, whose own keys are the supervision tree's).
   """
   @spec function_options(atom()) :: [atom()]
   def function_options(function), do: Map.fetch!(@function_options, function)
@@ -1582,18 +1598,48 @@ defmodule DpExchange.Robinhood.Rest do
   # SIGNED order body, on a call that moves funds, to be refused (or worse, interpreted) by
   # the venue. `0` and negatives are not quantities, and `NaN`/`Infinity` are not numbers.
   # The venue's own bounds (`max_order_size`, increments) are its to state, not guessed here.
+  #
+  # **An amount the venue's own limits make impossible is refused, not sent.** The vendor's
+  # `V2TradingPair` documents `asset_increment` and `quote_increment` as "up to 18 decimal
+  # places" and `max_order_size` as "up to 16": no quantity or price with more than 18
+  # fractional digits is a multiple of any increment the venue lists, so it could only be
+  # refused by the venue (or rounded by it, which is the substitute this family refuses). The
+  # family also bounds a number to 34 digits (decimal 2.x and 3.x both). A pair's own
+  # increments and size limit are the venue's to state (`quantization/3`) and are not guessed
+  # here; trailing zeros are not stripped for the caller either, so `"0.1000000000000000000"`
+  # (19 fractional digits) is refused and its value, `"0.1"`, is what to send.
+  @max_amount_fraction_digits 18
+  @max_amount_digits 34
+
   defp positive_string(value) do
     case input_decimal(value) do
       %Decimal{} = amount ->
-        # `|exp| > 40` would expand to a string of that many zeros ("1e999999999" is a
-        # gigabyte); no crypto quantity or price needs more than 40 decimal places.
-        if Decimal.positive?(amount) and abs(amount.exp) <= 40,
-          do: {:ok, Decimal.to_string(amount, :normal)},
-          else: :error
+        if Decimal.positive?(amount), do: bounded_plain(amount), else: :error
 
       nil ->
         :error
     end
+  end
+
+  # `|exp| > 40` would expand to a string of that many zeros ("1e999999999" is a gigabyte), so
+  # the exponent is judged before anything is rendered.
+  defp bounded_plain(%Decimal{exp: exp} = amount) when abs(exp) <= 40 do
+    plain = Decimal.to_string(amount, :normal)
+
+    if within_amount_digits?(plain), do: {:ok, plain}, else: :error
+  end
+
+  defp bounded_plain(%Decimal{}), do: :error
+
+  defp within_amount_digits?(plain) do
+    {whole, fraction} =
+      case String.split(plain, ".", parts: 2) do
+        [whole, fraction] -> {whole, fraction}
+        [whole] -> {whole, ""}
+      end
+
+    byte_size(fraction) <= @max_amount_fraction_digits and
+      byte_size(whole) + byte_size(fraction) <= @max_amount_digits
   end
 
   defp input_decimal(%Decimal{} = value),
@@ -1896,7 +1942,10 @@ defmodule DpExchange.Robinhood.Rest do
   (`{:missing_field, :time_in_force}`, never a silent venue default) and it must be one of
   `:gtc`, `:day`, `:gfw`, `:gfm`, otherwise `{:unsupported_order_combination, type, tif}`;
   a quantity that is not a positive finite `Decimal`, integer or numeric string
-  `{:invalid_quantity, v}` (a float has already lost digits and is refused); the same for
+  `{:invalid_quantity, v}` (a float has already lost digits and is refused, and so is an
+  amount with more than 18 fractional digits, the most the vendor documents for any
+  increment, or more than 34 digits in all; it is sent in full notation, never as `1.0e-5`,
+  and never rounded to an increment: the venue answers for its own); the same for
   `{:invalid_price, v}` and `{:invalid_stop_price, v}`; a `price` the type does not use
   (market, stop) or a `stop_price` on a type without one (market, limit)
   `{:unexpected_field, key}` rather than dropped; a `client_order_id` that is not a UUID
@@ -2981,8 +3030,8 @@ defmodule DpExchange.Robinhood.Rest do
   # No `%Decimal{}` clause: every caller passes a value out of the venue's JSON (Req's default
   # decode, which yields integers, floats and strings, never a `Decimal`) or, from
   # `input_decimal/1`, only a number or a binary. A caller's own `Decimal` is handled there.
-  defp decimal(value) when is_integer(value), do: Decimal.new(value)
-  defp decimal(value) when is_float(value), do: Decimal.from_float(value)
+  defp decimal(value) when is_integer(value), do: finite(Decimal.new(value))
+  defp decimal(value) when is_float(value), do: finite(Decimal.from_float(value))
 
   # `Decimal.new/1` raises on a string that is not a number. `Decimal.parse/1`, requiring
   # the whole string be consumed (`{d, ""}`), is the family's established idiom for this.
@@ -3014,7 +3063,17 @@ defmodule DpExchange.Robinhood.Rest do
   # to `Decimal` and parses instantly, but the first `Decimal.compare/2` or add against it
   # aligns exponents and allocates an integer of a billion digits: a few bytes of venue reply
   # cost this process its memory. The same bound `dp_exchange_schwab` applies.
-  defp finite(%Decimal{exp: exp} = value) do
-    if Decimal.nan?(value) or Decimal.inf?(value) or abs(exp) > 1000, do: nil, else: value
+  #
+  # **A coefficient past 34 digits is not a number here either.** A venue number is bounded to
+  # 34 digits and an exponent of +-1000 (the bound decimal 2.x and 3.x both accept): a string
+  # of tens of thousands of digits parses, then costs every compare and sum a consumer makes
+  # against it. No price, size, balance or fee the venue states needs that many; refused as
+  # unreadable like `NaN`, never truncated (that would be a rounded, wrong number).
+  @max_coef 10 ** 34
+
+  defp finite(%Decimal{} = value), do: if(unbounded?(value), do: nil, else: value)
+
+  defp unbounded?(%Decimal{exp: exp, coef: coef} = value) do
+    Decimal.nan?(value) or Decimal.inf?(value) or abs(exp) > 1000 or coef >= @max_coef
   end
 end

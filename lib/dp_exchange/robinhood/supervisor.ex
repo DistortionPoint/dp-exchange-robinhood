@@ -33,7 +33,7 @@ defmodule DpExchange.Robinhood.Supervisor do
     opts = Credentials.wrap_opt(opts)
 
     %{
-      id: Keyword.get(opts, :name, __MODULE__),
+      id: Config.opt(opts, :name, __MODULE__),
       start: {__MODULE__, :start_link, [opts]},
       type: :supervisor
     }
@@ -53,7 +53,11 @@ defmodule DpExchange.Robinhood.Supervisor do
     # (idempotent) covers a consumer who calls `start_link/1` directly with a raw map.
     opts = Credentials.wrap_opt(opts)
 
-    Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    # `Config.opt/3`: a forwarded `name: nil` is the default name, as `derived_name/3` already
+    # reads it. `Keyword.get/3` registered nothing for it, while the ledger, limiter and feed
+    # took the default names: an unaddressable supervisor over children a second tree collides
+    # with.
+    Supervisor.start_link(__MODULE__, opts, name: Config.opt(opts, :name, __MODULE__))
   end
 
   @impl true

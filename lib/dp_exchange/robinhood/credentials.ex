@@ -44,6 +44,8 @@ defmodule DpExchange.Robinhood.Credentials do
   downstream of anything this package can reach.
   """
 
+  alias DpExchange.Robinhood.Auth
+
   @derive {Inspect, except: [:api_key, :private_key]}
   defstruct [:api_key, :private_key]
 
@@ -102,6 +104,28 @@ defmodule DpExchange.Robinhood.Credentials do
 
       _absent_or_nil ->
         opts
+    end
+  end
+
+  @doc """
+  Whether the `:credentials` in `opts` could ever sign a request, judged at START so a tree that
+  can never authenticate refuses to run instead of polling and failing every cycle.
+
+  `:ok` when the key is absent, `nil`, empty (`%{}`) or the marker `wrap_opt/1` leaves for a
+  shape it does not read (the feed refuses that one itself, as `{:invalid_option,
+  :credentials}`). Otherwise the signer's own verdict, `Auth.validate_credentials/1`:
+  `{:error, {:invalid_private_key, reason}}` for a key that is not the base64 32-byte Ed25519
+  seed the venue issues, `{:error, {:missing_credentials, :robinhood}}` for a blank or partial
+  pair (a `.env` line `NAME=` is `""`, not `nil`) and `{:error, {:invalid_credentials,
+  :robinhood}}` for padding or a control character. No answer names a value or even which
+  field. Used by `DpExchange.Robinhood.start_link/1` and `DpExchange.Robinhood.Fake.start_link/1`.
+  """
+  @spec check_opt(keyword()) :: :ok | {:error, term()}
+  def check_opt(opts) do
+    case opts |> wrap_opt() |> Keyword.get(:credentials) do
+      %__MODULE__{api_key: nil, private_key: nil} -> :ok
+      %__MODULE__{} = credentials -> Auth.validate_credentials(credentials)
+      _absent_or_marker -> :ok
     end
   end
 end

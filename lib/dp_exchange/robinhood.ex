@@ -71,7 +71,7 @@ defmodule DpExchange.Robinhood do
   @behaviour DpExchange.Core.Venue
 
   alias DpExchange.Core.{Capabilities, Config, Venue}
-  alias DpExchange.Robinhood.{Feed, Rest, SymbolFormat}
+  alias DpExchange.Robinhood.{Credentials, Feed, Rest, SymbolFormat}
 
   # The venue serves none of these. That is a claim about Robinhood, not about how far this
   # package got — and the two are worth telling apart, so the account and trading endpoints
@@ -235,7 +235,7 @@ defmodule DpExchange.Robinhood do
     # does nothing: the raw list has already been captured by the supervisor above.
     # dp-exchange-core issue #29 — live API keys, in cleartext, in ordinary application
     # logs, produced by any crash at all.
-    opts = DpExchange.Robinhood.Credentials.wrap_opt(opts)
+    opts = Credentials.wrap_opt(opts)
 
     # `type: :supervisor`: `start_link/1` starts an OTP `Supervisor`, and without this key
     # OTP defaults `:type` to `:worker`, which also defaults `:shutdown` to `5_000`ms
@@ -245,7 +245,9 @@ defmodule DpExchange.Robinhood do
     # Found by a cross-package audit comparing `child_spec/1` across all five venues;
     # `dp_exchange_schwab` was the only one that already declared this.
     %{
-      id: Keyword.get(opts, :name, __MODULE__),
+      # `Config.opt/3`, not `Keyword.get/3`: a forwarded `name: nil` is an absent name, and was
+      # the child id `nil` (two trees' ids colliding) beside a supervisor that registered nothing.
+      id: Config.opt(opts, :name, __MODULE__),
       start: {__MODULE__, :start_link, [opts]},
       type: :supervisor
     }
@@ -255,11 +257,34 @@ defmodule DpExchange.Robinhood do
   Starts the supervision tree: the ledger, the rate limiter and the polling feed
   (`:rest_for_one`, in that order).
 
-  Delegates to `DpExchange.Robinhood.Supervisor.start_link/1`. See
-  `c:DpExchange.Core.Venue.start_link/1`.
+  Delegates to `DpExchange.Robinhood.Supervisor.start_link/1` after judging the options, so a
+  tree that could never poll refuses to start instead of starting and failing every cycle:
+
+    * a key this tree does not read is `{:error, {:unknown_option, key}}` (a misspelt
+      `start_dely_ms:` used to be ignored), and options that are not a keyword list are
+      `{:error, {:invalid_options, value}}`;
+    * `environment:` other than absent, `nil` or `:production` is
+      `{:error, {:unsupported_option, :environment}}` (this venue has no sandbox);
+    * `credentials:` that carry anything are judged with the signer's own rules, so a private
+      key that is not the base64 32-byte Ed25519 seed the venue issues is
+      `{:error, {:invalid_private_key, reason}}`, a blank key (`.env` carrying `NAME=`) is
+      `{:error, {:missing_credentials, :robinhood}}`, and a key with a trailing newline is
+      `{:error, {:invalid_credentials, :robinhood}}`. None names the value. Credentials that
+      are absent or empty still start, and every poll then reports them missing, as before.
+
+  The feed then judges the values it reads (`symbols:`, `subscriber:`, `base_url:` and the
+  numeric request options) and stops with `{:invalid_option, key}`; see
+  `DpExchange.Robinhood.Feed.start_link/1`. See `c:DpExchange.Core.Venue.start_link/1`.
   """
   @impl true
-  def start_link(opts), do: DpExchange.Robinhood.Supervisor.start_link(opts)
+  def start_link(opts) do
+    # Credentials are read here only to be judged; the tree is handed the original options (the
+    # supervisor wraps them itself).
+    with :ok <- Rest.validate_opts(opts, :start_link),
+         :ok <- Credentials.check_opt(opts) do
+      DpExchange.Robinhood.Supervisor.start_link(opts)
+    end
+  end
 
   # --- declaration -------------------------------------------------------
 
