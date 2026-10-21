@@ -226,7 +226,7 @@ no symbol is wanted (nothing is polled then) is closed by a `:link_up` with
 Fake answers `get_estimated_price/5` for `side: "both"` with a `"bid"` row and an `"ask"` row per
 quantity, never a row whose side is `"both"`.
 
-Requires `dp_exchange_core ~> 0.3.114`.
+Requires `dp_exchange_core ~> 0.3.120` (the floor in this package's `mix.exs`).
 
 **A subscriber that dies releases its symbols.** `subscribe/2` monitors the `:to` pid. When the
 last registered subscriber has died and the feed was started without a `:subscriber`, the
@@ -470,11 +470,14 @@ existing. Both now walk every page to the end and fail closed
 (`{:error, :too_many_holdings_pages}` / `{:error, :history_truncated}`) rather than hand
 back a truncated list as complete.
 
-`get_orders/2` has one more case: pass `opts[:limit]` to fetch exactly **one** page instead
-of walking. This venue's `GET orders` endpoint takes no `limit` query parameter at all, so
-`opts[:limit]` is not sent to the venue and does not cap how many rows come back — it only
-decides whether this package walks `next` or stops after the page it already has. Pair it
-with `opts[:cursor]` to choose which page. It must be a positive integer (or absent or `nil`):
+`get_orders/2` also takes `opts[:limit]` N, a cap: **the answer holds min(N, every matching
+order)**. This venue's `GET orders` endpoint takes no `limit` query parameter at all, so it is
+not sent and the page size is the venue's; this package follows `next` (same 50-page bound, loop
+guard and host checks) until N rows are in hand or there is no `next`, then returns the first N.
+A page that reaches N ends the walk with no further request; the bound reached first is
+`{:error, :history_truncated}`, never a short list. `opts[:cursor]` starts the walk at the page
+the venue's cursor names. Leave `:limit` out to read every order. It must
+be a positive integer (or absent or `nil`):
 anything else is `{:error, {:invalid_field, :limit}}` before anything is signed, from the
 real path and the Fake alike (it used to mean "one page" whatever it held).
 
@@ -502,15 +505,42 @@ word or a `Core` status atom: `:cancelled` is sent as `"canceled"` and `:rejecte
 `limit`, `stop_loss`, `stop_limit`; `state` `open`, `canceled`, `filled`, `failed`,
 `pending`), a `symbol` that is not a non-empty string, or a date that is neither a
 `%DateTime{}` nor a string that parses as an ISO 8601 date-time with an offset is refused as
-`{:error, {:invalid_field, key}}` before anything is signed. `DpExchange.Robinhood.Fake`
+`{:error, {:invalid_field, key}}` before anything is signed. **There is no `partially_filled`
+filter**: the vendor's v2 order list names only `open`, `canceled`, `filled`, `failed` and
+`pending` (its older v1 list had one), so `state: :partially_filled` is refused rather than
+sent. The vendor does not say whether `open` includes an order that has partly filled, so a
+caller that must see every live order reads the list without `:state` and keeps `:open` and
+`:partially_filled` itself. `DpExchange.Robinhood.Fake`
 narrows by `:symbol`, `:side`, `:type`, `:state` and the four date filters (bounds
 inclusive; the vendor does not say, so that is unmeasured). It holds one page of the orders
-this process placed, so `:limit` changes nothing there, and a `:cursor` is refused as
+this process placed, so `:limit` N simply takes the first N matches, and a `:cursor` is refused as
 `{:error, {:invalid_field, :cursor}}` because the Fake never issued one.
 
 `get_order/3` calls `GET /api/v2/crypto/trading/orders/{id}/`, a path the vendor's OpenAPI
 `paths` does not list. It appears only in the spec's sample client, and it has not been
 measured.
+
+**What an order read maps, field by field** (the vendor's `OrderResponse`, every word of each
+enum walked against the committed document by `OrderLifecycleTest`):
+
+| Venue | Becomes |
+| --- | --- |
+| `state` `open`, `partially_filled`, `filled`, `canceled`, `failed` | `:open`, `:partially_filled`, `:filled`, `:cancelled`, `:rejected` (and `pending`, which only the list filter names, `:pending`) |
+| `side` `buy`, `sell` | `:buy`, `:sell` |
+| `type` `market`, `limit`, `stop_loss`, `stop_limit` | `:market`, `:limit`, `:stop`, `:stop_limit` |
+| `time_in_force` `gtc`, `gfd`, `gfw`, `gfm` | `:gtc`, `:day`, `:gfw`, `:gfm` |
+
+A word outside those, or the right word in the wrong case (`"BUY"`), is `{:unknown_enum, field,
+value}` on a read, never a default. `filled_quantity` and `average_price` are the order's own
+`filled_asset_quantity` and `average_price`, and survive a cancel that came after a partial
+fill: a `:cancelled` order can carry `filled_quantity` above zero, so read it before treating
+a cancelled order as one that traded nothing. The order's `executions` list (price, quantity
+and time of each fill) is **not decoded**: `Core.Types.Order` has no slot for it, and this
+package does not sum it into the order's size. `quantity` is the order's `asset_quantity`; an
+order the venue sized in quote currency (`quote_amount`, which this package never places) has
+`quantity: nil`, because the venue stated no base quantity and `Order` has no field for the
+other currency. A cancel of an order the venue had already filled answers `{:ok, %Order{status:
+:filled}}`: read `status` before reporting the cancel as having taken effect.
 
 ## Two prices, and the one that accounts for size
 
@@ -539,8 +569,13 @@ rather than three points taken at three times.
 package builds that key from the type rather than taking it from you: **a config under the
 wrong key is silently ignored and the order is placed with none.**
 
-**Everything is refused before anything is signed, in this order** (the Fake gives the same
-answer in the same order): a request that is not a map `{:invalid_order_request, request}`;
+**Everything is refused before anything is signed.** The checks run in this order, and the
+first to fail answers (the Fake gives the same answer in the same order): the request is a
+map; no key the builder does not read; `symbol`; `side`; `order_type`; `time_in_force`;
+`quantity`; the price fields the type does not use, then `price`, then `stop_price`;
+`client_order_id`; the account option; credentials. A request missing its quantity and naming
+an unsupported type is therefore `{:unsupported_order_type, type}`, not a missing quantity.
+The answers, by name: a request that is not a map `{:invalid_order_request, request}`;
 a key the builder does not read (`post_only`, `reduce_only`, ...)
 `{:unsupported_order_field, key}`; `{:invalid_symbol, v}` (an absent symbol is `{:invalid_symbol, nil}`); `{:invalid_side, v}`
 (`:buy` / `:sell`, or the strings in any case); `{:missing_field, key}` for `:side`,

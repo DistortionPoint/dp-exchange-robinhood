@@ -194,7 +194,7 @@ defmodule DpExchange.Robinhood.OrderShapeRefusalTest do
       assert order.provider == :robinhood
     end
 
-    test "get_orders/2 keeps the venue's order, oldest row first" do
+    test "get_orders/2 keeps the venue's orders, in the order the venue sent them" do
       body = %{
         "results" => [
           %{"id" => "o-1", "state" => "filled"},

@@ -1656,7 +1656,8 @@ defmodule DpExchange.Robinhood.Rest do
   chosen here would return a real list of orders over a window the caller did not ask about.
   The filters read are `:created_at_start`, `:created_at_end`, `:updated_at_start`,
   `:updated_at_end`, `:symbol`, `:side`, `:type` (`:stop` is sent as the venue's
-  `"stop_loss"`) and `:state` (the venue also knows `"pending"`). A `%DateTime{}` passed for
+  `"stop_loss"`) and `:state` (the venue also knows `"pending"`, and v2's list has no
+  `partially_filled`, so that state is refused rather than sent). A `%DateTime{}` passed for
   any of the four dates is sent as ISO 8601 (`DateTime.to_iso8601/1`); a string is sent
   unchanged. `:state` takes the venue's word or a `Core` status atom, mapped back to the
   venue's spelling (`:cancelled` is `"canceled"`, `:rejected` is `"failed"`).
@@ -1669,13 +1670,17 @@ defmodule DpExchange.Robinhood.Rest do
   success. `Core`'s contract types this `[Order.t()]`, not a cursor-bearing page, so there
   is no way to hand a `next` back through the return value either.
 
-  What it does now: with `opts[:limit]` given, exactly **one** page is fetched and
-  returned — the venue's own `GET orders` endpoint takes no `limit` parameter at all
+  What it does now: `opts[:limit]` N is a cap, and the answer holds **min(N, every matching
+  order)**. The venue's own `GET orders` endpoint takes no `limit` parameter at all
   (confirmed against the vendor's OpenAPI document, 2026-09-29: its query parameters are
   `account_number`, `cursor`, `created_at_start`, `created_at_end`, `updated_at_start`,
-  `updated_at_end`, `symbol`, `side`, `type`, `state` — no `limit`), so `:limit` is read
-  here as "do not walk `next`", not as a count this package can ask the venue to cap; pass
-  `opts[:cursor]` alongside it to choose which page. Without `opts[:limit]`, every page is
+  `updated_at_end`, `symbol`, `side`, `type`, `state` — no `limit`), so it is never sent and
+  the page size is the venue's. The walk follows `next` (the same page bound, loop guard and
+  host checks as below) until N rows are in hand or there is no `next`, then takes the first
+  N; a page that brings the count to N or past it ends the walk with no further request. If the
+  page bound is reached first the answer is `{:error, :history_truncated}`, never a short list.
+  `opts[:cursor]` starts the walk at the page the venue's cursor names. Without
+  `opts[:limit]`, every page is
   walked to the end with the same bounded `walk/7` `get_symbols/2` uses, failing closed
   (`{:error, :history_truncated}`, the family's one spelling for a history that could not be
   read to its end; it was `:too_many_order_pages`) rather than returning a truncated history
@@ -1700,8 +1705,12 @@ defmodule DpExchange.Robinhood.Rest do
 
       # `Config.opt/3`, not `Keyword.has_key?/2`: a forwarded `limit: nil` is an absent
       # option, and took the one-page branch, returning a truncated history as complete.
-      if Config.opt(opts, :limit, nil) != nil do
-        get_orders_one_page(path, credentials, opts)
+      limit = Config.opt(opts, :limit, nil)
+
+      if limit != nil do
+        with {:ok, rows} <- walk_limited(path, credentials, opts, limit, {[], 0}, []) do
+          to_orders(rows)
+        end
       else
         with {:ok, rows} <- walk(path, credentials, opts, [], 0, [], :history_truncated) do
           to_orders(rows)
@@ -1737,10 +1746,36 @@ defmodule DpExchange.Robinhood.Rest do
 
   defp cursor_param(_other), do: {:error, {:invalid_field, :cursor}}
 
-  defp get_orders_one_page(path, credentials, opts) do
-    with {:ok, body} <- get(path, credentials, opts),
-         {:ok, rows} <- order_rows(body) do
-      to_orders(rows)
+  # **`:limit` N is a cap, and the answer holds min(N, everything that exists).** The venue's
+  # orders endpoint has no `limit` parameter and a page may hold fewer than N rows with a `next`
+  # present, so the walk follows `next` (same page bound, loop guard and host checks as `walk/7`)
+  # until N rows are in hand or there is no `next`, then takes N. A page bound hit first is
+  # `{:error, :history_truncated}`, never a short list answered as complete.
+  defp walk_limited(path, credentials, opts, limit, {pages, count}, seen) do
+    cond do
+      length(seen) >= @max_pages ->
+        {:error, :history_truncated}
+
+      path in seen ->
+        {:error, {:pagination_loop, path}}
+
+      true ->
+        with {:ok, body} <- get(path, credentials, opts),
+             {:ok, results} <- page_results(body),
+             {:ok, next} <- next_page(body, path, opts) do
+          acc = {[results | pages], count + length(results)}
+          limited_step(next, acc, limit, {path, credentials, opts, seen})
+        end
+    end
+  end
+
+  defp limited_step(next, {pages, count}, limit, {path, credentials, opts, seen}) do
+    rows = pages |> Enum.reverse() |> Enum.concat()
+
+    cond do
+      count >= limit -> {:ok, Enum.take(rows, limit)}
+      is_nil(next) -> {:ok, rows}
+      true -> walk_limited(next, credentials, opts, limit, {pages, count}, [path | seen])
     end
   end
 
@@ -1866,6 +1901,13 @@ defmodule DpExchange.Robinhood.Rest do
   id}}`, decided before the account option and before credentials. A 404 is
   `{:refused, :not_found}`.
 
+  A row naming another order (its `id`, down-cased, is not the one asked for) is
+  `{:error, :unexpected_response_shape}`, here and on `cancel_order/3`.
+  `filled_quantity` and `average_price` are the order's own `filled_asset_quantity` and
+  `average_price`, kept after a cancel that followed a partial fill. The `executions` list is
+  not decoded (`Order` has no slot for it) and is never summed into a size, and an order the
+  venue sized in quote currency (`quote_amount`) has `quantity: nil`.
+
   **This path is not in the vendor's OpenAPI `paths`.** It appears only in the sample client
   in the spec's own `info.description` (its `get_order` method). Its response is decoded as
   `V2CryptoOrder`, the schema the documented cancel path returns, and the test fixture is
@@ -1881,16 +1923,32 @@ defmodule DpExchange.Robinhood.Rest do
         "/api/v2/crypto/trading/orders/" <>
           segment <> "/" <> query_string([{"account_number", account}])
 
-      path |> get(credentials, opts) |> read_order()
+      path |> get(credentials, opts) |> read_order(order_id)
     end
   end
 
   # An order endpoint's answer as an order. A 404 is the venue saying it holds no such order
   # (`{:refused, :not_found}`, the family's one spelling); every other refusal keeps the
   # venue's own status and detail.
-  defp read_order({:ok, body}), do: to_order(body)
-  defp read_order({:refused, reason}), do: {:refused, order_refusal(reason)}
-  defp read_order({:error, _reason} = error), do: error
+  #
+  # **The answer must be about the order asked for.** An order row carrying another id is a
+  # substitute (a cancel "confirmed" for an order the caller did not name), and is refused as
+  # `{:error, :unexpected_response_shape}`. Ids are UUIDs, so the text is compared down-cased.
+  defp read_order({:ok, body}, asked) do
+    case to_order(body) do
+      {:ok, %Order{id: answered}} = ok -> same_order(ok, answered, asked)
+      other -> other
+    end
+  end
+
+  defp read_order({:refused, reason}, _asked), do: {:refused, order_refusal(reason)}
+  defp read_order({:error, _reason} = error, _asked), do: error
+
+  defp same_order(ok, answered, asked) do
+    if String.downcase(answered) == String.downcase(asked),
+      do: ok,
+      else: {:error, :unexpected_response_shape}
+  end
 
   defp order_refusal({:venue_error, 404}), do: :not_found
   defp order_refusal({:venue_error, 404, _detail}), do: :not_found
@@ -1929,7 +1987,11 @@ defmodule DpExchange.Robinhood.Rest do
   `limit_price`), a `:stop` / `:stop_loss` order needs `stop_price` and a `:stop_limit` order
   needs both.
 
-  **Refused locally, before anything is signed or sent, in this order:** a request that is
+  **Refused locally, before anything is signed or sent.** The checks run as: the request is a
+  map, no unread key, `symbol`, `side`, `order_type`, `time_in_force`, `quantity`, the price
+  fields the type does not use, `price`, `stop_price`, `client_order_id`, the account option,
+  credentials; the first to fail answers (a missing quantity on an unsupported type is
+  `{:unsupported_order_type, type}`). The answers: a request that is
   not a map `{:invalid_order_request, request}`; a key this builder does not read
   (`post_only`, `reduce_only`, ...) `{:unsupported_order_field, key}`; a `symbol` that is
   not a non-blank string, or absent, `{:invalid_symbol, v}` (`nil` when absent); a `side`
@@ -2121,7 +2183,7 @@ defmodule DpExchange.Robinhood.Rest do
 
       # `Keyword.drop/2`, not a put: the facade refuses both retry keys before this runs, and
       # a direct caller's value is not forwarded, so Core's default (a POST is sent once) holds.
-      path |> post(nil, credentials, Keyword.drop(opts, @retry_options)) |> read_order()
+      path |> post(nil, credentials, Keyword.drop(opts, @retry_options)) |> read_order(order_id)
     end
   end
 
@@ -2450,16 +2512,41 @@ defmodule DpExchange.Robinhood.Rest do
   defp to_order(row), do: to_order(row, :strict)
 
   defp to_order(%{"id" => id} = row, mode) when is_binary(id) and id != "" do
-    case mode do
-      :lenient -> {:ok, order_struct(row)}
-      :strict -> with :ok <- known_enums(row), :ok <- known_amounts(row), do: strict_order(row)
-    end
+    with :ok <- strict_checks(row, mode), do: consistent_fill(order_struct(row))
   end
 
   defp to_order(row, _mode) when is_map(row), do: {:error, {:missing_required_field, :id}}
   defp to_order(_row, _mode), do: {:error, :unexpected_response_shape}
 
-  defp strict_order(row), do: {:ok, order_struct(row)}
+  defp strict_checks(_row, :lenient), do: :ok
+  defp strict_checks(row, :strict), do: with(:ok <- known_enums(row), do: known_amounts(row))
+
+  # **A row whose state contradicts its own fill is refused**, on a read and on a placement's
+  # answer alike (there it is unconfirmed, like any answer this package cannot read): `Core`'s
+  # `Order.new/1` raises on `filled` or `partially_filled` with nothing filled, on a live state
+  # (`pending`, `open`, `partially_filled`) with the whole size filled, and on `filled` with only
+  # part filled. An unstated fill or size judges nothing (`nil` is "the venue did not say", which
+  # covers a quote-sized order's `quantity`), and `cancelled`/`rejected` are never judged on fill.
+  defp consistent_fill(%Order{filled_quantity: nil} = order), do: {:ok, order}
+
+  defp consistent_fill(%Order{filled_quantity: filled, quantity: quantity} = order) do
+    status = order.status
+    against = if quantity, do: Decimal.compare(filled, quantity)
+
+    if fill_contradiction?(status, Decimal.compare(filled, 0), against),
+      do: {:error, :unexpected_response_shape},
+      else: {:ok, order}
+  end
+
+  defp fill_contradiction?(status, :eq, _against) when status in [:filled, :partially_filled],
+    do: true
+
+  defp fill_contradiction?(status, _fill, against)
+       when status in [:pending, :open, :partially_filled] and against in [:eq, :gt],
+       do: true
+
+  defp fill_contradiction?(:filled, _fill, :lt), do: true
+  defp fill_contradiction?(_status, _fill, _against), do: false
 
   # **A PRESENT amount that cannot be read, or is on the wrong side of zero, refuses a read.**
   # `order_struct/1` turns an unreadable amount into `nil`, which is also how an absent one
@@ -2525,15 +2612,8 @@ defmodule DpExchange.Robinhood.Rest do
   # The venue's value, bounded: it rides an error tuple into every caller's log.
   defp unknown_enum(field, value), do: {:error, {:unknown_enum, field, bounded_raw(value)}}
 
-  # The orders endpoint answers with a page, `{"next": …, "results": [...]}`, and never with a
-  # bare order — so, unlike `account_rows/1`, there is no bare-object clause to fall into.
-  defp order_rows(%{"results" => rows}) when is_list(rows), do: {:ok, rows}
-  # `null` is an empty page; any other non-list is unreadable, not empty. See `account_rows/1`:
-  # `"results": "denied"` used to answer `{:ok, []}`, "no orders", about an account that may
-  # hold open ones.
-  defp order_rows(%{"results" => nil}), do: {:ok, []}
-  defp order_rows(%{"results" => _unreadable}), do: {:error, :unexpected_response_shape}
-  defp order_rows(_other), do: {:error, :unexpected_response_shape}
+  # The orders endpoint answers with a page, `{"next": …, "results": [...]}`, read by
+  # `page_results/1` (`null` is an empty page; any other non-list is unreadable, not empty).
 
   # One bad row refuses the whole list rather than seeding it with a blank order among real
   # ones — the hardest version of this to notice, and the reason `get_orders/2` does not

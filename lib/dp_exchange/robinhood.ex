@@ -681,8 +681,9 @@ defmodule DpExchange.Robinhood do
   Orders on one account. `opts[:account_number]` is required by v2.
 
   See `DpExchange.Robinhood.Rest.get_orders/2` for what `opts[:limit]` and `opts[:cursor]`
-  do — without `opts[:limit]`, every page is walked and bounded; with it, exactly one page
-  is fetched, because the venue's endpoint has no `limit` parameter of its own to send.
+  do — without `opts[:limit]`, every page is walked and bounded; with it N, pages are walked
+  until N orders are held (the answer is min(N, all), the venue's endpoint has no `limit`
+  parameter to send), and `{:error, :history_truncated}` if the page bound is reached first.
   """
   @impl true
   def get_orders(credentials, opts \\ []),

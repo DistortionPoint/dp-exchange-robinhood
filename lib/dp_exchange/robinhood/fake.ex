@@ -591,7 +591,9 @@ defmodule DpExchange.Robinhood.Fake do
   def cancel_all_orders(_credentials, _opts \\ []), do: Venue.not_supported()
 
   @doc """
-  Cancels an order this process placed and returns it as `:cancelled`.
+  Cancels an order this process placed and returns it as `:cancelled`. An order that is no
+  longer live (already cancelled, filled or rejected) is returned as it stands, its state and
+  `updated_at` untouched, as the real cancel answers the order's own state.
 
   Takes no account number, as on the real venue. An id this fake never issued is
   `{:refused, :not_found}`. See `c:DpExchange.Core.Venue.cancel_order/3`.
@@ -617,10 +619,21 @@ defmodule DpExchange.Robinhood.Fake do
            :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials),
            {:ok, order} <- find_order(id) do
-        {:ok, remember_order(%{order | status: :cancelled, updated_at: DateTime.utc_now()})}
+        {:ok, cancelled(order)}
       end
     end)
   end
+
+  # **Only a live order becomes cancelled; a terminal one is answered as it stands.** The v2
+  # cancel answers the order's own state, so cancelling one the venue already closed (cancelled,
+  # filled, rejected) is that state again, never a fresh `:cancelled` stamped over it. This fake
+  # never fills what it accepts, but a terminal order must not be rewritable by a later call.
+  @live_statuses [:pending, :open, :partially_filled]
+
+  defp cancelled(%Types.Order{status: status} = order) when status in @live_statuses,
+    do: remember_order(%{order | status: :cancelled, updated_at: DateTime.utc_now()})
+
+  defp cancelled(%Types.Order{} = order), do: order
 
   @doc """
   An order this process placed. `opts[:account_number]` is required; an unknown id is
@@ -655,7 +668,13 @@ defmodule DpExchange.Robinhood.Fake do
            :ok <- Rest.check_base_url(opts),
            :ok <- authenticated_credentials(credentials) do
         placed = @orders_key |> Process.get(%{}) |> Map.values() |> Enum.sort_by(& &1.id)
-        {:ok, Enum.filter(placed, &order_matches?(&1, opts))}
+        matching = Enum.filter(placed, &order_matches?(&1, opts))
+
+        # `:limit` N is min(N, all), as on the real path (which walks pages until N are held).
+        case Config.opt(opts, :limit, nil) do
+          nil -> {:ok, matching}
+          limit -> {:ok, Enum.take(matching, limit)}
+        end
       end
     end)
   end
@@ -698,8 +717,7 @@ defmodule DpExchange.Robinhood.Fake do
 
   # The fake holds one page and issues no cursor, so any cursor is one it never gave out.
   # Refused rather than ignored: ignoring it would answer page one for a caller asking for
-  # page two. `:limit` needs nothing here -- the venue's endpoint has no `limit` parameter,
-  # it only stops `Rest` walking `next`, and this fake has no `next` to walk.
+  # page two. `:limit` is a cap applied to the matching orders in `get_orders/2` itself.
   defp fake_cursor(nil), do: :ok
   defp fake_cursor(_cursor), do: {:error, {:invalid_field, :cursor}}
 

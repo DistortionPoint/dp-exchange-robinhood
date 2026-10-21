@@ -1061,6 +1061,14 @@ defmodule DpExchange.Robinhood.TradingTest do
       # The vendor's schema does not state a currency for `fee_charged` — not assumed to be
       # the quote currency.
       assert order.fee_currency == nil
+
+      # The size, the fill and the prices are each read from their own field: a partial fill
+      # of 0.25 against a size of 0.5, at an average of 60,000, on a 60,000 limit.
+      assert Decimal.equal?(order.quantity, Decimal.new("0.5"))
+      assert Decimal.equal?(order.filled_quantity, Decimal.new("0.25"))
+      assert Decimal.equal?(order.average_price, Decimal.new("60000"))
+      assert Decimal.equal?(order.price, Decimal.new("60000"))
+      assert order.stop_price == nil
     end
 
     test "a limit order's response never carries time_in_force, even when one was placed" do
@@ -1399,10 +1407,10 @@ defmodule DpExchange.Robinhood.TradingTest do
                )
     end
 
-    test "opts[:limit] fetches exactly one page, even when the venue offers a next" do
+    test "opts[:limit] reached by the first page ends the walk despite a next" do
       # The venue's `GET orders` endpoint has no `limit` query parameter at all (confirmed
-      # against its OpenAPI document, 2026-09-29), so `opts[:limit]` is never sent — it only
-      # decides whether this package walks `next` or stops.
+      # against its OpenAPI document, 2026-09-29), so `opts[:limit]` is never sent — the walk
+      # stops once N rows are held (see `OrderLifecycleTest` for the walk past a short page).
       me = self()
 
       assert {:ok, [order]} =
@@ -1572,7 +1580,7 @@ defmodule DpExchange.Robinhood.TradingTest do
 
       assert cash.currency == "USD"
 
-      assert {:ok, _order} =
+      assert {:ok, %Types.Order{id: "o-1", status: :open}} =
                DpExchange.Robinhood.place_order(
                  @credentials,
                  %{
@@ -1581,14 +1589,14 @@ defmodule DpExchange.Robinhood.TradingTest do
                    order_type: :market,
                    quantity: Decimal.new("1")
                  },
-                 base ++ [plug: responding(%{"id" => "o-1"})]
+                 base ++ [plug: responding(%{"id" => "o-1", "state" => "open"})]
                )
 
-      assert {:ok, _order} =
+      assert {:ok, %Types.Order{id: "o-1", status: :filled}} =
                DpExchange.Robinhood.get_order(
                  @credentials,
                  "o-1",
-                 base ++ [plug: responding(%{"id" => "o-1"})]
+                 base ++ [plug: responding(%{"id" => "o-1", "state" => "filled"})]
                )
 
       assert {:ok, []} =

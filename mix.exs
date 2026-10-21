@@ -80,7 +80,7 @@ defmodule DpExchangeRobinhood.MixProject do
       # which an older Core ignores - a silent pass; and 0.3.95 makes groups 7, 37 and 39 fail
       # instead of passing having examined nothing. Resolved and compiled against in this change.
       # 0.3.98 adds conformance group 42 (`ambiguous_place_order:`), used by the contract test.
-      {:dp_exchange_core, "~> 0.3.119"},
+      {:dp_exchange_core, "~> 0.3.120"},
 
       # a venue that speaks WebSocket ships what it needs to speak it.
       # No `websockex`. **This venue has no streaming API at all** — its feed is a REST

@@ -19,6 +19,86 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Fixed (tick AR: documentation against code, tests that cannot fail, order lifecycle)
+
+- **`Fake.cancel_order/3` no longer rewrites an order that is already closed.** It stamped
+  `status: :cancelled` and a new `updated_at` on whatever order it found, so a second cancel moved
+  a cancelled order's clock and a filled order would have been reported cancelled. The real v2
+  cancel answers the order's own state (`V2CryptoOrder`), so the Fake now cancels only a live
+  order (`:pending`, `:open`, `:partially_filled`) and answers any other as it stands. Tests:
+  `OrderLifecycleTest`, "the Fake never rewrites a terminal order".
+- **`get_orders/2` with `:limit` N answers min(N, every matching order), never a short page.** It
+  used to fetch one page and return it however few rows it held, with a `next` unread: the venue's
+  endpoint has no `limit` parameter, so a page smaller than N was silently a truncated answer. It
+  now follows `next` (same 50-page bound, loop guard and host checks) until N rows are held or
+  there is no `next`, then returns the first N; a page that reaches N exactly ends the walk with no
+  further request; the page bound reached first is `{:error, :history_truncated}`. The Fake caps at
+  N too. Tests: `OrderLifecycleTest`, "get_orders/2 :limit is a cap" (walks past a short page,
+  stops at exactly N, takes N of a larger page, bound refuses, loop refuses).
+- **A venue order row whose state contradicts its own fill is refused, not built.** Core's
+  `Order.new/1` raises on `filled`/`partially_filled` with nothing filled, on `pending`/`open`/
+  `partially_filled` with the whole size filled, and on `filled` with only part filled; this
+  package built the struct by literal and would have handed a consumer an order that raises when
+  it is rebuilt. Such a row is now `{:error, :unexpected_response_shape}` from `get_order/3`,
+  `cancel_order/3` and `get_orders/2` (the whole list), and `{:error, {:order_unconfirmed, id,
+  :unexpected_response_shape}}` from `place_order/3`. An unstated fill or size (`nil`, which
+  includes a quote-sized order's `quantity`) judges nothing, and `cancelled`/`rejected` are never
+  judged on fill. The Fake's orders (open, nothing filled, a size above zero, a declared
+  time-in-force, no legs, and `cancelled/1` only on a live order) are consistent; a test rebuilds
+  every one through `Order.new/1`. Tests: `OrderLifecycleTest`, "a row whose state contradicts its
+  own fill is refused" and "every order the Fake answers is one Order.new/1 accepts".
+- **`get_order/3` and `cancel_order/3` refuse an answer about a different order.** A row whose `id`
+  is not the one asked for (compared down-cased: ids are UUIDs) is
+  `{:error, :unexpected_response_shape}`, not a cancel or read "confirmed" for an order the caller
+  did not name. Two `RequestIntegrityTest` cases (`get_order/3` for `x/cancel/?y=1`,
+  `cancel_order/3` for `a/b#c`) fed a row naming order `x` and asserted `{:ok, _}`, i.e. that the
+  substitute is accepted; they now expect the refusal (they still assert the request path).
+  Tests: `OrderLifecycleTest`, "an answer about a different order is refused" (mismatch refused
+  on both reads, upper-case UUID accepted, the Fake answers its own id).
+
+### Documentation
+
+- `usage-rules.md` said the package "Requires `dp_exchange_core ~> 0.3.114`"; the floor in
+  `mix.exs` is `~> 0.3.119`. The README's install and pin lines read `~> 0.3.116`. (The doc was
+  wrong, the code right.)
+- The order-refusal sequence of `place_order/3` was documented in an order the code does not
+  follow (a missing quantity was listed ahead of an unsupported type). The real sequence is now
+  stated, in `usage-rules.md` and `Rest.place_order/3`: request is a map, unread key, `symbol`,
+  `side`, `order_type`, `time_in_force`, `quantity`, the price fields the type does not use,
+  `price`, `stop_price`, `client_order_id`, account option, credentials. (The code is shared with
+  the Fake and unchanged.)
+- The order-read mapping is now written down: every vendor `state`, `side`, `type` and
+  `time_in_force` and what it becomes; that a venue word in the wrong case is `{:unknown_enum, _,
+  _}`; that `filled_quantity` and `average_price` survive a cancel after a partial fill; that the
+  `executions` list is not decoded; that an order sized in `quote_amount` has `quantity: nil`; and
+  that a cancel of an already-filled order answers `{:ok, %Order{status: :filled}}`.
+- The vendor's v2 order list has no `partially_filled` state filter (its v1 list had one), so
+  `state: :partially_filled` is refused; the docs now say so, and that a caller who needs every
+  live order reads without `:state`, since the vendor does not say whether `open` includes a
+  partly filled order.
+- The `:limit` docs (`usage-rules.md`, `Rest.get_orders/2`, the facade) state the precise rule:
+  min(N, everything that exists), `:history_truncated` if the page bound is hit first.
+
+### Tests
+
+- `OrderLifecycleTest` reads the vendor's OpenAPI enums from the committed document
+  (`test/support/vendor_spec.ex`) and walks every `OrderResponse` state, side and type, every
+  `TimeInForce` value and every enum of the order-list filters, so a word the vendor adds fails
+  a test instead of becoming `nil`. Also: an order cancelled or failed after a partial fill keeps
+  its fill, the filled size is not summed from `executions`, a wrong-case venue word is refused
+  on a read and a cancel, and a quote-sized order's `quantity` is `nil`.
+- `TradingTest`'s order-state test now asserts the size, fill, average price and limit price (it
+  asserted only status, side, type, symbol and fee), and the facade test asserts the order the
+  place and read calls return instead of `{:ok, _}`. A test named for "oldest row first" that
+  asserted only that the venue's order is kept is renamed to say so.
+
+### Dependencies
+
+- `dp_exchange_core` floor raised to `~> 0.3.120` (tick AR: conformance group 54 rebuilds
+  every Order and Fill the Fake answers through `new/1`, and `Order.new/1` refuses a status
+  that contradicts its filled quantity; groups 33, 35 and 37 no longer pass having examined
+  nothing).
+
 ## [0.3.116] - 2026-10-21
 
 ### Fixed (tick AQ: numbers and identifiers, start-up and options, unbounded state)
@@ -100,7 +180,6 @@ what was run against the live venue, and when.
 - `dp_exchange_core` floor raised to `~> 0.3.119` (tick AQ: value types refuse non-positive
   prices and negative sizes, conformance groups 52 and 53, group 26 requires coverage to
   empty after the last unsubscribe).
-
 
 ## [0.3.115] - 2026-10-20
 

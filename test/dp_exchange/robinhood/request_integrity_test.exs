@@ -89,7 +89,9 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     test "get_order/3 percent-encodes reserved characters instead of rewriting the path" do
       plug = hitting(%{"id" => "x"}, self())
 
-      assert {:ok, _order} =
+      # The venue's row names order "x", not the one asked for: a substitute, refused (the
+      # request itself still went out as asserted below).
+      assert {:error, :unexpected_response_shape} =
                Rest.get_order(@credentials, "x/cancel/?y=1",
                  account_number: "RH-1",
                  plug: plug,
@@ -105,7 +107,8 @@ defmodule DpExchange.Robinhood.RequestIntegrityTest do
     test "cancel_order/3 does the same, and signs the path it sends" do
       plug = hitting(%{"id" => "x"}, self())
 
-      assert {:ok, _order} =
+      # The row names order "x", not "a/b#c": refused as a substitute.
+      assert {:error, :unexpected_response_shape} =
                Rest.cancel_order(@credentials, "a/b#c", plug: plug, retry_attempts: 0)
 
       assert_receive {:hit, "POST", path, query, _raw, _content_type}
