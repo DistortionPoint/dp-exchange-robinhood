@@ -19,6 +19,8 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+## [0.3.118] - 2026-11-11
+
 ### Changed
 
 - Requires `dp_exchange_core` 0.3.123 or later, the release that adds the required
