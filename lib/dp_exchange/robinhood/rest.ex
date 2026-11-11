@@ -42,7 +42,7 @@ defmodule DpExchange.Robinhood.Rest do
   discovering an empty series.
   """
 
-  alias DpExchange.Core.{Config, HttpClient, Instrument, Options}
+  alias DpExchange.Core.{Capabilities, Config, HttpClient, Instrument, Options, Venue}
   alias DpExchange.Core.Types.{Balance, Order, TopOfBook}
   alias DpExchange.Robinhood.{Auth, SymbolFormat}
 
@@ -319,18 +319,81 @@ defmodule DpExchange.Robinhood.Rest do
   @sent_once_functions [:cancel_order]
   @retry_options [:retry_attempts, :retry_delay]
 
-  defp allowed_options(function) do
-    cond do
-      not request_call?(function) -> [:credentials | function_options(function)]
-      function in @sent_once_functions -> sent_once_options(function)
-      true -> Options.transport_options() ++ function_options(function)
-    end
+  @doc """
+  Every option key `function` accepts without `{:unknown_option, key}`: the exact list
+  `validate_opts/2` checks against, so a declaration of the accepted keys and the check that
+  refuses the rest cannot drift. A request-sending function allows the shared transport keys
+  (`DpExchange.Core.Options.transport_options/0`, less the retry keys on a sent-once call)
+  plus its own; a function that sends no request allows `:credentials` plus its own. No key
+  appears twice. `function` is a key of `function_options/1`.
+  """
+  @spec allowed_options(atom()) :: [atom()]
+  def allowed_options(function) do
+    keys =
+      cond do
+        not request_call?(function) -> [:credentials | function_options(function)]
+        function in @sent_once_functions -> sent_once_options(function)
+        true -> Options.transport_options() ++ function_options(function)
+      end
+
+    Enum.uniq(keys)
   end
 
   defp sent_once_options(function),
     do: (Options.transport_options() -- @retry_options) ++ function_options(function)
 
   defp request_call?(function), do: function not in @no_request_functions
+
+  # Facade functions that read no option at all (they take no options argument).
+  @no_option_functions [
+    :provider_name,
+    :runtime_id,
+    :asset_classes,
+    :capabilities,
+    :venue_does_not_serve,
+    :quotes,
+    :start_options,
+    :call_options
+  ]
+
+  # Facade functions that share another function's check: `child_spec/1` hands its options to
+  # `start_link/1`, and `coverage_by_kind/1` and `wanted/1` are checked as `coverage/1` is.
+  @option_aliases %{child_spec: :start_link, coverage_by_kind: :coverage, wanted: :coverage}
+
+  @doc """
+  The option keys the facade function named `name` accepts, for
+  `c:DpExchange.Core.Venue.call_options/1`: `{:ok, keys}`, `{:error, :not_supported}` when
+  `name` is a `DpExchange.Core.Venue` callback that `capabilities` declares `:unsupported`
+  (that endpoint answers not supported whatever the options), or
+  `{:error, {:unknown_function, name}}` for any other name, a non-atom included. An unknown
+  name is never `{:ok, []}`: that would be a plausible substitute for an error.
+
+  The keys come from `allowed_options/1`, the list `validate_opts/2` itself checks against.
+  A function that takes no options answers `{:ok, []}`. Shared by `DpExchange.Robinhood` and
+  `DpExchange.Robinhood.Fake`, which check options with the same function.
+  """
+  @spec call_options(term(), Capabilities.t()) ::
+          {:ok, [atom()]} | {:error, :not_supported} | {:error, {:unknown_function, term()}}
+  def call_options(name, capabilities) when is_atom(name) do
+    group = Map.get(@option_aliases, name, name)
+
+    cond do
+      inactive_callback?(name, capabilities) -> {:error, :not_supported}
+      name in @no_option_functions -> {:ok, []}
+      Map.has_key?(@function_options, group) -> {:ok, allowed_options(group)}
+      true -> {:error, {:unknown_function, name}}
+    end
+  end
+
+  def call_options(name, _capabilities), do: {:error, {:unknown_function, name}}
+
+  # A callback of the Venue behaviour, under any of its arities, none of which is active.
+  defp inactive_callback?(name, capabilities) do
+    case for({^name, arity} <- Venue.behaviour_info(:callbacks), do: arity) do
+      [] -> false
+      arities -> not Enum.any?(arities, &Capabilities.active?(capabilities, {name, &1}))
+    end
+  end
 
   @doc """
   Refuses an `:environment` this venue cannot honour: `{:error, {:unsupported_option,

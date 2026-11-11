@@ -115,6 +115,32 @@ past that `subscribe/2` and `update_symbols/2` answer `{:error, {:too_many_symbo
 and `subscribe/2` and `subscribe_notices/1` `{:error, {:too_many_subscribers, 1000}}`, refused
 whole and keeping nothing. An already registered subscriber is never refused.
 
+## Ask which option keys a call accepts, then pass only those (dp-exchange-core issue #43)
+
+`DpExchange.Robinhood.start_options/0` lists the keys `start_link/1` and `child_spec/1` accept,
+and `DpExchange.Robinhood.call_options/1` lists the keys the function named by an atom accepts.
+Both read the list the call's own check uses, so a key inside it is never refused as
+`{:unknown_option, key}` and a key outside it always is. `DpExchange.Robinhood.Fake` answers the
+same, for itself, and accepts every key the facade declares.
+
+    {:ok, keys} = DpExchange.Robinhood.call_options(:get_balances)
+    DpExchange.Robinhood.get_balances(credentials, Keyword.take(opts, keys))
+
+    DpExchange.Robinhood.start_link(Keyword.take(opts, DpExchange.Robinhood.start_options()))
+
+`call_options/1` answers `{:ok, keys}`; `{:error, :not_supported}` for an endpoint this venue
+does not serve (`get_price`, `place_orders` and the rest of `venue_does_not_serve/0`), whatever
+the options; and `{:error, {:unknown_function, name}}` for a name that is not a function of the
+facade, a non-atom included. It is never `{:ok, []}` for an unknown name. A function that takes
+no options (`provider_name/0`, `capabilities/0`, `quotes/0`) answers `{:ok, []}`; `child_spec`
+and `start_link` answer `start_options/0`; `coverage_by_kind` and `wanted` answer what
+`coverage` does. The lists differ by call: a call that sends no request (`subscribe`,
+`unsubscribe`, `update_symbols`, `subscribe_notices`, `coverage`, `market_status`) declares
+`:credentials` and its own keys but no transport key; `cancel_order` declares neither retry key
+because it is sent exactly once. A declared key is accepted, not necessarily meaningful for
+every value: `limit:`, `depth:`, `since:` and `include_partial:` are declared on the market-data
+calls so that a `nil` passes, and any other value is `{:unsupported_option, key}`.
+
 ## A monitoring process can subscribe to notices separately from market data
 
 **Pass `subscriber:`, because there is no default.** A feed started without one delivers

@@ -116,6 +116,27 @@ defmodule DpExchange.Robinhood.Fake do
   end
 
   @doc """
+  The option keys this fake's `start_link/1` accepts. It checks with the same
+  `Rest.validate_opts/2` as the real facade, so the list is the real facade's, read from the
+  same source (`Rest.allowed_options/1`). See `c:DpExchange.Core.Venue.start_options/0`.
+  """
+  @impl true
+  @spec start_options() :: [atom()]
+  def start_options, do: Rest.allowed_options(:start_link)
+
+  @doc """
+  The option keys the fake's function `name` accepts, from the list its own check
+  (`Rest.validate_opts/2`) uses, so every key the real facade declares for an endpoint is
+  accepted here. `{:error, :not_supported}` for an endpoint the venue does not serve and
+  `{:error, {:unknown_function, name}}` for any other name.
+  See `c:DpExchange.Core.Venue.call_options/1`.
+  """
+  @impl true
+  @spec call_options(term()) ::
+          {:ok, [atom()]} | {:error, :not_supported} | {:error, {:unknown_function, term()}}
+  def call_options(name), do: Rest.call_options(name, capabilities())
+
+  @doc """
   The real facade's `DpExchange.Robinhood.provider_name/0`.
   See `c:DpExchange.Core.Venue.provider_name/0`.
   """

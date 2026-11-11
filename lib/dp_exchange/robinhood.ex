@@ -289,6 +289,35 @@ defmodule DpExchange.Robinhood do
   # --- declaration -------------------------------------------------------
 
   @doc """
+  The option keys `start_link/1` and `child_spec/1` accept: exactly the list `start_link/1`
+  refuses against, so a key outside it is `{:error, {:unknown_option, key}}` and a key inside
+  it is not. Read from `DpExchange.Robinhood.Rest.allowed_options/1`, the list the check
+  itself uses. Pass only these:
+  `DpExchange.Robinhood.start_link(Keyword.take(opts, DpExchange.Robinhood.start_options()))`.
+  See `c:DpExchange.Core.Venue.start_options/0`.
+  """
+  @impl true
+  @spec start_options() :: [atom()]
+  def start_options, do: Rest.allowed_options(:start_link)
+
+  @doc """
+  The option keys the function named `name` accepts without `{:unknown_option, key}`:
+  `{:ok, keys}`, `{:error, :not_supported}` for an endpoint this venue does not serve, or
+  `{:error, {:unknown_function, name}}` for a name that is not a function of this facade.
+
+  The keys are read from the list each call's own check uses
+  (`DpExchange.Robinhood.Rest.allowed_options/1`), never a second copy. `child_spec` and
+  `start_link` answer `start_options/0`. Pass only these:
+  `{:ok, keys} = call_options(:get_balances)`, then
+  `get_balances(credentials, Keyword.take(opts, keys))`.
+  See `c:DpExchange.Core.Venue.call_options/1`.
+  """
+  @impl true
+  @spec call_options(term()) ::
+          {:ok, [atom()]} | {:error, :not_supported} | {:error, {:unknown_function, term()}}
+  def call_options(name), do: Rest.call_options(name, capabilities())
+
+  @doc """
   The venue's display name, `"Robinhood"`. See `c:DpExchange.Core.Venue.provider_name/0`.
   """
   @impl true

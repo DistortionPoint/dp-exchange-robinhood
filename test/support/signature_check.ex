@@ -34,7 +34,7 @@ defmodule DpExchange.Robinhood.Test.SignatureCheck do
   end
 
   defp path_and_query(%Plug.Conn{request_path: path, query_string: query}) do
-    if query in [nil, ""], do: path, else: path <> "?" <> query
+    if query == "", do: path, else: path <> "?" <> query
   end
 
   defp single_header(conn, name) do

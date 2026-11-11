@@ -19,6 +19,24 @@ what was run against the live venue, and when.
 
 ## [Unreleased]
 
+### Changed
+
+- Requires `dp_exchange_core` 0.3.123 or later, the release that adds the required
+  `start_options/0` and `call_options/1` callbacks and conformance group 55.
+
+### Added
+
+- **`start_options/0` and `call_options/1` declare the option keys each call accepts**
+  (DistortionPoint/dp-exchange-core#43). `DpExchange.Robinhood.start_options/0` is the list
+  `start_link/1` and `child_spec/1` check against, so a consumer can
+  `Keyword.take(opts, start_options())` instead of being refused `:channels` or
+  `:priority_symbols` at start. `call_options/1` answers `{:ok, keys}` for a facade function,
+  `{:error, :not_supported}` for an endpoint the venue does not serve, and
+  `{:error, {:unknown_function, name}}` for anything else. Both read the one list the check
+  uses (new public `Rest.allowed_options/1`, which `Rest.validate_opts/2` now calls), and
+  `Rest.call_options/2` holds the shared mapping. `Fake` exports both and accepts every key
+  the facade declares. Tests: test/dp_exchange/robinhood/declared_options_test.exs.
+
 ## [0.3.117] - 2026-10-21
 
 ### Fixed (tick AR: documentation against code, tests that cannot fail, order lifecycle)
